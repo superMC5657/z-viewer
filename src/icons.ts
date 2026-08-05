@@ -56,6 +56,11 @@ export const ICONS: Record<string, string> = {
     '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>'
   ),
 
+  // —— 更新（下载箭头） ——
+  update: svgIcon(
+    '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
+  ),
+
   // —— 标题栏 ——
   minus: svgIcon('<path d="M5 12h14" stroke-width="1.6"/>', 12),
   square: svgIcon('<rect x="6.5" y="6.5" width="11" height="11" rx="1"/>', 12),
@@ -122,6 +127,9 @@ export const TOOLBAR_GROUPS: ToolbarGroup[] = [
   },
   {
     id: "settings",
-    items: [{ id: "cache-toggle", icon: "cache", tip: "预取缓存（开启后跨文件夹/翻页更流畅）", enabled: true }],
+    items: [
+      { id: "cache-toggle", icon: "cache", tip: "预取缓存（开启后跨文件夹/翻页更流畅）", enabled: true },
+      { id: "update", icon: "update", tip: "检查更新", enabled: true },
+    ],
   },
 ];

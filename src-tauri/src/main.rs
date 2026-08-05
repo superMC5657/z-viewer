@@ -58,6 +58,7 @@ fn startup_image_path() -> Option<String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState(Mutex::new(None)))
         .manage(SettingsState(Mutex::new(AppSettings::default())))
         .manage(DecodeCache::new(4))
