@@ -38,9 +38,8 @@ export interface LoadResult {
 
 /** Rust 端 AppSettings */
 export interface AppSettings {
-  enabled: boolean;
-  /** 当前文件夹前后图片缓存等级（默认 1 = 前后各 1，留参数以后配置） */
-  neighbor_depth: number;
+  /** 0=关闭 1=开启（前后各1） 2=高等级（前1后3） */
+  cache_level: number;
   /** 文件夹首图队列深度（默认 1） */
   folder_first_depth: number;
 }

@@ -394,6 +394,13 @@ body.immersive #info-bar {
 .tb-btn-icon.active svg {
   filter: drop-shadow(0 0 6px rgba(10, 132, 255, 0.45));
 }
+/* 高等级态（缓存高等级：橙色） */
+.tb-btn-icon.level-high {
+  color: var(--warn);
+}
+.tb-btn-icon.level-high svg {
+  filter: drop-shadow(0 0 6px rgba(255, 159, 10, 0.5));
+}
 .tb-btn-icon svg {
   width: 18px;
   height: 18px;

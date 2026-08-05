@@ -91,7 +91,7 @@ fn main() {
             commands::jump_folder,
             commands::get_initial_state,
             commands::load_image,
-            commands::set_cache_enabled,
+            commands::set_cache_level,
             commands::get_settings,
             commands::get_context,
         ])

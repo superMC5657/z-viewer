@@ -18,34 +18,35 @@ pub struct AppState(pub Mutex<Option<BrowseModel>>);
 pub struct SettingsState(pub Mutex<AppSettings>);
 
 /// 用户设置
-/// - enabled：缓存总开关（UI 为工具栏一个按钮，激活态 = 开启）
-/// - neighbor_depth：当前文件夹前后图片缓存等级（默认 1 = 前后各 1；留参数以后配置）
+/// - cache_level：0=关闭（不缓存不预取）1=开启（前后各 1）2=高等级（前 1 后 3）
 /// - folder_first_depth：文件夹首图队列深度（默认 1；跨文件夹跳转缓存）
 #[derive(serde::Serialize, Clone, Copy)]
 pub struct AppSettings {
-    pub enabled: bool,
-    pub neighbor_depth: usize,
+    pub cache_level: usize,
     pub folder_first_depth: usize,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
-            neighbor_depth: 1,
+            cache_level: 1,
             folder_first_depth: 1,
         }
     }
 }
 
 impl AppSettings {
-    /// 邻居预取数量：neighbor_depth 前后各 n；enabled=false 或 depth=0 → 不预取
+    /// 邻居预取窗口：0=不预取；1=前1后1；2(高)=前1后3
     pub fn neighbor_window(&self) -> (usize, usize) {
-        if !self.enabled {
-            return (0, 0);
+        match self.cache_level {
+            0 => (0, 0),
+            1 => (1, 1),
+            _ => (1, 3), // 高等级：前 1 后 3
         }
-        let n = self.neighbor_depth;
-        (n, n)
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.cache_level > 0
     }
 }
 
@@ -131,7 +132,7 @@ fn prefetch_folder_firsts(
     first_cache: &FolderFirstCache,
     settings: &AppSettings,
 ) {
-    if !settings.enabled || settings.folder_first_depth == 0 {
+    if !settings.is_enabled() || settings.folder_first_depth == 0 {
         return;
     }
     let depth = settings.folder_first_depth.min(3); // 首图队列深度上限 3
@@ -283,7 +284,7 @@ pub async fn load_image(
     cache: State<'_, DecodeCache>,
     settings: State<'_, SettingsState>,
 ) -> Result<crate::decode::LoadResult, String> {
-    let caching = settings.0.lock().map_err(|e| e.to_string())?.enabled;
+    let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled();
     if caching {
         if let Some(hit) = cache.get(&path) {
             return Ok((*hit).clone());
@@ -321,24 +322,26 @@ pub async fn load_image(
     }
 }
 
-/// 缓存总开关（UI 工具栏按钮，激活态 = 开启）
+/// 设置缓存等级：0=关闭 1=开启（前后各1） 2=高（前1后3）
+/// 关闭清空双队列；开启/高等级恢复容量
 #[tauri::command]
-pub fn set_cache_enabled(
+pub fn set_cache_level(
     cache: State<'_, DecodeCache>,
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
-    enabled: bool,
+    level: usize,
 ) -> Result<AppSettings, String> {
+    let level = level.min(2);
     let mut g = settings.0.lock().map_err(|e| e.to_string())?;
-    g.enabled = enabled;
-    if enabled {
-        // 开启时恢复容量
-        cache.set_capacity(cache.capacity().max(4));
-        first_cache.set_capacity(first_cache.capacity().max(4));
-    } else {
+    g.cache_level = level;
+    if level == 0 {
         // 关闭时清空队列
         cache.set_capacity(0);
         first_cache.set_capacity(0);
+    } else {
+        // 开启/高等级：容量覆盖窗口（高等级前1后3=4张 + 当前 + 余量）
+        cache.set_capacity(if level >= 2 { 8 } else { 4 });
+        first_cache.set_capacity(4);
     }
     Ok(*g)
 }
@@ -377,14 +380,12 @@ mod tests {
 
     #[test]
     fn neighbor_window_rules() {
-        let s = AppSettings { enabled: true, neighbor_depth: 1, folder_first_depth: 1 };
-        assert_eq!(s.neighbor_window(), (1, 1), "默认：前后各 1");
-        let s2 = AppSettings { enabled: false, neighbor_depth: 3, folder_first_depth: 1 };
-        assert_eq!(s2.neighbor_window(), (0, 0), "关闭时不预取");
-        let s3 = AppSettings { enabled: true, neighbor_depth: 0, folder_first_depth: 1 };
-        assert_eq!(s3.neighbor_window(), (0, 0), "depth=0 不预取");
-        let s4 = AppSettings { enabled: true, neighbor_depth: 5, folder_first_depth: 1 };
-        assert_eq!(s4.neighbor_window(), (5, 5), "前后各 5（等级参数）");
+        let s = |l| AppSettings { cache_level: l, folder_first_depth: 1 };
+        assert_eq!(s(0).neighbor_window(), (0, 0), "0：不预取");
+        assert_eq!(s(1).neighbor_window(), (1, 1), "1：前后各 1");
+        assert_eq!(s(2).neighbor_window(), (1, 3), "2(高)：前 1 后 3");
+        assert_eq!(s(2).is_enabled(), true);
+        assert_eq!(s(0).is_enabled(), false);
     }
 }
 

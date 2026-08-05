@@ -35,7 +35,7 @@ ui.buildToolbar({ onAction: handleToolbarAction });
 const windowState = new WindowState(getCurrentWindow(), viewer, ui);
 const slideshow = new Slideshow();
 const prefetch = new PrefetchPool();
-let cacheEnabled = true;
+let cacheLevel = 1;
 
 // ---------- 状态 ----------
 let currentDims: { w: number; h: number } | null = null;
@@ -307,30 +307,38 @@ function buildSlideshowBar(): void {
   };
 }
 
-// ---------- 缓存开关 ----------
+// ---------- 缓存开关（三态：关/开/高） ----------
 
-/** 切换缓存总开关（工具栏按钮，激活态 = 开启） */
+/** 切换缓存等级：0(关·白) → 1(开·蓝) → 2(高·橙) → 0 循环 */
 async function toggleCache(): Promise<void> {
-  const next = !cacheEnabled;
+  const next = (cacheLevel + 1) % 3;
   try {
-    await invoke<AppSettings>("set_cache_enabled", { enabled: next });
-    cacheEnabled = next;
+    await invoke<AppSettings>("set_cache_level", { level: next });
+    cacheLevel = next;
     try {
-      localStorage.setItem("cache-enabled", String(next));
+      localStorage.setItem("cache-level", String(next));
     } catch {
       /* 忽略持久化失败 */
     }
-    ui.setToolbarActive("cache-toggle", next);
-    if (next) {
-      // 开启后立即按当前上下文预取
-      void refreshContext();
+    syncCacheButton();
+    if (next === 0) {
+      ui.showToast("预取缓存已关闭");
+    } else if (next === 1) {
+      void refreshContext(); // 开启后立即按当前上下文预取
       ui.showToast("预取缓存已开启");
     } else {
-      ui.showToast("预取缓存已关闭");
+      void refreshContext(); // 高等级：前1后3
+      ui.showToast("高等级预取：前 1 后 3");
     }
   } catch (err) {
     ui.showToast(`切换失败：${String(err)}`);
   }
+}
+
+/** 同步缓存按钮视觉：0=白 1=蓝(active) 2=橙(level-2) */
+function syncCacheButton(): void {
+  ui.setToolbarActive("cache-toggle", cacheLevel >= 1);
+  ui.setToolbarLevel("cache-toggle", cacheLevel >= 2);
 }
 
 // ---------- 事件装配 ----------
@@ -427,12 +435,11 @@ async function init(): Promise<void> {
     }
     // 读取缓存设置并同步 UI（localStorage 持久化优先，否则 Rust 默认）
     const settings = await invoke<AppSettings>("get_settings");
-    const saved = localStorage.getItem("cache-enabled");
-    const enabled = saved !== null ? saved === "true" : settings.enabled;
-    cacheEnabled = enabled;
-    ui.setToolbarActive("cache-toggle", enabled);
-    if (enabled !== settings.enabled) {
-      await invoke<AppSettings>("set_cache_enabled", { enabled }).catch(() => undefined);
+    const saved = Number(localStorage.getItem("cache-level"));
+    cacheLevel = Number.isFinite(saved) && saved >= 0 && saved <= 2 ? saved : settings.cache_level;
+    syncCacheButton();
+    if (cacheLevel !== settings.cache_level) {
+      await invoke<AppSettings>("set_cache_level", { level: cacheLevel }).catch(() => undefined);
     }
   } catch (err) {
     console.error(err);

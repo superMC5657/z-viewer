@@ -70,6 +70,12 @@ export class UI {
     btn?.classList.toggle("active", active);
   }
 
+  /** 工具栏按钮高等级态（缓存高等级显示橙色） */
+  setToolbarLevel(id: string, high: boolean): void {
+    const btn = this.toolbar.querySelector<HTMLElement>(`[data-id="${id}"]`);
+    btn?.classList.toggle("level-high", high);
+  }
+
   /** 缩放模式按钮：适应窗口在纯 fit 态激活（accent），否则置灰（仍可点击恢复）；1:1 在 actual 态激活 */
   setZoomButtons(fit: boolean, actual: boolean): void {
     const fitBtn = this.toolbar.querySelector<HTMLElement>('[data-id="zoom-fit"]');
