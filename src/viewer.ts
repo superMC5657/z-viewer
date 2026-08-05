@@ -183,8 +183,11 @@ export class Viewer {
     this.userScale = 1;
     if (mode === "actual") {
       this.baseScale = 1;
+      // 必须 apply：否则只改状态不更新 transform，看起来像没触发
+      this.apply();
+      this.updatePanState();
     } else {
-      this.fit();
+      this.fit(); // fit() 内部已 apply + updatePanState
     }
     this.onStateChange?.();
   }
