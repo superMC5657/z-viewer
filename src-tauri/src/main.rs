@@ -5,12 +5,36 @@ mod browse;
 mod commands;
 mod decode;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use browse::BrowseModel;
 use commands::AppState;
 use tauri::Manager;
+
+/// 解析命令行传入的路径：相对路径优先按项目根解析
+/// （`pnpm tauri dev -- <path>` 时应用 cwd 为 src-tauri/，相对路径会失效）
+fn resolve_path_arg(arg: &str) -> PathBuf {
+    let p = Path::new(arg);
+    if p.exists() || p.is_absolute() {
+        return p.to_path_buf();
+    }
+    // exe 位于 <项目根>/src-tauri/target/<profile>/，上溯 4 级到项目根
+    if let Some(exe) = std::env::current_exe().ok() {
+        let root = exe
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent());
+        if let Some(root) = root {
+            let cand = root.join(p);
+            if cand.exists() {
+                return cand;
+            }
+        }
+    }
+    p.to_path_buf()
+}
 
 /// 从命令行参数中找出第一个文件/目录路径（跳过以 `-` 开头的选项与可执行文件自身）
 fn startup_image_path() -> Option<String> {
@@ -20,9 +44,9 @@ fn startup_image_path() -> Option<String> {
         if arg.starts_with('-') {
             continue;
         }
-        let p = Path::new(&arg);
-        if p.is_file() || p.is_dir() {
-            return Some(arg);
+        let resolved = resolve_path_arg(&arg);
+        if resolved.is_file() || resolved.is_dir() {
+            return Some(resolved.to_string_lossy().to_string());
         }
     }
     None
