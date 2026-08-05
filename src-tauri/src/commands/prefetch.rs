@@ -41,6 +41,7 @@ pub(super) fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, setting
 
 /// 队列 A：每个文件夹第一张图预取（跨文件夹跳转无延迟）
 /// 当前文件夹的邻居文件夹首图 → FolderFirstCache
+/// P3-1：目录枚举（first_image_of）移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
 pub(super) fn prefetch_folder_firsts(
     model: &BrowseModel,
     first_cache: &FolderFirstCache,
@@ -50,20 +51,21 @@ pub(super) fn prefetch_folder_firsts(
         return;
     }
     let depth = settings.folder_first_depth.min(3); // 首图队列深度上限 3
-    for folder in model.neighbor_folders(depth) {
+    // 锁内仅收集邻居文件夹路径（快速克隆），枚举与解码全部移入后台线程
+    let folders = model.neighbor_folders(depth);
+    for folder in folders {
         let folder_str = folder.to_string_lossy().to_string();
         if first_cache.peek(&folder_str) {
             continue;
         }
-        // 取该文件夹第一张图并解码入队
-        let first = BrowseModel::first_image_of(&folder);
-        let Some(first) = first else { continue };
-        let path = first.to_string_lossy().to_string();
-        if crate::decode::is_asset_ext(&path) {
-            continue; // asset 由前端池预热
-        }
         let first_cache = first_cache.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            // 取该文件夹第一张图并解码入队（后台线程，不阻塞导航命令）
+            let Some(first) = BrowseModel::first_image_of(&folder) else { return };
+            let path = first.to_string_lossy().to_string();
+            if crate::decode::is_asset_ext(&path) {
+                return; // asset 由前端池预热
+            }
             if let Ok(result) = crate::decode::load_image(&path) {
                 if result.mode != "asset" {
                     first_cache.put(folder_str, Arc::new(result));

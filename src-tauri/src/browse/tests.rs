@@ -279,3 +279,60 @@ fn context_paths_at_global_boundaries() {
     assert!(m2.context_paths(0, 2).is_empty(), "全局最后一张无向后");
     cleanup(&base);
 }
+
+#[test]
+fn nav_skips_empty_sibling_folder() {
+    // P2-2 回归：A 与 B 之间夹一个空目录 A0，从 A 末尾 next 应跳过 A0 直达 B
+    let base = temp_base();
+    for n in ["a1", "a2"] {
+        touch(&base.join("A").join(format!("{n}.png")));
+    }
+    for n in ["b1", "b2"] {
+        touch(&base.join("B").join(format!("{n}.jpg")));
+    }
+    // A < A0 < B（natord 自然序）
+    fs::create_dir_all(base.join("A0")).unwrap();
+
+    let m = open_sync(&base.join("A/a2.png"));
+    // 扫描完成后空 A0 已被压缩移除，且当前文件夹无变化
+    {
+        let d = m.inner.m.lock().unwrap();
+        assert_eq!(d.folders.len(), 2, "空文件夹 A0 应被压缩移除");
+    }
+    assert_eq!(m.state().file_name, "a2.png");
+    // next 从 A 末尾无缝进入 B
+    let mut m = m;
+    assert!(matches!(m.next(), Nav::Ok), "跨文件夹跳过空 A0");
+    assert_eq!(m.state().folder_name, "B");
+    assert_eq!(m.state().file_name, "b1.jpg");
+    cleanup(&base);
+}
+
+#[test]
+fn nav_during_scan_never_panics() {
+    // P2-2 竞态回归：扫描未完成时连续导航，期间后台压缩可能缩短 folders 列表，
+    // 不得 panic（越界）或 poison 模型 Mutex
+    let base = temp_base();
+    for d in 0..10 {
+        for i in 0..3 {
+            touch(&base.join(format!("D{d:02}")).join(format!("{i}.png")));
+        }
+    }
+    // 夹一个空目录（扫描后会被压缩移除）
+    fs::create_dir_all(base.join("D05b")).unwrap();
+    let mut m = BrowseModel::open(&base.join("D00/0.png"), None).unwrap();
+    // 不等扫描完成立即连续导航（撞边界或扫描完成后停止）
+    for _ in 0..60 {
+        if !m.state().loading {
+            break;
+        }
+        match m.next() {
+            Nav::Ok => {}
+            _ => break,
+        }
+    }
+    m.wait_ready();
+    // 最终状态有效且不 panic（当前文件夹非空，path 不应为空）
+    assert!(!m.state().path.is_empty(), "导航后当前图片路径应有效");
+    cleanup(&base);
+}

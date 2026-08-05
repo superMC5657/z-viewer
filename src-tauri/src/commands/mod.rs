@@ -245,34 +245,54 @@ pub fn get_settings(settings: State<'_, SettingsState>) -> AppSettings {
 }
 
 /// 查询当前图片上下文路径（按缓存强度），供前端预解码池（方案四）预热
+/// P3-1：相邻文件夹首图的目录枚举移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
 #[tauri::command]
-pub fn get_context(
+pub async fn get_context(
     state: State<'_, AppState>,
     settings: State<'_, SettingsState>,
 ) -> Result<Vec<String>, String> {
-    let guard = state.0.lock().map_err(|e| e.to_string())?;
-    let Some(model) = guard.as_ref() else {
-        return Ok(Vec::new());
+    // 锁内仅收集路径（快速）；目录枚举在释放锁后由后台线程完成
+    let (mut paths, neighbors) = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        let Some(model) = guard.as_ref() else {
+            return Ok(Vec::new());
+        };
+        // 单次锁读取设置（预取窗口 + 首图队列深度）
+        let (prev_n, next_n, folder_depth, enabled) = {
+            let s = settings.0.lock().map_err(|e| e.to_string())?;
+            let (p, n) = s.neighbor_window();
+            (p, n, s.folder_first_depth, s.is_enabled())
+        };
+        let paths: Vec<String> = model
+            .context_paths(prev_n, next_n)
+            .into_iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        // P3-2：缓存关闭（cache_level=0）时不返回任何首图路径，
+        // 前端不得继续预热（与「0=关闭不缓存不预取」语义一致）
+        let neighbors = if folder_depth > 0 && enabled {
+            model.neighbor_folders(1)
+        } else {
+            Vec::new()
+        };
+        (paths, neighbors)
     };
-    // 单次锁读取设置（预取窗口 + 首图队列深度）
-    let (prev_n, next_n, folder_depth) = {
-        let s = settings.0.lock().map_err(|e| e.to_string())?;
-        let (p, n) = s.neighbor_window();
-        (p, n, s.folder_first_depth)
-    };
-    let mut paths: Vec<String> = model
-        .context_paths(prev_n, next_n)
-        .into_iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
-    // 并入相邻文件夹首图（asset 供前端池预热，非 asset 由 Rust 队列 A 处理）
-    if folder_depth > 0 {
-        for folder in model.neighbor_folders(1) {
-            if let Some(first) = BrowseModel::first_image_of(&folder) {
-                let p = first.to_string_lossy().to_string();
-                if !paths.contains(&p) {
-                    paths.push(p);
+    // 锁外：后台枚举相邻文件夹首图（asset 供前端池预热，非 asset 由 Rust 队列 A 处理）
+    if !neighbors.is_empty() {
+        let firsts = tauri::async_runtime::spawn_blocking(move || {
+            let mut out = Vec::with_capacity(neighbors.len());
+            for folder in neighbors {
+                if let Some(first) = BrowseModel::first_image_of(&folder) {
+                    out.push(first.to_string_lossy().to_string());
                 }
+            }
+            out
+        })
+        .await
+        .map_err(|e| format!("首图枚举任务失败: {e}"))?;
+        for p in firsts {
+            if !paths.contains(&p) {
+                paths.push(p);
             }
         }
     }

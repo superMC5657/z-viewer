@@ -120,11 +120,12 @@ export class Viewer {
     this.img.classList.remove("visible");
     return new Promise((resolve, reject) => {
       this.pending = { resolve, reject, seq };
-      // 超时兜底：2.5s 未完成强制 resolve（防 load 事件静默丢失导致挂死）
+      // 超时兜底：2.5s 未完成先 resolve 防挂死（P2-1：**不清 pending**——
+      // 迟到的 load 事件到达时 handleLoad 仍会走 handleDecoded 完成显示，
+      // 否则慢图会以 opacity:0 永久黑屏）
       const timeout = window.setTimeout(() => {
         if (this.pending?.seq === seq) {
-          this.pending = null;
-          resolve();
+          this.pending.resolve();
         }
       }, 2500);
       // 同 URL 不清空 src：保留浏览器已解码的位图缓存，切回时零解码

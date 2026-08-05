@@ -152,19 +152,41 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         d.folders[idx].images = Some(imgs);
     }
 
-    // 全部填充完成：压缩空文件夹（open 时无法预知哪些兄弟为空）
+    // 全部填充完成：压缩空文件夹（open 时无法预知哪些兄弟为空）。
+    // P2-2：若用户已导航进空文件夹，同样移除它并指向相邻非空文件夹，
+    // 避免空文件夹永久残留、folder_total 虚高。
     let mut d = scan_inner.m.lock().unwrap();
     if d.cancelled {
         return;
     }
     let old_folders = std::mem::take(&mut d.folders);
     let old_index = d.folder_index;
+
+    // 极端防御：全部为空（正常不会发生，open 时当前文件夹必有图）→ 保留原列表避免空索引
+    let all_empty = old_folders
+        .iter()
+        .all(|f| matches!(&f.images, Some(imgs) if imgs.is_empty()));
+    if all_empty {
+        d.folders = old_folders;
+        d.loading = false;
+        drop(d);
+        let state = BrowseModel::state_from_inner(&scan_inner);
+        if let Some(cb) = on_ready {
+            cb(state);
+        }
+        scan_inner.cv.notify_all();
+        return;
+    }
+
     let mut new_folders = Vec::with_capacity(old_folders.len());
     let mut removed_before = 0usize;
+    let mut cur_removed = false;
     for (i, f) in old_folders.into_iter().enumerate() {
         let is_empty = matches!(&f.images, Some(imgs) if imgs.is_empty());
-        if is_empty && i != old_index {
-            if i < old_index {
+        if is_empty {
+            if i == old_index {
+                cur_removed = true;
+            } else if i < old_index {
                 removed_before += 1;
             }
             continue;
@@ -172,7 +194,19 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         new_folders.push(f);
     }
     d.folders = new_folders;
-    d.folder_index = old_index - removed_before;
+    if cur_removed {
+        // 当前空文件夹被移除：指向其后最近的非空文件夹（新索引 = old_index - removed_before）；
+        // 若其后没有，指向前一个（末位）
+        let after = old_index - removed_before;
+        d.folder_index = if after < d.folders.len() {
+            after
+        } else {
+            d.folders.len().saturating_sub(1)
+        };
+        d.image_index = 0;
+    } else {
+        d.folder_index = old_index - removed_before;
+    }
     d.loading = false;
     drop(d); // 先释放锁，state_from_inner 会再次加锁
     let state = BrowseModel::state_from_inner(&scan_inner);

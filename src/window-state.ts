@@ -56,8 +56,10 @@ export class WindowState {
     await this.toggleImmersive();
   }
 
-  /** 切换窗口置顶 */
+  /** 切换窗口置顶（P3-3：沿用 toggleImmersive 的 in-flight 防重入，双击可正常取消） */
   async togglePin(): Promise<void> {
+    if (this.toggling) return;
+    this.toggling = true;
     const next = !this.pinned;
     try {
       await this.appWindow.setAlwaysOnTop(next);
@@ -65,6 +67,8 @@ export class WindowState {
       this.ui.setToolbarActive("pin", next);
     } catch (err) {
       this.ui.showToast(`置顶切换失败：${String(err)}`);
+    } finally {
+      this.toggling = false;
     }
   }
 }
