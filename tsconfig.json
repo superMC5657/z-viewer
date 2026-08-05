@@ -13,6 +13,10 @@
     "moduleDetection": "force",
     "noEmit": true,
 
+    /* 增量编译：tsc 复用 .tsbuildinfo，重复构建更快 */
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/tsconfig.tsbuildinfo",
+
     /* Linting */
     "strict": true,
     "noUnusedLocals": true,
@@ -21,3 +25,4 @@
   },
   "include": ["src"]
 }
+
