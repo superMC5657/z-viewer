@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use browse::BrowseModel;
 use cache::{DecodeCache, FolderFirstCache};
 use commands::{AppSettings, AppState, SettingsState};
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 /// 解析命令行传入的路径：相对路径优先按项目根解析
 /// （`pnpm tauri dev -- <path>` 时应用 cwd 为 src-tauri/，相对路径会失效）
@@ -22,7 +22,7 @@ fn resolve_path_arg(arg: &str) -> PathBuf {
         return p.to_path_buf();
     }
     // exe 位于 <项目根>/src-tauri/target/<profile>/，上溯 4 级到项目根
-    if let Some(exe) = std::env::current_exe().ok() {
+    if let Ok(exe) = std::env::current_exe() {
         let root = exe
             .parent()
             .and_then(|p| p.parent())
@@ -56,6 +56,7 @@ fn startup_image_path() -> Option<String> {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState(Mutex::new(None)))
         .manage(SettingsState(Mutex::new(AppSettings::default())))
         .manage(DecodeCache::new(4))
@@ -64,12 +65,7 @@ fn main() {
             // 双击图片打开 / 命令行传参（文件或目录）：初始化浏览模型
             if let Some(path) = startup_image_path() {
                 let p = Path::new(&path);
-                let on_ready = {
-                    let app2 = app.handle().clone();
-                    Some(Box::new(move |st: browse::BrowseState| {
-                        let _ = app2.emit(commands::BROWSE_SCAN_READY, st);
-                    }) as browse::OnReady)
-                };
+                let on_ready = Some(commands::on_ready_callback(app.handle().clone()));
                 let model = if p.is_dir() {
                     BrowseModel::open_first_in_dir(p, on_ready)
                 } else {

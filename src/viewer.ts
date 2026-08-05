@@ -120,6 +120,13 @@ export class Viewer {
     this.img.classList.remove("visible");
     return new Promise((resolve, reject) => {
       this.pending = { resolve, reject, seq };
+      // 超时兜底：2.5s 未完成强制 resolve（防 load 事件静默丢失导致挂死）
+      const timeout = window.setTimeout(() => {
+        if (this.pending?.seq === seq) {
+          this.pending = null;
+          resolve();
+        }
+      }, 2500);
       // 同 URL 不清空 src：保留浏览器已解码的位图缓存，切回时零解码
       if (this.img.getAttribute("src") !== url) {
         this.img.removeAttribute("src");
@@ -129,6 +136,7 @@ export class Viewer {
         this.img
           .decode()
           .then(() => {
+            window.clearTimeout(timeout);
             if (this.pending?.seq === seq) {
               this.pending = null;
               this.handleDecoded(seq);
@@ -187,7 +195,6 @@ export class Viewer {
       this.fit();
     } else {
       this.apply();
-      this.updatePanState();
     }
   }
 
@@ -202,9 +209,8 @@ export class Viewer {
       this.baseScale = 1;
       // 必须 apply：否则只改状态不更新 transform，看起来像没触发
       this.apply();
-      this.updatePanState();
     } else {
-      this.fit(); // fit() 内部已 apply + updatePanState
+      this.fit(); // fit() 内部已 apply
     }
     this.onStateChange?.();
   }
@@ -237,7 +243,6 @@ export class Viewer {
     this.cy = my - (my - this.cy) * ratio;
     this.userScale = s1 / this.baseScale;
     this.apply();
-    this.updatePanState();
     this.onStateChange?.();
   }
 
@@ -249,12 +254,15 @@ export class Viewer {
 
   // ---------- 拖拽平移 ----------
 
+  /** 开始拖动：任何状态下都允许（图片大则平移，图片小则结束弹回原位）。
+   *  不设 isPannable 拦截 —— 保证鼠标拖动能力始终可用 */
   startPan(sx: number, sy: number): void {
-    if (!this.isPannable()) return;
+    if (!this.loaded) return;
     this.drag = { sx, sy, cx0: this.cx, cy0: this.cy };
     this.stage.classList.add("dragging");
   }
 
+  /** 拖动中：手跟随鼠标自由移动，不实时 clamp（避免图片小时被拉回抖动） */
   panTo(x: number, y: number): void {
     if (!this.drag) return;
     this.cx = this.drag.cx0 + (x - this.drag.sx);
@@ -271,6 +279,8 @@ export class Viewer {
       this.rafHandle = null;
     }
     if (this.loaded) {
+      // 结束时统一收敛：图片超出视口 → 停在拖到的位置；
+      // 图片在视口内 → clampPan 拉回居中范围（弹回原位）
       this.clampPan();
       this.apply();
     }
@@ -410,7 +420,6 @@ export class Viewer {
     this.cx = availW / 2;
     this.cy = (this.immersive ? 0 : TITLEBAR_H) + availH / 2;
     this.apply();
-    this.updatePanState();
   }
 
   private apply(): void {
@@ -449,10 +458,6 @@ export class Viewer {
       this.clampPan();
       this.apply();
     });
-  }
-
-  private updatePanState(): void {
-    this.stage.classList.toggle("pannable", this.isPannable());
   }
 
   /** 旋转/翻转时的 200ms ease-in-out 过渡 */

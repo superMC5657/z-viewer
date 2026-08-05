@@ -73,19 +73,24 @@
     </div>
 
     <!-- ===== 幻灯片控制浮条（播放中鼠标移动显示，草图 3.6） ===== -->
-    <div id="slideshow-bar" class="glass hidden" aria-hidden="true">
-      <button id="ss-play" class="tb-btn-icon" data-tip="暂停/继续"></button>
-      <div class="tb-sep"></div>
-      <label class="ss-interval">
-        间隔
-        <select id="ss-interval">
-          <option value="2000">2s</option>
-          <option value="5000" selected>5s</option>
-          <option value="10000">10s</option>
-        </select>
-      </label>
-      <div class="tb-sep"></div>
-      <span id="ss-progress" class="ss-progress">0/0</span>
+    <div id="slideshow-bar" class="hidden" aria-hidden="true">
+      <div class="bar-inner glass">
+        <button id="ss-play" class="tb-btn-icon" data-tip="暂停/继续"></button>
+        <div class="tb-sep"></div>
+        <label class="ss-interval">
+          间隔
+          <select id="ss-interval">
+            <option value="2000">2s</option>
+            <option value="5000" selected>5s</option>
+            <option value="10000">10s</option>
+          </select>
+        </label>
+        <div class="tb-sep"></div>
+        <span id="ss-progress" class="ss-progress">0/0</span>
+        <div class="tb-sep"></div>
+        <button id="ss-fullscreen" class="tb-btn-icon" data-id="fullscreen" data-tip="沉浸模式 · F"></button>
+        <button id="ss-exit" class="tb-btn-icon" data-tip="返回图片浏览"></button>
+      </div>
     </div>
 
     <!-- ===== 边界提醒 Toast ===== -->

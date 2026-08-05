@@ -36,6 +36,12 @@ const windowState = new WindowState(getCurrentWindow(), viewer, ui);
 const slideshow = new Slideshow();
 const prefetch = new PrefetchPool();
 let cacheLevel = 1;
+/** 缓存等级设置请求代次：并发切换时只应用最后一次（防幻灯片自动切换与手动切换竞态） */
+let cacheLevelGen = 0;
+/** 幻灯片播放前的缓存等级（退出模式时恢复） */
+let slideshowPrevCacheLevel: number | null = null;
+/** 是否处于幻灯片模式（true=隐藏普通浮层只显示控制条；暂停不退出，返回按钮才退出） */
+let slideshowMode = false;
 
 // ---------- 状态 ----------
 let currentDims: { w: number; h: number } | null = null;
@@ -130,12 +136,8 @@ async function refreshContext(): Promise<void> {
     const paths = await invoke<string[]>("get_context");
     // asset 图：WebView2 预解码池
     prefetch.warm(paths, needsIpc);
-    // RAW/动画图：逐个 load_image 走 Rust DecodeCache（等价 Rust 预取，scan-ready 后补跨文件夹邻居）
-    for (const p of paths) {
-      if (needsIpc(p)) {
-        void invoke<LoadResult>("load_image", { path: p }).catch(() => undefined);
-      }
-    }
+    // needsIpc（RAW/动画）邻居已由 Rust prefetch_context（导航后自动触发）
+    // 预取进 DecodeCache —— 前端不再重复 load_image，避免并发冗余解码
   } catch (err) {
     console.error("预取上下文失败", err);
   }
@@ -170,7 +172,7 @@ async function nav(fn: () => Promise<NavResult>): Promise<void> {
 }
 
 async function openPath(path: string): Promise<void> {
-  slideshow.stop(); // 打开新图片停止幻灯片
+  exitSlideshow(); // 打开新图片：退出幻灯片模式回到浏览（含停止播放）
   prefetch.clear(); // 新上下文，清空旧预解码池
   try {
     const result = await invoke<NavResult>("open_path", { path });
@@ -273,66 +275,136 @@ function buildSlideshowBar(): void {
   ui.setSlideshowPlaying(false);
 
   document.getElementById("ss-play")!.addEventListener("click", () => slideshow.toggle());
-  document.getElementById("ss-interval")!.addEventListener("change", (e) => {
-    slideshow.setInterval(Number((e.target as HTMLSelectElement).value));
+  document.getElementById("ss-play")!.innerHTML = ICONS.play;
+  document.getElementById("ss-exit")!.innerHTML = ICONS.exit;
+  document.getElementById("ss-exit")!.addEventListener("click", () => exitSlideshow());
+  // 沉浸模式（与普通工具栏 fullscreen 按钮同一功能/激活态）
+  document.getElementById("ss-fullscreen")!.innerHTML = ICONS["maximize-2"];
+  document.getElementById("ss-fullscreen")!.addEventListener("click", () => void windowState.toggleImmersive());
+
+  const intervalSel = document.getElementById("ss-interval") as HTMLSelectElement;
+  // 下拉框初始显示持久化的间隔值（否则 select 显示默认 5s 但实际可能不是）
+  const savedInterval = loadSsInterval();
+  if (savedInterval !== null) intervalSel.value = String(savedInterval);
+  intervalSel.addEventListener("change", () => {
+    const ms = Number(intervalSel.value);
+    slideshow.setInterval(ms);
+    try {
+      localStorage.setItem("ss-interval", String(ms));
+    } catch {
+      /* 忽略持久化失败 */
+    }
   });
 
   // 播放器回调
   slideshow.onAdvance = async () => {
-    let result: NavResult;
+    // IPC 超时兜底：next_image 3s 无响应按失败处理（避免 await 永久挂起杀死幻灯片）
+    let result: NavResult | null = null;
     try {
-      result = await invoke<NavResult>("next_image");
+      result = await Promise.race([
+        invoke<NavResult>("next_image"),
+        new Promise<null>((res) => setTimeout(() => res(null), 3000)),
+      ]);
     } catch (err) {
-      console.error(err);
+      console.error("幻灯片 next_image 失败:", err);
       return true; // 网络/IPC 异常不停止，下一轮重试
     }
+    if (!result) {
+      console.warn("幻灯片 next_image 超时，跳过本跳");
+      return true;
+    }
+    // 调试探针：记录每次 advance 的返回（CDP 可读）
+    (window as unknown as Record<string, unknown>).__lastAdvance = result;
     if (result.boundary === "last-image") {
-      // 播放到全局最后一张：自动停止并提醒（需求 2.4）
+      // 播放到全局最后一张：自动停止并提醒（需求 2.4），退出幻灯片模式回到浏览
       ui.showToast("已播放完所有图片");
+      exitSlideshow();
       return false;
     }
-    if (!result.state) return false; // 空模型（未打开图片）：停止空转
-    await showImage(result.state);
+    if (!result.state) {
+      console.warn("幻灯片空 state，退出");
+      exitSlideshow(); // 空模型（未打开图片）：停止空转并退出
+      return false;
+    }
+    // showImage 超时兜底：5s 未完成按成功处理（避免挂起杀死幻灯片）
+    await Promise.race([
+      showImage(result.state),
+      new Promise<void>((res) => setTimeout(res, 5000)),
+    ]);
     return true;
   };
 
   slideshow.onStateChange = (running) => {
-    ui.setSlideshowMode(running);
+    // 播放/暂停只切换播放按钮图标与工具栏激活态；**不切换模式**
+    //（暂停是真正停住，仍停留在幻灯片模式；退出模式由 exitSlideshow 显式完成）
     ui.setSlideshowPlaying(running);
     ui.setToolbarActive("slideshow", running);
-    if (!running) {
-      // 停止后恢复浮层与帧条联动
-      ui.setSlideshowProgress(0, 0);
+    if (running) {
+      // 首次进入：切换为幻灯片模式（隐藏普通浮层，仅显示控制条；
+      // 模式切换由 UI 内部同步当前位置计数到 ss-progress，此处无需重复）
+      if (slideshowMode === false) {
+        slideshowMode = true;
+        ui.setSlideshowMode(true);
+        // 幻灯片模式自动启用高等级缓存（2=前1后3）：2s 短间隔下预取须提前 ≥2 拍
+        // 才能命中（解码耗时常见 2.5s+ > 2s 间隔，蓝色前1后1 提前 1 拍总 miss）
+        // 只在首次进入时记录播放前等级（暂停→继续不覆盖，恢复仍用最初的等级）
+        slideshowPrevCacheLevel = cacheLevel;
+        if (cacheLevel !== 2) void setCacheLevel(2);
+      }
     }
+    // running=false（暂停）：保持模式、保留进度计数、保留高等级缓存——随时可继续播放
   };
+}
+
+/// 退出幻灯片模式，返回图片浏览（返回按钮 / 播放完 / 打开新图）
+function exitSlideshow(): void {
+  if (slideshowMode === false) return; // 幂等
+  slideshow.stop();
+  slideshowMode = false;
+  ui.setSlideshowMode(false); // 恢复普通浮层（内部 wake）
+  ui.setSlideshowProgress(0, 0);
+  // 恢复播放前的缓存等级。条件：播放前不是 2（说明自动启用请求可能已发出/在飞，必须 force 打回），
+  // 或播放前是 2 但播放中被人为改过（当前播放时工具栏隐藏、无快捷键，仅防御未来扩展）。
+  // 两者都不满足（播放前 2 且期间未变）则无需恢复，避免多余 invoke。
+  if (slideshowPrevCacheLevel !== null && (slideshowPrevCacheLevel !== 2 || cacheLevel !== 2)) {
+    void setCacheLevel(slideshowPrevCacheLevel, undefined, true);
+  }
+  slideshowPrevCacheLevel = null;
 }
 
 // ---------- 缓存开关（三态：关/开/高） ----------
 
-/** 切换缓存等级：0(关·白) → 1(开·蓝) → 2(高·橙) → 0 循环 */
-async function toggleCache(): Promise<void> {
-  const next = (cacheLevel + 1) % 3;
+/**
+ * 设置缓存等级：0(关·白) 1(开·蓝) 2(高·橙)
+ * - level 与当前相同时跳过（force 除外：幻灯片停止时的恢复必须强制，覆盖在飞请求）
+ * - 代次校验：invoke 返回时若期间又有新设置请求，本次结果作废（避免旧请求覆盖新状态）
+ */
+async function setCacheLevel(level: number, toast?: string, force = false): Promise<void> {
+  const lv = Math.min(2, Math.max(0, level));
+  if (!force && lv === cacheLevel) return;
+  const gen = ++cacheLevelGen;
   try {
-    await invoke<AppSettings>("set_cache_level", { level: next });
-    cacheLevel = next;
+    await invoke<AppSettings>("set_cache_level", { level: lv });
+    if (gen !== cacheLevelGen) return; // 已有更新的设置请求：本次结果作废
+    cacheLevel = lv;
     try {
-      localStorage.setItem("cache-level", String(next));
+      localStorage.setItem("cache-level", String(lv));
     } catch {
       /* 忽略持久化失败 */
     }
     syncCacheButton();
-    if (next === 0) {
-      ui.showToast("预取缓存已关闭");
-    } else if (next === 1) {
-      void refreshContext(); // 开启后立即按当前上下文预取
-      ui.showToast("预取缓存已开启");
-    } else {
-      void refreshContext(); // 高等级：前1后3
-      ui.showToast("高等级预取：前 1 后 3");
-    }
+    if (toast) ui.showToast(toast);
+    if (lv > 0) void refreshContext(); // 开启后立即按当前上下文预取
   } catch (err) {
     ui.showToast(`切换失败：${String(err)}`);
   }
+}
+
+/** 切换缓存等级：0(关·白) → 1(开·蓝) → 2(高·橙) → 0 循环 */
+async function toggleCache(): Promise<void> {
+  const next = (cacheLevel + 1) % 3;
+  const toasts = ["预取缓存已关闭", "预取缓存已开启", "高等级预取：前 1 后 3"];
+  await setCacheLevel(next, toasts[next]);
 }
 
 /** 同步缓存按钮视觉：0=白 1=蓝(active) 2=橙(level-2) */
@@ -412,6 +484,9 @@ async function init(): Promise<void> {
   bindEvents();
   buildFrameBar();
   buildSlideshowBar();
+  // 应用持久化的幻灯片间隔（buildSlideshowBar 已同步下拉框显示）
+  const savedInterval = loadSsInterval();
+  if (savedInterval !== null) slideshow.setInterval(savedInterval);
   ui.setEmpty(true);
   // 空状态初始隐藏帧条（打开图片后由 showImage 按需设置）
   ui.setFrameBarVisible(false);
@@ -449,6 +524,16 @@ async function init(): Promise<void> {
 }
 
 // ---------- 工具 ----------
+
+/** 读取持久化的幻灯片间隔（ms），无/非法返回 null（用默认 5s） */
+function loadSsInterval(): number | null {
+  try {
+    const v = Number(localStorage.getItem("ss-interval"));
+    return Number.isFinite(v) && v >= 1000 ? v : null;
+  } catch {
+    return null;
+  }
+}
 
 /** base64 字符串 → Blob（RAW JPEG / 动画帧反序列化） */
 function base64ToBlob(b64: string, mime: string): Blob {

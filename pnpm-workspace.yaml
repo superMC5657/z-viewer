@@ -1,0 +1,4 @@
+# pnpm v10：允许 esbuild 运行构建脚本（vite 依赖其二进制优化）
+# 等价于旧版 package.json 的 pnpm.onlyBuiltDependencies（pnpm 10 起移到这里）
+allowBuilds:
+  esbuild: true

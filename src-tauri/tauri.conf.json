@@ -37,15 +37,36 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "category": "Graphics & Design",
+    "category": "Graphics and Design",
     "shortDescription": "精美快速的看图软件",
     "longDescription": "毛玻璃现代 UI 的跨文件夹无缝浏览看图软件",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "SimpChinese"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUyRUJERDNDQTE5RTU0RkMKUldUOFZKNmhQTjNyVWt3WjJxRnJleU9HbjlURHR6bDJ5WlpVY0RLamxveGYvRDF0NHBjQmRna1gK",
+      "endpoints": [
+        "https://gh-proxy.com/https://github.com/superMC5657/image-viewer/releases/latest/download/latest-cn.json",
+        "https://github.com/superMC5657/image-viewer/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

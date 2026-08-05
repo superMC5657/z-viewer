@@ -87,12 +87,10 @@ body {
   transition: transform var(--t-rotate) ease-in-out;
 }
 
-/* ---- 拖拽/平移光标 ---- */
+/* ---- 拖拽光标：仅按下拖动时显示抓取（悬停保持默认箭头，
+       不因图片超出视口自动变抓手 —— 按下才反馈可拖动） ---- */
 #stage.dragging {
   cursor: grabbing;
-}
-#stage.pannable {
-  cursor: grab;
 }
 
 /* ---- 空状态 ---- */
@@ -477,19 +475,37 @@ body.immersive #info-bar {
 #slideshow-bar {
   position: fixed;
   bottom: var(--floating-margin);
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
   display: flex;
-  align-items: center;
-  gap: var(--btn-gap);
+  justify-content: center;
   padding: 6px;
   z-index: 42;
+  pointer-events: none;
+  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+}
+/* 显式作用于玻璃容器：外层 pointer-events:none → 内层 auto 恢复可点；
+   但 hidden（透明）期间内层同样禁点，避免误触底部中央控件 */
+#slideshow-bar .bar-inner {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--btn-gap);
+  padding: 6px;
+  max-width: calc(100vw - 24px);
   transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
 }
 #slideshow-bar.hidden {
   opacity: 0;
-  transform: translateX(-50%) translateY(6px);
+  transform: translateY(6px);
   pointer-events: none;
+}
+/* hidden 期间内层容器同样禁点（防透明时误触） */
+#slideshow-bar.hidden .bar-inner {
+  pointer-events: none;
+  transform: translateY(6px);
 }
 .ss-interval {
   display: flex;
@@ -528,6 +544,8 @@ body.immersive #info-bar {
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
   white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 #ss-play.active {
   color: var(--accent);

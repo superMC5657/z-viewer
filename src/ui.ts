@@ -23,9 +23,15 @@ export class UI {
   private toastText: HTMLElement;
   private tbFile: HTMLElement;
   private emptyState: HTMLElement;
+  /** 正常模式位置计数（#info-pos），幻灯片启动时复用 */
+  private infoPos: HTMLElement;
+  /** 幻灯片位置计数（#ss-progress） */
+  private ssProgress: HTMLElement;
 
   private idleTimer: number | undefined;
   private toastTimer: number | undefined;
+  /** 鼠标是否悬停在某个可见浮层上（悬停期间浮层永不闲置隐藏） */
+  private hoveringOverlay = false;
 
   constructor() {
     this.infoBar = document.getElementById("info-bar")!;
@@ -36,6 +42,24 @@ export class UI {
     this.toastText = document.getElementById("toast-text")!;
     this.tbFile = document.getElementById("tb-file")!;
     this.emptyState = document.getElementById("empty-state")!;
+    this.infoPos = document.getElementById("info-pos")!;
+    this.ssProgress = document.getElementById("ss-progress")!;
+    this.bindOverlayHover();
+  }
+
+  /** 鼠标悬停浮层不隐藏：enter 取消闲置计时，leave 重启（移出后才按闲置规则隐藏） */
+  private bindOverlayHover(): void {
+    for (const el of [this.infoBar, this.toolbar, this.frameBar, this.slideshowBar]) {
+      el.addEventListener("mouseenter", () => {
+        if (el.classList.contains("hidden")) return;
+        this.hoveringOverlay = true;
+        window.clearTimeout(this.idleTimer);
+      });
+      el.addEventListener("mouseleave", () => {
+        this.hoveringOverlay = false;
+        if (!el.classList.contains("hidden")) this.wake();
+      });
+    }
   }
 
   /** 构建工具栏 DOM（按钮定义见 icons.ts，布局按草图 3.2） */
@@ -64,10 +88,12 @@ export class UI {
     return el;
   }
 
-  /** 工具栏按钮激活态（缩放模式 / 播放中显示 accent 色） */
+  /** 工具栏按钮激活态（缩放模式 / 播放中 / 沉浸显示 accent 色）。
+   *  同时作用于普通工具栏与幻灯片控制条（如 fullscreen 按钮在两处共享激活态） */
   setToolbarActive(id: string, active: boolean): void {
-    const btn = this.toolbar.querySelector<HTMLElement>(`[data-id="${id}"]`);
-    btn?.classList.toggle("active", active);
+    const sel = `[data-id="${id}"]`;
+    this.toolbar.querySelector<HTMLElement>(sel)?.classList.toggle("active", active);
+    this.slideshowBar.querySelector<HTMLElement>(sel)?.classList.toggle("active", active);
   }
 
   /** 工具栏按钮高等级态（缓存高等级显示橙色） */
@@ -93,6 +119,9 @@ export class UI {
     setText("info-size", formatSize(state.file_size));
     setText("info-pos", state.loading ? `${state.global_index + 1}/…` : `${state.global_index + 1}/${state.global_total}`);
     setText("info-folder-name", truncateMiddle(state.folder_name, 24));
+    // 幻灯片模式（播放/暂停）下 ss-progress 与 info-pos 保持同步：
+    // showImage 开头 updateInfo 即刷新（含 loading 态），成功后再由 setSlideshowProgress 补全
+    if (this.slideshowMode) this.syncSlideshowProgressFromInfo();
   }
 
   /** 标题栏当前文件名（草图 3.1） */
@@ -144,7 +173,12 @@ export class UI {
 
   /** 进度计数：3/128（全局位置） */
   setSlideshowProgress(index: number, total: number): void {
-    document.getElementById("ss-progress")!.textContent = `${index}/${total}`;
+    this.ssProgress.textContent = `${index}/${total}`;
+  }
+
+  /** 幻灯片启动：直接复用正常模式信息条的当前位置（含加载中 `3/…` 形态） */
+  syncSlideshowProgressFromInfo(): void {
+    this.ssProgress.textContent = this.infoPos.textContent;
   }
 
   /** 幻灯片模式切换：播放时只显示控制浮条（信息条/工具栏/帧条隐藏） */
@@ -154,6 +188,9 @@ export class UI {
       this.hideAll();
       this.slideshowBar.classList.remove("hidden");
       this.slideshowBar.setAttribute("aria-hidden", "false");
+      // 切换瞬间即与正常模式信息条的当前位置匹配（复用 #info-pos 文本），
+      // 不依赖外部调用时序，保证进入模式的第一帧显示就是正确的
+      this.syncSlideshowProgressFromInfo();
       this.wake(); // 启动闲置计时
     } else {
       this.slideshowBar.classList.add("hidden");
@@ -202,17 +239,14 @@ export class UI {
   // ---------- 浮层闲置隐藏（设计语言「用完即走」） ----------
 
   /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1）
-   *  帧条与普通工具栏同步；幻灯片模式下只唤醒控制浮条 */
+   *  帧条与普通工具栏同步；幻灯片模式下只唤醒控制浮条。
+   *  鼠标悬停在浮层上（hoveringOverlay）时不设隐藏计时 —— 主动使用工具栏时不被隐藏 */
   wake(): void {
     if (this.slideshowMode) {
       // 播放中：仅控制浮条随鼠标唤醒，信息条/工具栏保持隐藏
       this.slideshowBar.classList.remove("hidden");
       this.slideshowBar.setAttribute("aria-hidden", "false");
-      window.clearTimeout(this.idleTimer);
-      this.idleTimer = window.setTimeout(() => {
-        this.slideshowBar.classList.add("hidden");
-        this.slideshowBar.setAttribute("aria-hidden", "true");
-      }, IDLE_HIDE_MS);
+      this.scheduleIdleHide(this.slideshowBar);
       return;
     }
     this.infoBar.classList.remove("hidden");
@@ -221,8 +255,19 @@ export class UI {
     this.infoBar.setAttribute("aria-hidden", "false");
     this.toolbar.setAttribute("aria-hidden", "false");
     if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "false");
+    this.scheduleIdleHide(null);
+  }
+
+  /** 排定闲置隐藏：鼠标悬停浮层时不设计时（保持显示）；否则 IDLE_HIDE_MS 后隐藏 */
+  private scheduleIdleHide(ssBar: HTMLElement | null): void {
     window.clearTimeout(this.idleTimer);
+    if (this.hoveringOverlay) return;
     this.idleTimer = window.setTimeout(() => {
+      if (this.slideshowMode && ssBar) {
+        ssBar.classList.add("hidden");
+        ssBar.setAttribute("aria-hidden", "true");
+        return;
+      }
       this.infoBar.classList.add("hidden");
       this.toolbar.classList.add("hidden");
       if (this.frameBarVisible) this.frameBar.classList.add("hidden");

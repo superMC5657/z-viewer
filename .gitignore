@@ -18,3 +18,9 @@ npm-debug.log*
 !.vscode/extensions.json
 .idea/
 .DS_Store
+
+# Environment（含签名私钥，绝不入库）
+.env
+.env.local
+
+scripts/release.sh

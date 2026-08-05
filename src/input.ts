@@ -1,6 +1,10 @@
 /**
  * 交互层：快捷键映射（《需求报告与技术方案.md》2.5）与滚轮缩放
  * 方向键翻页 / PgUp PgDn 文件夹 / 空格-幻灯片(M4) / R H V 1 0 / ↑↓ 缩放
+ *
+ * 唤醒策略：键盘控制命令（翻页/文件夹跳转/缩放/旋转/翻转）**不触发浮层弹出**
+ * —— 专注看图时不因操作打断；浮层只由鼠标移动（main.ts mousemove + 滚轮）与
+ * 模式切换命令自身的 UI 逻辑唤醒。
  */
 
 import type { FitMode, Viewer } from "./viewer";
@@ -27,32 +31,26 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
     switch (e.key) {
       case "ArrowLeft":
         e.preventDefault();
-        handlers.onWake();
         handlers.onPrev();
         break;
       case "ArrowRight":
         e.preventDefault();
-        handlers.onWake();
         handlers.onNext();
         break;
       case "PageUp":
         e.preventDefault();
-        handlers.onWake();
         handlers.onJumpFolder("prev");
         break;
       case "PageDown":
         e.preventDefault();
-        handlers.onWake();
         handlers.onJumpFolder("next");
         break;
       case "ArrowUp":
         e.preventDefault();
-        handlers.onWake();
         viewer.zoomByCenter(1.2);
         break;
       case "ArrowDown":
         e.preventDefault();
-        handlers.onWake();
         viewer.zoomByCenter(1 / 1.2);
         break;
       case "1":
@@ -64,17 +62,14 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
       case "r":
       case "R":
         e.preventDefault();
-        handlers.onWake();
         viewer.rotate(e.shiftKey ? -90 : 90);
         break;
       case "h":
       case "H":
-        handlers.onWake();
         viewer.flip("h");
         break;
       case "v":
       case "V":
-        handlers.onWake();
         viewer.flip("v");
         break;
       case "F":

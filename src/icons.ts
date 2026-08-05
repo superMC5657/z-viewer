@@ -39,6 +39,8 @@ export const ICONS: Record<string, string> = {
   // —— 幻灯片 ——
   play: svgIcon('<path d="M6 4.5v15l13-7.5Z"/>'),
   pause: svgIcon('<path d="M8 5v14" stroke-width="2.2"/><path d="M16 5v14" stroke-width="2.2"/>'),
+  /** 退出幻灯片模式，返回图片浏览 */
+  exit: svgIcon('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>'),
 
   // —— 窗口 ——
   pin: svgIcon(
