@@ -18,6 +18,7 @@ export class UI {
   private infoBar: HTMLElement;
   private toolbar: HTMLElement;
   private frameBar: HTMLElement;
+  private slideshowBar: HTMLElement;
   private toast: HTMLElement;
   private toastText: HTMLElement;
   private tbFile: HTMLElement;
@@ -30,6 +31,7 @@ export class UI {
     this.infoBar = document.getElementById("info-bar")!;
     this.toolbar = document.getElementById("toolbar")!;
     this.frameBar = document.getElementById("frame-bar")!;
+    this.slideshowBar = document.getElementById("slideshow-bar")!;
     this.toast = document.getElementById("toast")!;
     this.toastText = document.getElementById("toast-text")!;
     this.tbFile = document.getElementById("tb-file")!;
@@ -125,6 +127,35 @@ export class UI {
     document.getElementById("frame-count")!.textContent = `帧 ${index}/${total}`;
   }
 
+  // ---------- 幻灯片（草图 3.6） ----------
+
+  /** 播放/暂停按钮图标与激活态（幻灯片控制条） */
+  setSlideshowPlaying(playing: boolean): void {
+    const btn = document.getElementById("ss-play")!;
+    btn.innerHTML = playing ? ICONS.pause : ICONS.play;
+    btn.classList.toggle("active", playing);
+  }
+
+  /** 进度计数：3/128（全局位置） */
+  setSlideshowProgress(index: number, total: number): void {
+    document.getElementById("ss-progress")!.textContent = `${index}/${total}`;
+  }
+
+  /** 幻灯片模式切换：播放时只显示控制浮条（信息条/工具栏/帧条隐藏） */
+  setSlideshowMode(on: boolean): void {
+    this.slideshowMode = on;
+    if (on) {
+      this.hideAll();
+      this.slideshowBar.classList.remove("hidden");
+      this.slideshowBar.setAttribute("aria-hidden", "false");
+      this.wake(); // 启动闲置计时
+    } else {
+      this.slideshowBar.classList.add("hidden");
+      this.slideshowBar.setAttribute("aria-hidden", "true");
+      this.wake();
+    }
+  }
+
   // ---------- 边界 Toast（草图 3.4） ----------
 
   showToast(text: string): void {
@@ -154,17 +185,30 @@ export class UI {
     this.infoBar.classList.add("hidden");
     this.toolbar.classList.add("hidden");
     this.frameBar.classList.add("hidden");
+    this.slideshowBar.classList.add("hidden");
     this.infoBar.setAttribute("aria-hidden", "true");
     this.toolbar.setAttribute("aria-hidden", "true");
     this.frameBar.setAttribute("aria-hidden", "true");
+    this.slideshowBar.setAttribute("aria-hidden", "true");
     window.clearTimeout(this.idleTimer);
   }
 
   // ---------- 浮层闲置隐藏（设计语言「用完即走」） ----------
 
   /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1）
-   *  帧条与普通工具栏同步：唤醒显示、闲置 2s 一起隐藏 */
+   *  帧条与普通工具栏同步；幻灯片模式下只唤醒控制浮条 */
   wake(): void {
+    if (this.slideshowMode) {
+      // 播放中：仅控制浮条随鼠标唤醒，信息条/工具栏保持隐藏
+      this.slideshowBar.classList.remove("hidden");
+      this.slideshowBar.setAttribute("aria-hidden", "false");
+      window.clearTimeout(this.idleTimer);
+      this.idleTimer = window.setTimeout(() => {
+        this.slideshowBar.classList.add("hidden");
+        this.slideshowBar.setAttribute("aria-hidden", "true");
+      }, IDLE_HIDE_MS);
+      return;
+    }
     this.infoBar.classList.remove("hidden");
     this.toolbar.classList.remove("hidden");
     if (this.frameBarVisible) this.frameBar.classList.remove("hidden");
@@ -184,6 +228,8 @@ export class UI {
 
   /** 帧条当前是否可见（由 main.ts 随图片类型设置） */
   private frameBarVisible = false;
+  /** 幻灯片播放中（wake 只唤醒控制浮条） */
+  private slideshowMode = false;
 }
 
 function sep(): HTMLElement {

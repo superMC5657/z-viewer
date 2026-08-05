@@ -15,6 +15,7 @@ export interface InputHandlers {
   onToggleImmersive: () => void;
   onExitImmersive: () => void;
   onTogglePin: () => void;
+  onToggleSlideshow: () => void;
   onWake: () => void;
 }
 
@@ -91,6 +92,11 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
       case "T":
       case "t":
         handlers.onTogglePin();
+        break;
+      case " ":
+        // 幻灯片播放/暂停（草图 3.6）
+        e.preventDefault();
+        handlers.onToggleSlideshow();
         break;
     }
   };

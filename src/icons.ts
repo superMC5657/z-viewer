@@ -103,7 +103,7 @@ export const TOOLBAR_GROUPS: ToolbarGroup[] = [
   },
   {
     id: "slideshow",
-    items: [{ id: "slideshow", icon: "play", tip: "幻灯片播放 · 空格（M4）", enabled: false }],
+    items: [{ id: "slideshow", icon: "play", tip: "幻灯片播放 · 空格", enabled: true }],
   },
   {
     id: "window",

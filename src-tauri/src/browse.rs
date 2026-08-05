@@ -232,6 +232,25 @@ impl BrowseModel {
 
     // ---------- 状态 ----------
 
+    /// 当前图片相邻路径（跨文件夹衔接），用于预加载缓存（8.2）
+    pub fn neighbor_paths(&self) -> (Option<PathBuf>, Option<PathBuf>) {
+        let prev = if self.image_index > 0 {
+            Some(self.folders[self.folder_index].images[self.image_index - 1].clone())
+        } else if self.folder_index > 0 {
+            self.folders[self.folder_index - 1].images.last().cloned()
+        } else {
+            None
+        };
+        let next = if self.image_index + 1 < self.folders[self.folder_index].images.len() {
+            Some(self.folders[self.folder_index].images[self.image_index + 1].clone())
+        } else if self.folder_index + 1 < self.folders.len() {
+            Some(self.folders[self.folder_index + 1].images[0].clone())
+        } else {
+            None
+        };
+        (prev, next)
+    }
+
     pub fn state(&self) -> BrowseState {
         let folder = &self.folders[self.folder_index];
         let img = &folder.images[self.image_index];

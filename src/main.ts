@@ -15,6 +15,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Viewer, type FitMode } from "./viewer";
 import { UI } from "./ui";
 import { WindowState } from "./window-state";
+import { Slideshow } from "./slideshow";
 import { attachInput } from "./input";
 import { ICONS } from "./icons";
 import type { BrowseState, LoadResult, NavResult } from "./types";
@@ -29,6 +30,7 @@ const viewer = new Viewer(stage, img, frameCanvas);
 const ui = new UI();
 ui.buildToolbar({ onAction: handleToolbarAction });
 const windowState = new WindowState(getCurrentWindow(), viewer, ui);
+const slideshow = new Slideshow();
 
 // ---------- 状态 ----------
 let currentDims: { w: number; h: number } | null = null;
@@ -80,6 +82,8 @@ async function showImage(state: BrowseState): Promise<void> {
   currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
   ui.updateInfo(state, currentDims);
   ui.setFramePlaying(viewer.isPlaying);
+  // 幻灯片进度计数（播放中实时更新）
+  ui.setSlideshowProgress(state.global_index + 1, state.global_total);
 }
 
 /** 边界 Toast 文案（图片级 / 文件夹级，见《UI设计草图.md》第 6 节） */
@@ -103,10 +107,15 @@ async function nav(fn: () => Promise<NavResult>): Promise<void> {
     ui.showToast(BOUNDARY_TEXT[result.boundary] ?? "已经到边界了");
     return;
   }
-  if (result.state) await showImage(result.state);
+  if (result.state) {
+    await showImage(result.state);
+    // 手动翻页不中断幻灯片，但从当前图重置计时
+    slideshow.resetTimer();
+  }
 }
 
 async function openPath(path: string): Promise<void> {
+  slideshow.stop(); // 打开新图片停止幻灯片
   try {
     const result = await invoke<NavResult>("open_path", { path });
     if (result.state) await showImage(result.state);
@@ -167,9 +176,8 @@ function handleToolbarAction(id: string): void {
     case "fullscreen":
       void windowState.toggleImmersive();
       break;
-    // 幻灯片为 M4 功能，先给出提示
     case "slideshow":
-      ui.showToast("该功能将在后续版本提供");
+      slideshow.toggle();
       break;
   }
 }
@@ -200,6 +208,45 @@ function buildFrameBar(): void {
   viewer.onFrameChange = (index, total) => ui.updateFrameCount(index, total);
 }
 
+// ---------- 幻灯片（草图 3.6） ----------
+
+function buildSlideshowBar(): void {
+  ui.setSlideshowPlaying(false);
+
+  document.getElementById("ss-play")!.addEventListener("click", () => slideshow.toggle());
+  document.getElementById("ss-interval")!.addEventListener("change", (e) => {
+    slideshow.setInterval(Number((e.target as HTMLSelectElement).value));
+  });
+
+  // 播放器回调
+  slideshow.onAdvance = async () => {
+    let result: NavResult;
+    try {
+      result = await invoke<NavResult>("next_image");
+    } catch (err) {
+      console.error(err);
+      return true; // 网络/IPC 异常不停止，下一轮重试
+    }
+    if (result.boundary === "last-image") {
+      // 播放到全局最后一张：自动停止并提醒（需求 2.4）
+      ui.showToast("已播放完所有图片");
+      return false;
+    }
+    if (result.state) await showImage(result.state);
+    return true;
+  };
+
+  slideshow.onStateChange = (running) => {
+    ui.setSlideshowMode(running);
+    ui.setSlideshowPlaying(running);
+    ui.setToolbarActive("slideshow", running);
+    if (!running) {
+      // 停止后恢复浮层与帧条联动
+      ui.setSlideshowProgress(0, 0);
+    }
+  };
+}
+
 // ---------- 事件装配 ----------
 
 function bindEvents(): void {
@@ -221,6 +268,7 @@ function bindEvents(): void {
     onToggleImmersive: () => void windowState.toggleImmersive(),
     onExitImmersive: () => void windowState.exitImmersive(),
     onTogglePin: () => void windowState.togglePin(),
+    onToggleSlideshow: () => slideshow.toggle(),
     onWake: () => ui.wake(),
   });
 
@@ -265,6 +313,7 @@ function bindEvents(): void {
 async function init(): Promise<void> {
   bindEvents();
   buildFrameBar();
+  buildSlideshowBar();
   ui.setEmpty(true);
   // 空状态初始隐藏帧条（打开图片后由 showImage 按需设置）
   ui.setFrameBarVisible(false);

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod browse;
+mod cache;
 mod commands;
 mod decode;
 
@@ -9,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use browse::BrowseModel;
+use cache::DecodeCache;
 use commands::AppState;
 use tauri::Manager;
 
@@ -55,6 +57,7 @@ fn startup_image_path() -> Option<String> {
 fn main() {
     tauri::Builder::default()
         .manage(AppState(Mutex::new(None)))
+        .manage(DecodeCache::new(8))
         .setup(|app| {
             // 双击图片打开 / 命令行传参（文件或目录）：初始化浏览模型
             if let Some(path) = startup_image_path() {

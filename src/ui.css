@@ -465,6 +465,68 @@ body.immersive #info-bar {
 }
 
 /* ============================================================
+   幻灯片控制浮条（草图 3.6：播放中鼠标移动显示）
+   ============================================================ */
+#slideshow-bar {
+  position: fixed;
+  bottom: var(--floating-margin);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--btn-gap);
+  padding: 6px;
+  z-index: 42;
+  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+}
+#slideshow-bar.hidden {
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px);
+  pointer-events: none;
+}
+.ss-interval {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ss-interval select {
+  appearance: none;
+  -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 18px 2px 8px;
+  cursor: default;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23ffffff99' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 6px center;
+}
+.ss-interval select:hover {
+  background-color: rgba(255, 255, 255, 0.14);
+}
+.ss-interval select option {
+  background: #1c1c1e;
+  color: var(--text-primary);
+}
+.ss-progress {
+  padding: 0 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+#ss-play.active {
+  color: var(--accent);
+}
+
+/* ============================================================
    边界提醒 Toast（草图 3.4）
    ============================================================ */
 #toast {

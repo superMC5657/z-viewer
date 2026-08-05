@@ -1,11 +1,12 @@
 //! Tauri IPC commands：前端浏览逻辑的桥梁
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::State;
 
 use crate::browse::{Boundary, BrowseModel, BrowseState, FolderTarget};
+use crate::cache::DecodeCache;
 
 /// 全局浏览模型（Mutex：Tauri 命令在独立线程执行）
 pub struct AppState(pub Mutex<Option<BrowseModel>>);
@@ -53,9 +54,33 @@ fn nav_ok_or_none(model: &mut BrowseModel, nav: crate::browse::Nav) -> NavResult
     }
 }
 
+/// 导航成功后后台预取相邻图片（前1后1，跨文件夹），填充解码缓存（8.2）
+/// 仅缓存 RAW/动画（asset 通道由 WebView 自身缓存）；失败静默忽略
+fn prefetch_neighbors(model: &BrowseModel, cache: &DecodeCache) {
+    let (prev, next) = model.neighbor_paths();
+    for p in [prev, next].into_iter().flatten() {
+        let path = p.to_string_lossy().to_string();
+        if cache.get(&path).is_some() {
+            continue;
+        }
+        let cache = cache.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Ok(result) = crate::decode::load_image(&path) {
+                if result.mode != "asset" {
+                    cache.put(path, Arc::new(result));
+                }
+            }
+        });
+    }
+}
+
 /// 打开指定路径（拖拽/命令行）：文件定位到浏览模型，目录取其首张图片
 #[tauri::command]
-pub fn open_path(state: State<'_, AppState>, path: String) -> Result<NavResult, String> {
+pub fn open_path(
+    state: State<'_, AppState>,
+    cache: State<'_, DecodeCache>,
+    path: String,
+) -> Result<NavResult, String> {
     let p = Path::new(&path);
     let model = if p.is_dir() {
         BrowseModel::open_first_in_dir(p)
@@ -64,29 +89,44 @@ pub fn open_path(state: State<'_, AppState>, path: String) -> Result<NavResult, 
     };
     let model = model.ok_or_else(|| "无法打开：不是支持的图片格式".to_string())?;
     let st = model.state();
+    prefetch_neighbors(&model, cache.inner());
     *state.0.lock().map_err(|e| e.to_string())? = Some(model);
     Ok(NavResult::ok(st))
 }
 
 #[tauri::command]
-pub fn next_image(state: State<'_, AppState>) -> Result<NavResult, String> {
+pub fn next_image(
+    state: State<'_, AppState>,
+    cache: State<'_, DecodeCache>,
+) -> Result<NavResult, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     match guard.as_mut() {
         Some(m) => {
             let nav = m.next();
-            Ok(nav_ok_or_none(m, nav))
+            let r = nav_ok_or_none(m, nav);
+            if r.state.is_some() {
+                prefetch_neighbors(m, cache.inner());
+            }
+            Ok(r)
         }
         None => Ok(NavResult::none()),
     }
 }
 
 #[tauri::command]
-pub fn prev_image(state: State<'_, AppState>) -> Result<NavResult, String> {
+pub fn prev_image(
+    state: State<'_, AppState>,
+    cache: State<'_, DecodeCache>,
+) -> Result<NavResult, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
     match guard.as_mut() {
         Some(m) => {
             let nav = m.prev();
-            Ok(nav_ok_or_none(m, nav))
+            let r = nav_ok_or_none(m, nav);
+            if r.state.is_some() {
+                prefetch_neighbors(m, cache.inner());
+            }
+            Ok(r)
         }
         None => Ok(NavResult::none()),
     }
@@ -94,7 +134,11 @@ pub fn prev_image(state: State<'_, AppState>) -> Result<NavResult, String> {
 
 /// 文件夹级跳转：target ∈ "first" | "prev" | "next" | "last"
 #[tauri::command]
-pub fn jump_folder(state: State<'_, AppState>, target: String) -> Result<NavResult, String> {
+pub fn jump_folder(
+    state: State<'_, AppState>,
+    cache: State<'_, DecodeCache>,
+    target: String,
+) -> Result<NavResult, String> {
     let t = match target.as_str() {
         "first" => FolderTarget::First,
         "prev" => FolderTarget::Prev,
@@ -106,7 +150,11 @@ pub fn jump_folder(state: State<'_, AppState>, target: String) -> Result<NavResu
     match guard.as_mut() {
         Some(m) => {
             let nav = m.jump_folder(t);
-            Ok(nav_ok_or_none(m, nav))
+            let r = nav_ok_or_none(m, nav);
+            if r.state.is_some() {
+                prefetch_neighbors(m, cache.inner());
+            }
+            Ok(r)
         }
         None => Ok(NavResult::none()),
     }
@@ -119,10 +167,16 @@ pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
 }
 
 /// 图片加载通道分发：常见格式 → asset（前端直读）；RAW → 解码 JPEG；动画 → 帧序列
-/// spawn_blocking：RAW 解码为 CPU 密集任务，避免占用 async runtime 线程
+/// 命中缓存直接返回（≤50ms 目标）；spawn_blocking 避免 CPU 密集解码占用 runtime 线程
 #[tauri::command]
-pub async fn load_image(path: String) -> Result<crate::decode::LoadResult, String> {
-    tauri::async_runtime::spawn_blocking(move || crate::decode::load_image(&path))
+pub async fn load_image(path: String, cache: State<'_, DecodeCache>) -> Result<crate::decode::LoadResult, String> {
+    if let Some(hit) = cache.get(&path) {
+        return Ok((*hit).clone());
+    }
+    let path2 = path.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || crate::decode::load_image(&path2))
         .await
-        .map_err(|e| format!("解码任务失败: {e}"))?
+        .map_err(|e| format!("解码任务失败: {e}"))??;
+    cache.put(path, Arc::new(result.clone()));
+    Ok(result)
 }
