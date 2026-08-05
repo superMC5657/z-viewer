@@ -1,0 +1,19 @@
+[package]
+name = "image-viewer"
+version = "0.1.0"
+description = "精美快速的看图软件"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+natord = "1.0.9"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
