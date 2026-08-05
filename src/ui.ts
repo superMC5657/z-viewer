@@ -68,6 +68,16 @@ export class UI {
     btn?.classList.toggle("active", active);
   }
 
+  /** 缩放模式按钮：适应窗口在纯 fit 态激活（accent），否则置灰（仍可点击恢复）；1:1 在 actual 态激活 */
+  setZoomButtons(fit: boolean, actual: boolean): void {
+    const fitBtn = this.toolbar.querySelector<HTMLElement>('[data-id="zoom-fit"]');
+    const actualBtn = this.toolbar.querySelector<HTMLElement>('[data-id="zoom-actual"]');
+    fitBtn?.classList.toggle("active", fit);
+    fitBtn?.classList.toggle("dimmed", !fit);
+    actualBtn?.classList.toggle("active", actual);
+    actualBtn?.classList.remove("dimmed");
+  }
+
   /** 更新顶部信息条（草图 3.3） */
   updateInfo(state: BrowseState, dims: { w: number; h: number } | null): void {
     setText("info-file", truncateMiddle(state.file_name, FILENAME_MAX));

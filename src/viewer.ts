@@ -63,6 +63,8 @@ export class Viewer {
 
   /** 帧变化回调（index 从 1 开始） */
   onFrameChange: ((index: number, total: number) => void) | null = null;
+  /** 变换状态变化回调（缩放/模式/旋转/加载后触发，用于同步按钮状态） */
+  onStateChange: (() => void) | null = null;
 
   constructor(stage: HTMLElement, img: HTMLImageElement, canvas: HTMLCanvasElement) {
     this.stage = stage;
@@ -79,6 +81,11 @@ export class Viewer {
 
   get mode(): FitMode {
     return this.fitMode;
+  }
+
+  /** 是否处于「纯适应窗口」状态（fit 模式且用户未手动缩放） */
+  get isFit(): boolean {
+    return this.fitMode === "fit" && this.userScale === 1;
   }
 
   get currentScale(): number {
@@ -146,6 +153,7 @@ export class Viewer {
     this.fit();
     this.canvas.classList.add("visible");
     this.play();
+    this.onStateChange?.();
   }
 
   /** 切换沉浸模式：fit 避让高度变化后重新布局（全屏动画后窗口尺寸才稳定，下一帧再校准一次） */
@@ -169,7 +177,8 @@ export class Viewer {
   // ---------- 变换操作 ----------
 
   setMode(mode: FitMode): void {
-    if (this.fitMode === mode) return;
+    // 无 early return：fit 模式下手动缩放后（fitMode 仍为 "fit"），
+    // 点击适应窗口必须重置 userScale 回到纯 fit 状态
     this.fitMode = mode;
     this.userScale = 1;
     if (mode === "actual") {
@@ -177,6 +186,7 @@ export class Viewer {
     } else {
       this.fit();
     }
+    this.onStateChange?.();
   }
 
   rotate(delta: number): void {
@@ -208,6 +218,7 @@ export class Viewer {
     this.userScale = s1 / this.baseScale;
     this.apply();
     this.updatePanState();
+    this.onStateChange?.();
   }
 
   /** 键盘缩放：以图片中心为锚点 */
@@ -341,6 +352,7 @@ export class Viewer {
     this.fit();
     this.img.classList.add("visible");
     p.resolve();
+    this.onStateChange?.();
   }
 
   private handleError(): void {

@@ -117,10 +117,14 @@ async function openPath(path: string): Promise<void> {
 
 // ---------- 缩放模式（同步按钮激活态） ----------
 
+/** 同步缩放按钮状态：适应窗口仅纯 fit 时激活，手动缩放后置灰 */
+function syncZoomButtons(): void {
+  ui.setZoomButtons(viewer.isFit, viewer.mode === "actual");
+}
+
 function setFitMode(mode: FitMode): void {
   viewer.setMode(mode);
-  ui.setToolbarActive("zoom-actual", viewer.mode === "actual");
-  ui.setToolbarActive("zoom-fit", viewer.mode === "fit");
+  syncZoomButtons();
 }
 
 // ---------- 工具栏动作 ----------
@@ -199,6 +203,9 @@ function buildFrameBar(): void {
 // ---------- 事件装配 ----------
 
 function bindEvents(): void {
+  // 变换状态变化时同步缩放按钮（滚轮/键盘缩放、模式切换、图片加载后）
+  viewer.onStateChange = syncZoomButtons;
+
   // 标题栏窗口控制
   const appWindow = getCurrentWindow();
   document.getElementById("btn-minimize")!.addEventListener("click", () => void appWindow.minimize());
@@ -258,10 +265,10 @@ function bindEvents(): void {
 async function init(): Promise<void> {
   bindEvents();
   buildFrameBar();
-  ui.setToolbarActive("zoom-fit", true); // 默认适应窗口
   ui.setEmpty(true);
   // 空状态初始隐藏帧条（打开图片后由 showImage 按需设置）
   ui.setFrameBarVisible(false);
+  syncZoomButtons(); // 初始：适应窗口激活
 
   try {
     // 命令行 / 双击打开：Rust 端已注入浏览模型

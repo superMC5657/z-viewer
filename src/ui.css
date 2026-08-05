@@ -380,6 +380,14 @@ body.immersive #info-bar {
 .tb-btn-icon.disabled:hover {
   background: transparent;
 }
+/* 置灰：当前不满足该状态（如手动缩放后「适应窗口」），悬停提亮表示仍可点击 */
+.tb-btn-icon.dimmed {
+  opacity: 0.45;
+}
+.tb-btn-icon.dimmed:hover {
+  opacity: 0.85;
+  background: var(--btn-hover);
+}
 .tb-btn-icon.active {
   color: var(--accent);
 }
