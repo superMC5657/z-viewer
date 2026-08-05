@@ -269,6 +269,10 @@ function bindEvents(): void {
 
   // 标题栏窗口控制
   const appWindow = getCurrentWindow();
+  // 注入窗口控制图标（HTML 中按钮为空，图标在此填充）
+  document.getElementById("btn-minimize")!.innerHTML = ICONS.minus;
+  document.getElementById("btn-maximize")!.innerHTML = ICONS.square;
+  document.getElementById("btn-close")!.innerHTML = ICONS.close;
   document.getElementById("btn-minimize")!.addEventListener("click", () => void appWindow.minimize());
   document.getElementById("btn-maximize")!.addEventListener("click", () => void appWindow.toggleMaximize());
   document.getElementById("btn-close")!.addEventListener("click", () => void appWindow.close());
