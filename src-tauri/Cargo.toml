@@ -16,7 +16,31 @@ rawler = "0.7"
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp"] }
 base64 = "0.22"
 
+# ============================================================
+# 编译优化
+# ============================================================
+
+# dev（调试）构建加速与运行提速：
+# - opt-level=1：主 crate 基础优化，rawler 解码等 CPU 密集代码明显提速
+# - debug=false：不产调试信息，增量编译/链接更快（仍可断点，只是无变量名）
+# - split-debuginfo=unpacked：Windows/MSVC 下避免链接 pdb 瓶颈
+[profile.dev]
+opt-level = 1
+debug = false
+split-debuginfo = "unpacked"
+
+# 依赖一律全速优化（dev 下 rawler 解码可慢 5-10 倍，这里换回接近 release 的速度）
+[profile.dev.package."*"]
+opt-level = 3
+
+# 构建脚本（build.rs / proc-macro）不优化，加快依赖图构建
+[profile.dev.build-override]
+opt-level = 0
+debug = false
+
+# release 保持最小体积 + 全链路优化
 [profile.release]
 strip = true
 lto = true
 codegen-units = 1
+panic = "abort"

@@ -1,0 +1,11 @@
+# 构建优化配置
+#
+# - incremental：增量编译（默认 debug 已开，显式声明）
+# - target-dir 由环境变量或默认即可，不在此固定
+# - jobserver 默认自动
+[build]
+incremental = true
+
+# 提高并行编译核数上限（默认 = 逻辑核数；大依赖树时略提升）
+[term]
+verbose = false
