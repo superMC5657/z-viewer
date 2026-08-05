@@ -260,6 +260,8 @@ async function init(): Promise<void> {
   buildFrameBar();
   ui.setToolbarActive("zoom-fit", true); // 默认适应窗口
   ui.setEmpty(true);
+  // 空状态初始隐藏帧条（打开图片后由 showImage 按需设置）
+  ui.setFrameBarVisible(false);
 
   try {
     // 命令行 / 双击打开：Rust 端已注入浏览模型
