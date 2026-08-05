@@ -377,7 +377,10 @@ export class Viewer {
 
   private handleLoad(): void {
     if (!this.pending || this.pending.seq !== this.loadSeq) return; // 已被更新的加载抢占
-    this.pending = null;
+    // 注意：此处不能先清 this.pending —— handleDecoded 内部会
+    // pending.resolve()（resolve loadStatic 的 Promise）再置 null。
+    // 若提前清空，快图的 load 事件会丢失 resolve，loadStatic 挂起，
+    // 幻灯片/切图只能靠外层 5s 兜底，2s 间隔形同虚设。
     this.handleDecoded(this.loadSeq);
   }
 

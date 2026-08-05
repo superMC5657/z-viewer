@@ -14,6 +14,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Viewer, type FitMode } from "./viewer";
+import { feLog } from "./logger";
 import { UI } from "./ui";
 import { WindowState } from "./window-state";
 import { Slideshow } from "./slideshow";
@@ -54,6 +55,7 @@ let showSeq = 0;
 
 async function showImage(state: BrowseState): Promise<void> {
   const seq = ++showSeq;
+  feLog(`显示图片: ${state.file_name} (${state.folder_name}) [${state.global_index + 1}/${state.global_total}]`);
   ui.setEmpty(false);
   ui.updateTitleFile(state.file_name);
   ui.updateInfo(state, null);
@@ -306,13 +308,16 @@ function buildSlideshowBar(): void {
         new Promise<null>((res) => setTimeout(() => res(null), 3000)),
       ]);
     } catch (err) {
+      feLog(`幻灯片跳转 IPC 失败: ${String(err)}`);
       console.error("幻灯片 next_image 失败:", err);
       return true; // 网络/IPC 异常不停止，下一轮重试
     }
     if (!result) {
+      feLog("幻灯片跳转超时（3s 无响应），跳过本跳");
       console.warn("幻灯片 next_image 超时，跳过本跳");
       return true;
     }
+    feLog(`幻灯片跳转完成: boundary=${result.boundary ?? "无"} 下一张=${result.state?.file_name ?? "无"}`);
     // 调试探针：记录每次 advance 的返回（CDP 可读）
     (window as unknown as Record<string, unknown>).__lastAdvance = result;
     if (result.boundary === "last-image") {
@@ -337,6 +342,7 @@ function buildSlideshowBar(): void {
   slideshow.onStateChange = (running) => {
     // 播放/暂停只切换播放按钮图标与工具栏激活态；**不切换模式**
     //（暂停是真正停住，仍停留在幻灯片模式；退出模式由 exitSlideshow 显式完成）
+    feLog(`幻灯片 onStateChange: running=${running}, slideshowMode=${slideshowMode}`);
     ui.setSlideshowPlaying(running);
     ui.setToolbarActive("slideshow", running);
     if (running) {
@@ -359,6 +365,7 @@ function buildSlideshowBar(): void {
 /// 退出幻灯片模式，返回图片浏览（返回按钮 / 播放完 / 打开新图）
 function exitSlideshow(): void {
   if (slideshowMode === false) return; // 幂等
+  feLog("exitSlideshow: 退出幻灯片模式");
   slideshow.stop();
   slideshowMode = false;
   ui.setSlideshowMode(false); // 恢复普通浮层（内部 wake）

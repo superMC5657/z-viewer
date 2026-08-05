@@ -21,6 +21,7 @@ use crate::cache::{DecodeCache, FolderFirstCache};
 
 pub use settings::AppSettings;
 
+use crate::dev_log;
 use prefetch::{prefetch_context, prefetch_folder_firsts, promote_folder_first};
 
 /// 后台扫描完成事件（携带最新 BrowseState，前端刷新位置计数）
@@ -143,7 +144,16 @@ pub fn next_image(
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
 ) -> Result<NavResult, String> {
-    navigate(state.inner(), cache.inner(), first_cache.inner(), settings.inner(), |m| m.next())
+    let r = navigate(state.inner(), cache.inner(), first_cache.inner(), settings.inner(), |m| m.next());
+    // 仅幻灯片自动播放使用的 next_image 打印跳转日志（手动 prev/next/jump_folder 不打）
+    if let Ok(result) = &r {
+        if let Some(st) = &result.state {
+            dev_log!("next_image 跳转: {} [{}] ({}/{})", st.file_name, st.folder_name, st.global_index + 1, st.global_total);
+        } else if let Some(b) = &result.boundary {
+            dev_log!("next_image 边界: {}", b);
+        }
+    }
+    r
 }
 
 #[tauri::command]

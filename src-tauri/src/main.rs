@@ -5,6 +5,7 @@ mod browse;
 mod cache;
 mod commands;
 mod decode;
+mod logger;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

@@ -1,6 +1,6 @@
 [package]
 name = "image-viewer"
-version = "0.2.0"
+version = "0.2.1"
 description = "精美快速的看图软件"
 edition = "2021"
 
@@ -16,6 +16,7 @@ natord = "1.0.9"
 rawler = "0.7"
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp"] }
 base64 = "0.22"
+chrono = "0.4"
 
 # ============================================================
 # 编译优化
