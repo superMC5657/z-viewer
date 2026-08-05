@@ -89,16 +89,15 @@ export class UI {
 
   // ---------- 帧控制浮条（草图 3.7） ----------
 
-  /** 帧条显隐（仅动画图片且浮层可见时显示） */
+  /** 帧条显隐：动画图片期间常驻显示（不随闲置隐藏），仅沉浸模式隐藏 */
   setFrameBarVisible(visible: boolean): void {
     this.frameBarVisible = visible;
-    if (!visible) {
-      this.frameBar.classList.add("hidden");
-      this.frameBar.setAttribute("aria-hidden", "true");
-    } else if (!this.infoBar.classList.contains("hidden")) {
-      // 浮层当前可见时同步显示
+    if (visible) {
       this.frameBar.classList.remove("hidden");
       this.frameBar.setAttribute("aria-hidden", "false");
+    } else {
+      this.frameBar.classList.add("hidden");
+      this.frameBar.setAttribute("aria-hidden", "true");
     }
   }
 
@@ -134,6 +133,11 @@ export class UI {
       this.hideAll();
     } else {
       this.wake();
+      // 动画图片的帧条常驻，退出沉浸后恢复显示
+      if (this.frameBarVisible) {
+        this.frameBar.classList.remove("hidden");
+        this.frameBar.setAttribute("aria-hidden", "false");
+      }
     }
   }
 
@@ -150,22 +154,19 @@ export class UI {
 
   // ---------- 浮层闲置隐藏（设计语言「用完即走」） ----------
 
-  /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1） */
+  /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1）
+   *  帧条在动画图片期间常驻，不参与闲置隐藏 */
   wake(): void {
     this.infoBar.classList.remove("hidden");
     this.toolbar.classList.remove("hidden");
-    if (this.frameBarVisible) this.frameBar.classList.remove("hidden");
     this.infoBar.setAttribute("aria-hidden", "false");
     this.toolbar.setAttribute("aria-hidden", "false");
-    if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "false");
     window.clearTimeout(this.idleTimer);
     this.idleTimer = window.setTimeout(() => {
       this.infoBar.classList.add("hidden");
       this.toolbar.classList.add("hidden");
-      if (this.frameBarVisible) this.frameBar.classList.add("hidden");
       this.infoBar.setAttribute("aria-hidden", "true");
       this.toolbar.setAttribute("aria-hidden", "true");
-      if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "true");
     }, IDLE_HIDE_MS);
   }
 
