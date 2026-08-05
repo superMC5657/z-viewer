@@ -120,9 +120,26 @@ export class Viewer {
     this.img.classList.remove("visible");
     return new Promise((resolve, reject) => {
       this.pending = { resolve, reject, seq };
-      // 先清除 src 再赋值：同路径重复打开时也能触发 load 事件
-      this.img.removeAttribute("src");
-      this.img.src = url;
+      // 同 URL 不清空 src：保留浏览器已解码的位图缓存，切回时零解码
+      if (this.img.getAttribute("src") !== url) {
+        this.img.removeAttribute("src");
+        this.img.src = url;
+      } else {
+        // 同 URL：解码缓存应已就绪，显式等待解码完成（已解码则立即 resolve）
+        this.img
+          .decode()
+          .then(() => {
+            if (this.pending?.seq === seq) {
+              this.pending = null;
+              this.handleDecoded(seq);
+              resolve();
+            }
+          })
+          .catch(() => {
+            // decode 失败（如已卸载）：重设 src 走正常 load
+            this.img.src = url;
+          });
+      }
     });
   }
 
@@ -349,14 +366,20 @@ export class Viewer {
 
   private handleLoad(): void {
     if (!this.pending || this.pending.seq !== this.loadSeq) return; // 已被更新的加载抢占
-    const p = this.pending;
     this.pending = null;
+    this.handleDecoded(this.loadSeq);
+  }
+
+  /** 解码完成公共处理：记录尺寸、fit、显示、resolve */
+  private handleDecoded(seq: number): void {
+    if (seq !== this.loadSeq) return;
     this.naturalW = this.img.naturalWidth;
     this.naturalH = this.img.naturalHeight;
     this.loaded = true;
     this.fit();
     this.img.classList.add("visible");
-    p.resolve();
+    this.pending?.resolve();
+    this.pending = null;
     this.onStateChange?.();
   }
 

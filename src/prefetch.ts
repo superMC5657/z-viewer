@@ -1,8 +1,9 @@
 /**
  * 前端预解码池（方案四：WebView2 层面预解码 DOM）
  *
- * asset 通道图片（jpg/bmp/ico/svg 等浏览器原生解码）提前用隐藏 <img> 加载，
- * 让 WebView2 预解码缓存；切图时 convertFileSrc 同一 URL 命中缓存瞬时显示。
+ * asset 通道图片（jpg/bmp/ico/svg 等浏览器原生解码）提前用隐藏 <img>
+ * 加载并 decode()，让 WebView2 保留已解码位图（同 URL 二次加载实测
+ * 0ms）；切图时 loadStatic 同 URL 走 decode() 分支 → 零解码瞬时显示。
  * 隐藏 img 不挂载 DOM（无布局/渲染开销），仅占解码缓存。
  */
 
@@ -26,7 +27,11 @@ export class PrefetchPool {
       img.dataset.path = p;
       img.decoding = "async";
       this.loading.add(p);
-      img.onload = () => this.loading.delete(p);
+      img.onload = () => {
+        // 解码完成后显式 decode()，确保位图真正进入渲染进程缓存
+        img.decode().catch(() => undefined);
+        this.loading.delete(p);
+      };
       img.onerror = () => this.loading.delete(p);
       img.src = url;
       this.imgs.push(img);
@@ -57,4 +62,3 @@ export class PrefetchPool {
     this.loading.clear();
   }
 }
-
