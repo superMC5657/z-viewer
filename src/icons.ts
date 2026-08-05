@@ -89,8 +89,8 @@ export const TOOLBAR_GROUPS: ToolbarGroup[] = [
   {
     id: "rotate",
     items: [
-      { id: "rotate-cw", icon: "rotate-cw", tip: "右旋 90° · R", enabled: true },
       { id: "rotate-ccw", icon: "rotate-ccw", tip: "左旋 90° · Shift+R", enabled: true },
+      { id: "rotate-cw", icon: "rotate-cw", tip: "右旋 90° · R", enabled: true },
     ],
   },
   {
