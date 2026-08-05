@@ -3,10 +3,13 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::browse::{Boundary, BrowseModel, BrowseState, FolderTarget};
 use crate::cache::DecodeCache;
+
+/// 后台扫描完成事件（携带最新 BrowseState，前端刷新位置计数）
+pub const BROWSE_SCAN_READY: &str = "browse://scan-ready";
 
 /// 全局浏览模型（Mutex：Tauri 命令在独立线程执行）
 pub struct AppState(pub Mutex<Option<BrowseModel>>);
@@ -78,17 +81,23 @@ fn prefetch_neighbors(model: &BrowseModel, cache: &DecodeCache) {
 }
 
 /// 打开指定路径（拖拽/命令行）：文件定位到浏览模型，目录取其首张图片
+/// 首图立即返回；兄弟文件夹后台枚举完成后 emit 事件供前端刷新计数
 #[tauri::command]
 pub fn open_path(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     cache: State<'_, DecodeCache>,
     path: String,
 ) -> Result<NavResult, String> {
     let p = Path::new(&path);
+    let app2 = app.clone();
+    let on_ready = Some(Box::new(move |st: BrowseState| {
+        let _ = app2.emit(BROWSE_SCAN_READY, st);
+    }) as crate::browse::OnReady);
     let model = if p.is_dir() {
-        BrowseModel::open_first_in_dir(p)
+        BrowseModel::open_first_in_dir(p, on_ready)
     } else {
-        BrowseModel::open(p)
+        BrowseModel::open(p, on_ready)
     };
     let model = model.ok_or_else(|| "无法打开：不是支持的图片格式".to_string())?;
     let st = model.state();

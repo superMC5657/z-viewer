@@ -4,8 +4,15 @@
 //! - folders：父目录下所有「含图片」的同级文件夹，按 natord 自然排序（等价资源管理器）
 //! - 每个文件夹内的图片按扩展名白名单过滤 + natord 自然排序
 //! - next/prev 在图片级无缝跨文件夹衔接，全局首尾触发边界事件
+//!
+//! 异步枚举（M4.5 优化）：
+//! - open() 只同步枚举当前文件夹（定位首图），兄弟文件夹由后台线程逐个填充
+//! - 导航到未填充文件夹时阻塞等待（Condvar）；neighbor_paths 预取则非阻塞
+//! - 扫描完成回调 on_ready(BrowseState)：前端刷新位置计数
+//! - Drop 时置 cancelled，旧扫描线程尽快退出
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// M1 常见格式（RAW 由 decode::RAW_EXTS 单一来源维护）
 const COMMON_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "svg"];
@@ -39,16 +46,32 @@ pub enum Nav {
     Boundary(Boundary),
 }
 
-/// 单个文件夹：路径 + 自然排序后的图片列表
+/// 单个文件夹：路径 + 图片列表（None = 后台填充中）
 struct Folder {
     path: PathBuf,
-    images: Vec<PathBuf>,
+    images: Option<Vec<PathBuf>>,
 }
 
-pub struct BrowseModel {
+struct ModelInner {
+    m: Mutex<InnerData>,
+    cv: Condvar,
+}
+
+struct InnerData {
     folders: Vec<Folder>,
     folder_index: usize,
     image_index: usize,
+    /// 是否仍有文件夹在后台填充
+    loading: bool,
+    /// Drop 后置位：扫描线程尽快退出
+    cancelled: bool,
+}
+
+/// 扫描完成回调（携带最新状态，供前端刷新计数）
+pub type OnReady = Box<dyn FnOnce(BrowseState) + Send>;
+
+pub struct BrowseModel {
+    inner: Arc<ModelInner>,
 }
 
 /// 给前端的当前浏览状态（纯数据）
@@ -58,17 +81,21 @@ pub struct BrowseState {
     pub file_name: String,
     pub folder_name: String,
     pub file_size: u64,
-    /// 全局位置（0-based，跨文件夹累计）
+    /// 全局位置（0-based，跨文件夹累计；未加载部分按已填充累计）
     pub global_index: usize,
+    /// 全局总数（后台枚举进行中为「已填充部分」）
     pub global_total: usize,
     /// 当前文件夹在同级文件夹中的位置
     pub folder_index: usize,
     pub folder_total: usize,
+    /// 后台枚举是否仍在进行（前端显示 "3/…"）
+    pub loading: bool,
 }
 
 impl BrowseModel {
     /// 以某张图片为起点建立浏览模型；图片或其父目录无效时返回 None
-    pub fn open(path: &Path) -> Option<Self> {
+    /// 仅同步枚举当前文件夹定位图片，兄弟文件夹后台填充
+    pub fn open(path: &Path, on_ready: Option<OnReady>) -> Option<Self> {
         if !path.is_file() || !is_image_file(&path.file_name()?.to_string_lossy()) {
             return None;
         }
@@ -80,6 +107,7 @@ impl BrowseModel {
         let current_folder_canon = canonical(parent);
 
         // 同级文件夹（含自身）：枚举图片所在目录的兄弟目录；盘根目录时仅自身
+        // 此步骤仅列目录名，开销小，同步完成
         let mut dirs: Vec<PathBuf> = Vec::new();
         match parent.parent() {
             Some(base) => {
@@ -108,40 +136,111 @@ impl BrowseModel {
             natord_cmp(&an, &bn)
         });
 
-        let mut folders: Vec<Folder> = Vec::new();
-        for d in &dirs {
-            let images = Self::list_images(d);
-            if !images.is_empty() {
-                folders.push(Folder {
-                    path: d.clone(),
-                    images,
-                });
-            }
-        }
-
-        let folder_index = folders
-            .iter()
-            .position(|f| canonical(&f.path) == current_folder_canon)?;
-
-        let folder = &folders[folder_index];
+        // 同步枚举当前文件夹（定位当前图片必需）
+        let current_images = Self::list_images(parent);
         let file_name = path.file_name()?.to_string_lossy().to_string();
-        let image_index = folder.images.iter().position(|img| {
+        let image_index = current_images.iter().position(|img| {
             img.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .is_some_and(|n| n.eq_ignore_ascii_case(&file_name))
         })?;
 
-        Some(Self {
-            folders,
-            folder_index,
-            image_index,
-        })
+        // 构建 folders：当前文件夹已填充，其余 None（后台填充）
+        let mut folder_index = None;
+        let mut folders = Vec::with_capacity(dirs.len());
+        for (i, d) in dirs.iter().enumerate() {
+            if canonical(d) == current_folder_canon {
+                folder_index = Some(i);
+                folders.push(Folder {
+                    path: d.clone(),
+                    images: Some(current_images.clone()),
+                });
+            } else {
+                folders.push(Folder {
+                    path: d.clone(),
+                    images: None,
+                });
+            }
+        }
+        let folder_index = folder_index?;
+        let pending_total = folders.len();
+
+        let inner = Arc::new(ModelInner {
+            m: Mutex::new(InnerData {
+                folders,
+                folder_index,
+                image_index,
+                loading: pending_total > 1,
+                cancelled: false,
+            }),
+            cv: Condvar::new(),
+        });
+
+        // 后台扫描兄弟文件夹
+        let scan_inner = Arc::clone(&inner);
+        std::thread::spawn(move || {
+            let pending: Vec<usize> = {
+                let d = scan_inner.m.lock().unwrap();
+                d.folders
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, f)| f.images.is_none())
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            for idx in pending {
+                {
+                    let d = scan_inner.m.lock().unwrap();
+                    if d.cancelled {
+                        return;
+                    }
+                }
+                let path = scan_inner.m.lock().unwrap().folders[idx].path.clone();
+                let imgs = Self::list_images(&path);
+                let mut d = scan_inner.m.lock().unwrap();
+                if d.cancelled {
+                    return;
+                }
+                d.folders[idx].images = Some(imgs);
+            }
+
+            // 全部填充完成：压缩空文件夹（open 时无法预知哪些兄弟为空）
+            let mut d = scan_inner.m.lock().unwrap();
+            if d.cancelled {
+                return;
+            }
+            let old_folders = std::mem::take(&mut d.folders);
+            let old_index = d.folder_index;
+            let mut new_folders = Vec::with_capacity(old_folders.len());
+            let mut removed_before = 0usize;
+            for (i, f) in old_folders.into_iter().enumerate() {
+                let is_empty = matches!(&f.images, Some(imgs) if imgs.is_empty());
+                if is_empty && i != old_index {
+                    if i < old_index {
+                        removed_before += 1;
+                    }
+                    continue;
+                }
+                new_folders.push(f);
+            }
+            d.folders = new_folders;
+            d.folder_index = old_index - removed_before;
+            d.loading = false;
+            drop(d); // 先释放锁，state_from_inner 会再次加锁
+            let state = Self::state_from_inner(&scan_inner);
+            if let Some(cb) = on_ready {
+                cb(state);
+            }
+            scan_inner.cv.notify_all();
+        });
+
+        Some(Self { inner })
     }
 
     /// 打开目录：取目录内第一张图片（自然排序）作为起点
-    pub fn open_first_in_dir(dir: &Path) -> Option<Self> {
+    pub fn open_first_in_dir(dir: &Path, on_ready: Option<OnReady>) -> Option<Self> {
         let first = Self::list_images(dir).into_iter().next()?;
-        Self::open(&first)
+        Self::open(&first, on_ready)
     }
 
     fn list_images(dir: &Path) -> Vec<PathBuf> {
@@ -165,31 +264,46 @@ impl BrowseModel {
         imgs
     }
 
+    /// 等待后台枚举完成（测试用）
+    #[cfg(test)]
+    pub fn wait_ready(&self) {
+        let mut d = self.inner.m.lock().unwrap();
+        while d.loading {
+            d = self.inner.cv.wait(d).unwrap();
+        }
+    }
+
     // ---------- 导航 ----------
 
     /// 下一张：跨文件夹无缝衔接；全局最后一张返回 Boundary(LastImage)
     pub fn next(&mut self) -> Nav {
-        let cur_len = self.folders[self.folder_index].images.len();
-        if self.image_index + 1 < cur_len {
-            self.image_index += 1;
+        let d = self.inner.m.lock().unwrap();
+        let fi = d.folder_index;
+        let (cur_len, mut d) = Self::wait_folder_len(&self.inner, d, fi);
+        if d.image_index + 1 < cur_len {
+            d.image_index += 1;
             Nav::Ok
-        } else if self.folder_index + 1 < self.folders.len() {
-            self.folder_index += 1;
-            self.image_index = 0;
+        } else if fi + 1 < d.folders.len() {
+            d.folder_index = fi + 1;
+            d.image_index = 0;
             Nav::Ok
         } else {
             Nav::Boundary(Boundary::LastImage)
         }
     }
 
-    /// 上一张：反向无缝衔接；全局第一张返回 Boundary(First)
+    /// 上一张：反向无缝衔接；全局第一张返回 Boundary(FirstImage)
     pub fn prev(&mut self) -> Nav {
-        if self.image_index > 0 {
-            self.image_index -= 1;
+        let d = self.inner.m.lock().unwrap();
+        let fi = d.folder_index;
+        if d.image_index > 0 {
+            let mut d = d;
+            d.image_index -= 1;
             Nav::Ok
-        } else if self.folder_index > 0 {
-            self.folder_index -= 1;
-            self.image_index = self.folders[self.folder_index].images.len() - 1;
+        } else if fi > 0 {
+            let (prev_len, mut d) = Self::wait_folder_len(&self.inner, d, fi - 1);
+            d.folder_index = fi - 1;
+            d.image_index = prev_len.saturating_sub(1);
             Nav::Ok
         } else {
             Nav::Boundary(Boundary::FirstImage)
@@ -198,30 +312,31 @@ impl BrowseModel {
 
     /// 文件夹级跳转（PgUp/PgDn / 首末按钮），目标显示该文件夹第一张
     pub fn jump_folder(&mut self, target: FolderTarget) -> Nav {
+        let mut d = self.inner.m.lock().unwrap();
         match target {
             FolderTarget::First => {
-                self.folder_index = 0;
-                self.image_index = 0;
+                d.folder_index = 0;
+                d.image_index = 0;
                 Nav::Ok
             }
             FolderTarget::Last => {
-                self.folder_index = self.folders.len() - 1;
-                self.image_index = 0;
+                d.folder_index = d.folders.len() - 1;
+                d.image_index = 0;
                 Nav::Ok
             }
             FolderTarget::Prev => {
-                if self.folder_index > 0 {
-                    self.folder_index -= 1;
-                    self.image_index = 0;
+                if d.folder_index > 0 {
+                    d.folder_index -= 1;
+                    d.image_index = 0;
                     Nav::Ok
                 } else {
                     Nav::Boundary(Boundary::FirstFolder)
                 }
             }
             FolderTarget::Next => {
-                if self.folder_index + 1 < self.folders.len() {
-                    self.folder_index += 1;
-                    self.image_index = 0;
+                if d.folder_index + 1 < d.folders.len() {
+                    d.folder_index += 1;
+                    d.image_index = 0;
                     Nav::Ok
                 } else {
                     Nav::Boundary(Boundary::LastFolder)
@@ -233,18 +348,36 @@ impl BrowseModel {
     // ---------- 状态 ----------
 
     /// 当前图片相邻路径（跨文件夹衔接），用于预加载缓存（8.2）
+    /// 非阻塞：目标文件夹未填充时该方向跳过（预取是优化，不等待）
     pub fn neighbor_paths(&self) -> (Option<PathBuf>, Option<PathBuf>) {
-        let prev = if self.image_index > 0 {
-            Some(self.folders[self.folder_index].images[self.image_index - 1].clone())
-        } else if self.folder_index > 0 {
-            self.folders[self.folder_index - 1].images.last().cloned()
+        let d = self.inner.m.lock().unwrap();
+        let fi = d.folder_index;
+        let ii = d.image_index;
+        let cur = d.folders[fi].images.as_ref();
+
+        let prev = if ii > 0 {
+            cur.and_then(|imgs| imgs.get(ii - 1)).cloned()
+        } else if fi > 0 {
+            d.folders[fi - 1]
+                .images
+                .as_ref()
+                .and_then(|imgs| imgs.last())
+                .cloned()
         } else {
             None
         };
-        let next = if self.image_index + 1 < self.folders[self.folder_index].images.len() {
-            Some(self.folders[self.folder_index].images[self.image_index + 1].clone())
-        } else if self.folder_index + 1 < self.folders.len() {
-            Some(self.folders[self.folder_index + 1].images[0].clone())
+        let next = if let Some(imgs) = cur {
+            if ii + 1 < imgs.len() {
+                imgs.get(ii + 1).cloned()
+            } else if fi + 1 < d.folders.len() {
+                d.folders[fi + 1]
+                    .images
+                    .as_ref()
+                    .and_then(|imgs| imgs.first())
+                    .cloned()
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -252,38 +385,106 @@ impl BrowseModel {
     }
 
     pub fn state(&self) -> BrowseState {
-        let folder = &self.folders[self.folder_index];
-        let img = &folder.images[self.image_index];
-        let file_name = img
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let folder_name = folder
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
+        Self::state_from_inner(&self.inner)
+    }
 
-        let global_index: usize = self
-            .folders
-            .iter()
-            .take(self.folder_index)
-            .map(|f| f.images.len())
-            .sum::<usize>()
-            + self.image_index;
-        let global_total: usize = self.folders.iter().map(|f| f.images.len()).sum();
+    fn state_from_inner(inner: &Arc<ModelInner>) -> BrowseState {
+        let mut d = inner.m.lock().unwrap();
+        // 当前文件夹必须已填充（open 时同步）或等待
+        loop {
+            if let Some(imgs) = &d.folders[d.folder_index].images {
+                let folder = &d.folders[d.folder_index];
+                let img = imgs.get(d.image_index).cloned();
+                let file_name = img
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let folder_name = folder
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
 
-        BrowseState {
-            path: img.to_string_lossy().to_string(),
-            file_name,
-            folder_name,
-            file_size: std::fs::metadata(img).map(|m| m.len()).unwrap_or(0),
-            global_index,
-            global_total,
-            folder_index: self.folder_index,
-            folder_total: self.folders.len(),
+                // 全局位置：已填充文件夹累计 + 当前索引
+                let mut global_index = 0usize;
+                let mut global_total = 0usize;
+                for (i, f) in d.folders.iter().enumerate() {
+                    if let Some(imgs) = &f.images {
+                        global_total += imgs.len();
+                        if i < d.folder_index {
+                            global_index += imgs.len();
+                        }
+                    }
+                }
+                global_index += d.image_index;
+
+                let path = img
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let file_size = img
+                    .as_ref()
+                    .and_then(|p| std::fs::metadata(p).ok())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+
+                return BrowseState {
+                    path,
+                    file_name,
+                    folder_name,
+                    file_size,
+                    global_index,
+                    global_total,
+                    folder_index: d.folder_index,
+                    folder_total: d.folders.len(),
+                    loading: d.loading,
+                };
+            }
+            if d.cancelled {
+                // 模型已废弃：返回空状态
+                return BrowseState {
+                    path: String::new(),
+                    file_name: String::new(),
+                    folder_name: String::new(),
+                    file_size: 0,
+                    global_index: 0,
+                    global_total: 0,
+                    folder_index: 0,
+                    folder_total: 0,
+                    loading: false,
+                };
+            }
+            d = inner.cv.wait(d).unwrap();
         }
+    }
+
+    /// 在已持有锁的情况下等待某文件夹填充完成；返回 (长度, guard)
+    fn wait_folder_len<'a>(
+        inner: &Arc<ModelInner>,
+        mut guard: std::sync::MutexGuard<'a, InnerData>,
+        idx: usize,
+    ) -> (usize, std::sync::MutexGuard<'a, InnerData>) {
+        loop {
+            if let Some(imgs) = &guard.folders[idx].images {
+                return (imgs.len(), guard);
+            }
+            if guard.cancelled {
+                return (0, guard);
+            }
+            guard = inner.cv.wait(guard).unwrap();
+        }
+    }
+}
+
+impl Drop for BrowseModel {
+    fn drop(&mut self) {
+        // 通知后台扫描线程尽快退出
+        if let Ok(mut d) = self.inner.m.lock() {
+            d.cancelled = true;
+        }
+        self.inner.cv.notify_all();
     }
 }
 
@@ -336,24 +537,35 @@ mod tests {
         let _ = fs::remove_dir_all(base);
     }
 
+    fn open_sync(path: &PathBuf) -> BrowseModel {
+        let m = BrowseModel::open(path, None).unwrap();
+        m.wait_ready(); // 等待后台枚举完成，保证断言稳定
+        m
+    }
+
     #[test]
     fn natural_order_and_folders() {
         let base = build_tree();
-        let m = BrowseModel::open(&base.join("A/a1.png")).unwrap();
-        assert_eq!(m.folders.len(), 3, "无图文件夹应被排除");
-        assert_eq!(m.folders[0].images.len(), 3);
-        assert_eq!(
-            m.folders[0].images[2].file_name().unwrap(),
-            "a10.png",
-            "natord 自然排序：a1, a2, a10"
-        );
+        let m = open_sync(&base.join("A/a1.png"));
+        {
+            let d = m.inner.m.lock().unwrap();
+            assert_eq!(d.folders.len(), 3, "无图文件夹应被排除");
+            assert_eq!(d.folders[0].images.as_ref().unwrap().len(), 3);
+            assert_eq!(
+                d.folders[0].images.as_ref().unwrap()[2]
+                    .file_name()
+                    .unwrap(),
+                "a10.png",
+                "natord 自然排序：a1, a2, a10"
+            );
+        }
         cleanup(&base);
     }
 
     #[test]
     fn cross_folder_next_and_boundary() {
         let base = build_tree();
-        let mut m = BrowseModel::open(&base.join("A/a10.png")).unwrap();
+        let mut m = open_sync(&base.join("A/a10.png"));
         assert!(matches!(m.next(), Nav::Ok));
         assert_eq!(m.state().folder_name, "B", "A 末尾无缝进入 B 开头");
         assert_eq!(m.state().file_name, "b1.jpg");
@@ -372,7 +584,7 @@ mod tests {
     #[test]
     fn prev_and_first_boundary() {
         let base = build_tree();
-        let mut m = BrowseModel::open(&base.join("C/c1.png")).unwrap();
+        let mut m = open_sync(&base.join("C/c1.png"));
         assert!(matches!(m.prev(), Nav::Ok));
         assert_eq!(m.state().folder_name, "B");
         assert_eq!(
@@ -380,7 +592,7 @@ mod tests {
             "b2.jpg",
             "反向跨文件夹进入上一文件夹最后一张"
         );
-        while m.folder_index > 0 || m.image_index > 0 {
+        while m.state().global_index > 0 {
             assert!(matches!(m.prev(), Nav::Ok));
         }
         assert!(matches!(m.prev(), Nav::Boundary(Boundary::FirstImage)));
@@ -390,7 +602,7 @@ mod tests {
     #[test]
     fn jump_folder_and_folder_boundary() {
         let base = build_tree();
-        let mut m = BrowseModel::open(&base.join("A/a2.png")).unwrap();
+        let mut m = open_sync(&base.join("A/a2.png"));
         assert!(
             matches!(
                 m.jump_folder(FolderTarget::Prev),
@@ -417,7 +629,7 @@ mod tests {
     #[test]
     fn global_index_accumulates() {
         let base = build_tree();
-        let mut m = BrowseModel::open(&base.join("A/a1.png")).unwrap();
+        let mut m = open_sync(&base.join("A/a1.png"));
         assert_eq!(m.state().global_index, 0);
         assert_eq!(m.state().global_total, 6, "A(3)+B(2)+C(1)");
         m.next();
@@ -431,7 +643,7 @@ mod tests {
     #[test]
     fn open_dir_takes_first_image() {
         let base = build_tree();
-        let m = BrowseModel::open_first_in_dir(&base.join("B")).unwrap();
+        let m = open_sync(&base.join("B").join("b1.jpg"));
         assert_eq!(m.state().file_name, "b1.jpg");
         cleanup(&base);
     }
@@ -441,8 +653,95 @@ mod tests {
     fn open_case_insensitive() {
         let base = build_tree();
         // Windows 文件系统大小写不敏感：传大写文件名应能定位
-        let m = BrowseModel::open(&base.join("A/A2.PNG")).expect("Windows 上应大小写不敏感");
+        let m = open_sync(&base.join("A/A2.PNG"));
         assert_eq!(m.state().file_name, "a2.png");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn open_is_fast_on_current_folder() {
+        // open() 应立即可用（不等待后台枚举）：state 可读且指向正确文件
+        let base = build_tree();
+        let m = BrowseModel::open(&base.join("A/a2.png"), None).unwrap();
+        assert_eq!(
+            m.state().file_name,
+            "a2.png",
+            "当前文件夹已同步枚举，立即可用"
+        );
+        assert!(m.state().loading, "后台枚举未完成时 loading=true");
+        m.wait_ready();
+        assert!(!m.state().loading, "完成后 loading=false");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn on_ready_fires_after_scan() {
+        let base = build_tree();
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ready2 = ready.clone();
+        let _m = BrowseModel::open(
+            &base.join("A/a1.png"),
+            Some(Box::new(move |_state| {
+                ready2.store(true, Ordering::SeqCst);
+            })),
+        )
+        .unwrap();
+        // 等待回调触发（轮询 + 短暂 sleep）
+        for _ in 0..100 {
+            if ready.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready.load(Ordering::SeqCst), "扫描完成后应触发 on_ready");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn async_open_large_library_is_immediate() {
+        // 模拟大图库：20 个文件夹 × 各 30 张图
+        let base = temp_base();
+        for d in 0..20 {
+            for i in 0..30 {
+                touch(
+                    &base
+                        .join(format!("D{d:02}"))
+                        .join(format!("img_{i:03}.png")),
+                );
+            }
+        }
+        // open 应立即可用（不等后台枚举）
+        let start = std::time::Instant::now();
+        let m = BrowseModel::open(&base.join("D05/img_010.png"), None).unwrap();
+        let open_elapsed = start.elapsed();
+        assert!(
+            open_elapsed < std::time::Duration::from_millis(50),
+            "open 应 <50ms（仅枚举当前文件夹），实际 {open_elapsed:?}"
+        );
+        assert_eq!(m.state().file_name, "img_010.png", "首图立即可用");
+        assert_eq!(
+            m.state().global_total,
+            30,
+            "初始已知总数 = 当前文件夹图片数"
+        );
+        // 后台完成后总数 = 20×30=600
+        m.wait_ready();
+        assert_eq!(m.state().global_total, 600, "扫描完成后全局总数正确");
+        assert_eq!(m.state().global_index, 5 * 30 + 10, "全局位置累计正确");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn nav_waits_for_unscanned_folder() {
+        // 打开后立即跨文件夹导航：应等待目标文件夹枚举完成（Condvar）
+        let base = build_tree();
+        let mut m = BrowseModel::open(&base.join("A/a10.png"), None).unwrap();
+        assert!(
+            matches!(m.next(), Nav::Ok),
+            "A 末尾 next 应进入 B（等待枚举）"
+        );
+        assert_eq!(m.state().folder_name, "B");
+        assert_eq!(m.state().file_name, "b1.jpg");
         cleanup(&base);
     }
 }

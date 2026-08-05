@@ -10,6 +10,8 @@ export interface BrowseState {
   global_total: number;
   folder_index: number;
   folder_total: number;
+  /** 后台枚举是否仍在进行（true 时位置显示 "3/…"） */
+  loading: boolean;
 }
 
 export interface NavResult {

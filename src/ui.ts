@@ -85,7 +85,7 @@ export class UI {
     setText("info-file", truncateMiddle(state.file_name, FILENAME_MAX));
     setText("info-dims", dims ? `${dims.w}×${dims.h}` : "…");
     setText("info-size", formatSize(state.file_size));
-    setText("info-pos", `${state.global_index + 1}/${state.global_total}`);
+    setText("info-pos", state.loading ? `${state.global_index + 1}/…` : `${state.global_index + 1}/${state.global_total}`);
     setText("info-folder-name", truncateMiddle(state.folder_name, 24));
   }
 

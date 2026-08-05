@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use browse::BrowseModel;
 use cache::DecodeCache;
 use commands::AppState;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// 解析命令行传入的路径：相对路径优先按项目根解析
 /// （`pnpm tauri dev -- <path>` 时应用 cwd 为 src-tauri/，相对路径会失效）
@@ -62,10 +62,16 @@ fn main() {
             // 双击图片打开 / 命令行传参（文件或目录）：初始化浏览模型
             if let Some(path) = startup_image_path() {
                 let p = Path::new(&path);
+                let on_ready = {
+                    let app2 = app.handle().clone();
+                    Some(Box::new(move |st: browse::BrowseState| {
+                        let _ = app2.emit(commands::BROWSE_SCAN_READY, st);
+                    }) as browse::OnReady)
+                };
                 let model = if p.is_dir() {
-                    BrowseModel::open_first_in_dir(p)
+                    BrowseModel::open_first_in_dir(p, on_ready)
                 } else {
-                    BrowseModel::open(p)
+                    BrowseModel::open(p, on_ready)
                 };
                 if let Some(model) = model {
                     let state = app.state::<AppState>();

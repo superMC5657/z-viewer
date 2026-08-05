@@ -9,6 +9,7 @@
  */
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -331,6 +332,13 @@ async function init(): Promise<void> {
   // 空状态初始隐藏帧条（打开图片后由 showImage 按需设置）
   ui.setFrameBarVisible(false);
   syncZoomButtons(); // 初始：适应窗口激活
+
+  // 后台枚举完成：刷新信息条计数（图片不重载）
+  await listen<BrowseState>("browse://scan-ready", (event) => {
+    const st = event.payload;
+    ui.updateInfo(st, currentDims);
+    ui.setSlideshowProgress(st.global_index + 1, st.global_total);
+  });
 
   try {
     // 命令行 / 双击打开：Rust 端已注入浏览模型
