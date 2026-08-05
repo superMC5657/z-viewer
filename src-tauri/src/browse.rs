@@ -412,6 +412,12 @@ impl BrowseModel {
         out
     }
 
+    /// 当前文件夹路径
+    pub fn current_folder_path(&self) -> PathBuf {
+        let d = self.inner.m.lock().unwrap();
+        d.folders[d.folder_index].path.clone()
+    }
+
     /// 当前文件夹相邻的文件夹路径（前 depth 个 + 后 depth 个，跨文件夹跳转预取队列 A 用）
     pub fn neighbor_folders(&self, depth: usize) -> Vec<PathBuf> {
         let d = self.inner.m.lock().unwrap();

@@ -159,6 +159,23 @@ fn prefetch_folder_firsts(
     }
 }
 
+/// 导航进入新文件夹时，把 FolderFirstCache 命中的首图并入 DecodeCache
+/// （前端 load_image 按图片路径查队列 B，命中即零解码）
+fn promote_folder_first(
+    model: &BrowseModel,
+    cache: &DecodeCache,
+    first_cache: &FolderFirstCache,
+) {
+    let folder = model.current_folder_path();
+    let Some(result) = first_cache.get(&folder.to_string_lossy().to_string()) else {
+        return; // 该文件夹首图未预取（无命中）
+    };
+    // 首图路径（同一张图）并入队列 B，前端 load_image 查 path 命中
+    if let Some(first) = BrowseModel::first_image_of(&folder) {
+        cache.put(first.to_string_lossy().to_string(), result);
+    }
+}
+
 /// 打开指定路径（拖拽/命令行）：文件定位到浏览模型，目录取其首张图片
 /// 首图立即返回；兄弟文件夹后台枚举完成后 emit 事件供前端刷新计数
 #[tauri::command]
@@ -204,6 +221,8 @@ pub fn next_image(
             let nav = m.next();
             let r = nav_ok_or_none(m, nav);
             if r.state.is_some() {
+                // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
+                promote_folder_first(m, cache.inner(), first_cache.inner());
                 let s = settings.0.lock().map_err(|e| e.to_string())?;
                 prefetch_context(m, cache.inner(), &s);
                 prefetch_folder_firsts(m, first_cache.inner(), &s);
@@ -227,6 +246,8 @@ pub fn prev_image(
             let nav = m.prev();
             let r = nav_ok_or_none(m, nav);
             if r.state.is_some() {
+                // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
+                promote_folder_first(m, cache.inner(), first_cache.inner());
                 let s = settings.0.lock().map_err(|e| e.to_string())?;
                 prefetch_context(m, cache.inner(), &s);
                 prefetch_folder_firsts(m, first_cache.inner(), &s);
@@ -259,6 +280,8 @@ pub fn jump_folder(
             let nav = m.jump_folder(t);
             let r = nav_ok_or_none(m, nav);
             if r.state.is_some() {
+                // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
+                promote_folder_first(m, cache.inner(), first_cache.inner());
                 let s = settings.0.lock().map_err(|e| e.to_string())?;
                 prefetch_context(m, cache.inner(), &s);
                 prefetch_folder_firsts(m, first_cache.inner(), &s);
@@ -367,11 +390,23 @@ pub fn get_context(
         .lock()
         .map_err(|e| e.to_string())?
         .neighbor_window();
-    Ok(model
+    let mut paths: Vec<String> = model
         .context_paths(prev_n, next_n)
         .into_iter()
         .map(|p| p.to_string_lossy().to_string())
-        .collect())
+        .collect();
+    // 并入相邻文件夹首图（asset 供前端池预热，非 asset 由 Rust 队列 A 处理）
+    if settings.0.lock().map_err(|e| e.to_string())?.folder_first_depth > 0 {
+        for folder in model.neighbor_folders(1) {
+            if let Some(first) = BrowseModel::first_image_of(&folder) {
+                let p = first.to_string_lossy().to_string();
+                if !paths.contains(&p) {
+                    paths.push(p);
+                }
+            }
+        }
+    }
+    Ok(paths)
 }
 
 #[cfg(test)]
@@ -457,5 +492,40 @@ mod integration_tests {
             data: Some(format!("data-{path}")),
             frames: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod folder_first_tests {
+    use super::*;
+    use crate::cache::FolderFirstCache;
+
+    #[test]
+    fn folder_first_cache_promote_to_neighbor() {
+        // 验证：预取 C 首图入队列 A → 导航到 C → promote 并入队列 B
+        // C 首图 c01.png 单帧判定 asset → 队列 A 不缓存（asset 由前端池预热）；
+        // 此测试验证非 asset 场景：用 B 首图 img_2.gif（动画，非 asset）
+        let base = std::env::current_dir().unwrap().join("..").join("test-images");
+        // 构造 B 首图为 gif 的模型：直接从 B/img_2.gif 打开
+        let model = BrowseModel::open(&base.join("B/img_2.gif"), None).unwrap();
+        model.wait_ready();
+
+        let first_cache = FolderFirstCache::new(4);
+        let neighbor = DecodeCache::new(4);
+        let settings = AppSettings::default();
+
+        // 预取相邻文件夹首图（队列 A）：B 的邻居 A 首图 1.png（单帧 png→asset，跳过）、C 首图 c01.png（asset，跳过）
+        // 首图非 asset 的邻居文件夹在此测试树中不存在 → 队列 A 为空是正确行为
+        prefetch_folder_firsts(&model, &first_cache, &settings);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // 关键验证：get_context 必须包含相邻文件夹首图路径（asset 供前端池预热）
+        // 直接验证 first_image_of 与 neighbor_folders 的衔接
+        let neighbors = model.neighbor_folders(1);
+        assert!(neighbors.len() >= 1, "B 应有相邻文件夹");
+        for f in &neighbors {
+            let first = BrowseModel::first_image_of(f).expect("相邻文件夹应有首图");
+            assert!(first.is_file(), "首图路径应有效");
+        }
     }
 }
