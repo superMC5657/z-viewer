@@ -22,5 +22,3 @@ npm-debug.log*
 # Environment（含签名私钥，绝不入库）
 .env
 .env.local
-
-scripts/release.sh
