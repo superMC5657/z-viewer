@@ -72,10 +72,12 @@ export const TOOLBAR_GROUPS: ToolbarGroup[] = [
   {
     id: "folder",
     items: [
-      { id: "folder-first", icon: "skip-back", tip: "第一个文件夹", enabled: true },
-      { id: "folder-prev", icon: "chevron-left", tip: "上一个文件夹 · PgUp", enabled: true },
-      { id: "folder-next", icon: "chevron-right", tip: "下一个文件夹 · PgDn", enabled: true },
-      { id: "folder-last", icon: "skip-forward", tip: "最后一个文件夹", enabled: true },
+      // 从左到右：上一个文件夹 / 上一张图片 / 下一张图片 / 下一个文件夹
+      // 双箭头 = 文件夹跳转（与资源管理器一致），单箭头 = 图片翻页
+      { id: "folder-prev", icon: "skip-back", tip: "上一个文件夹 · PgUp", enabled: true },
+      { id: "image-prev", icon: "chevron-left", tip: "上一张图片 · ←", enabled: true },
+      { id: "image-next", icon: "chevron-right", tip: "下一张图片 · →", enabled: true },
+      { id: "folder-next", icon: "skip-forward", tip: "下一个文件夹 · PgDn", enabled: true },
     ],
   },
   {

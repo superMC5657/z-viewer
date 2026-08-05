@@ -127,17 +127,17 @@ function setFitMode(mode: FitMode): void {
 
 function handleToolbarAction(id: string): void {
   switch (id) {
-    case "folder-first":
-      void nav(() => invoke("jump_folder", { target: "first" }));
-      break;
     case "folder-prev":
       void nav(() => invoke("jump_folder", { target: "prev" }));
       break;
+    case "image-prev":
+      void nav(() => invoke("prev_image"));
+      break;
+    case "image-next":
+      void nav(() => invoke("next_image"));
+      break;
     case "folder-next":
       void nav(() => invoke("jump_folder", { target: "next" }));
-      break;
-    case "folder-last":
-      void nav(() => invoke("jump_folder", { target: "last" }));
       break;
     case "rotate-cw":
       viewer.rotate(90);
