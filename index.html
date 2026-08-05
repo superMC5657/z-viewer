@@ -9,6 +9,7 @@
     <!-- ===== 看图画布 ===== -->
     <main id="stage">
       <img id="image" alt="" draggable="false" />
+      <canvas id="frame-canvas" draggable="false"></canvas>
       <div id="empty-state">
         <div class="empty-icon">🖼️</div>
         <div class="empty-title">拖入图片或文件夹开始浏览</div>
@@ -59,6 +60,17 @@
 
     <!-- ===== 底部工具栏（闲置自动隐藏） ===== -->
     <div id="toolbar" class="glass" aria-hidden="true"></div>
+
+    <!-- ===== 帧控制浮条（仅动画图片显示，草图 3.7） ===== -->
+    <div id="frame-bar" class="glass" aria-hidden="true">
+      <button id="frame-first" class="tb-btn-icon" data-tip="第一帧"></button>
+      <button id="frame-prev" class="tb-btn-icon" data-tip="上一帧"></button>
+      <button id="frame-play" class="tb-btn-icon" data-tip="播放/暂停"></button>
+      <button id="frame-next" class="tb-btn-icon" data-tip="下一帧"></button>
+      <button id="frame-last" class="tb-btn-icon" data-tip="最后一帧"></button>
+      <div class="tb-sep"></div>
+      <span id="frame-count" class="frame-count">帧 0/0</span>
+    </div>
 
     <!-- ===== 边界提醒 Toast ===== -->
     <div id="toast" class="glass" role="status">

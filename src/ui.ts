@@ -17,6 +17,7 @@ export interface ToolbarHandlers {
 export class UI {
   private infoBar: HTMLElement;
   private toolbar: HTMLElement;
+  private frameBar: HTMLElement;
   private toast: HTMLElement;
   private toastText: HTMLElement;
   private tbFile: HTMLElement;
@@ -28,6 +29,7 @@ export class UI {
   constructor() {
     this.infoBar = document.getElementById("info-bar")!;
     this.toolbar = document.getElementById("toolbar")!;
+    this.frameBar = document.getElementById("frame-bar")!;
     this.toast = document.getElementById("toast")!;
     this.toastText = document.getElementById("toast-text")!;
     this.tbFile = document.getElementById("tb-file")!;
@@ -85,6 +87,33 @@ export class UI {
     this.emptyState.classList.toggle("hidden", !empty);
   }
 
+  // ---------- 帧控制浮条（草图 3.7） ----------
+
+  /** 帧条显隐（仅动画图片且浮层可见时显示） */
+  setFrameBarVisible(visible: boolean): void {
+    this.frameBarVisible = visible;
+    if (!visible) {
+      this.frameBar.classList.add("hidden");
+      this.frameBar.setAttribute("aria-hidden", "true");
+    } else if (!this.infoBar.classList.contains("hidden")) {
+      // 浮层当前可见时同步显示
+      this.frameBar.classList.remove("hidden");
+      this.frameBar.setAttribute("aria-hidden", "false");
+    }
+  }
+
+  /** 播放/暂停按钮图标与激活态 */
+  setFramePlaying(playing: boolean): void {
+    const btn = document.getElementById("frame-play")!;
+    btn.innerHTML = playing ? ICONS.pause : ICONS.play;
+    btn.classList.toggle("active", playing);
+  }
+
+  /** 帧计数：帧 12/48 */
+  updateFrameCount(index: number, total: number): void {
+    document.getElementById("frame-count")!.textContent = `帧 ${index}/${total}`;
+  }
+
   // ---------- 边界 Toast（草图 3.4） ----------
 
   showToast(text: string): void {
@@ -112,8 +141,10 @@ export class UI {
   hideAll(): void {
     this.infoBar.classList.add("hidden");
     this.toolbar.classList.add("hidden");
+    this.frameBar.classList.add("hidden");
     this.infoBar.setAttribute("aria-hidden", "true");
     this.toolbar.setAttribute("aria-hidden", "true");
+    this.frameBar.setAttribute("aria-hidden", "true");
     window.clearTimeout(this.idleTimer);
   }
 
@@ -123,16 +154,23 @@ export class UI {
   wake(): void {
     this.infoBar.classList.remove("hidden");
     this.toolbar.classList.remove("hidden");
+    if (this.frameBarVisible) this.frameBar.classList.remove("hidden");
     this.infoBar.setAttribute("aria-hidden", "false");
     this.toolbar.setAttribute("aria-hidden", "false");
+    if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "false");
     window.clearTimeout(this.idleTimer);
     this.idleTimer = window.setTimeout(() => {
       this.infoBar.classList.add("hidden");
       this.toolbar.classList.add("hidden");
+      if (this.frameBarVisible) this.frameBar.classList.add("hidden");
       this.infoBar.setAttribute("aria-hidden", "true");
       this.toolbar.setAttribute("aria-hidden", "true");
+      if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "true");
     }, IDLE_HIDE_MS);
   }
+
+  /** 帧条当前是否可见（由 main.ts 随图片类型设置） */
+  private frameBarVisible = false;
 }
 
 function sep(): HTMLElement {

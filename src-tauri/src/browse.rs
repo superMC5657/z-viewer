@@ -7,12 +7,12 @@
 
 use std::path::{Path, PathBuf};
 
-/// M1 支持的常见格式（RAW 为 M3 范围）
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "svg"];
+/// M1 常见格式（RAW 由 decode::RAW_EXTS 单一来源维护）
+const COMMON_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "svg"];
 
 fn is_image_file(name: &str) -> bool {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    IMAGE_EXTS.contains(&ext.as_str())
+    COMMON_EXTS.contains(&ext.as_str()) || crate::decode::is_raw_ext(&ext)
 }
 
 fn natord_cmp(a: &str, b: &str) -> std::cmp::Ordering {

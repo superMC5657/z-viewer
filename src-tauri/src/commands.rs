@@ -117,3 +117,12 @@ pub fn jump_folder(state: State<'_, AppState>, target: String) -> Result<NavResu
 pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
     state.0.lock().ok()?.as_ref().map(|m| m.state())
 }
+
+/// 图片加载通道分发：常见格式 → asset（前端直读）；RAW → 解码 JPEG；动画 → 帧序列
+/// spawn_blocking：RAW 解码为 CPU 密集任务，避免占用 async runtime 线程
+#[tauri::command]
+pub async fn load_image(path: String) -> Result<crate::decode::LoadResult, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::decode::load_image(&path))
+        .await
+        .map_err(|e| format!("解码任务失败: {e}"))?
+}

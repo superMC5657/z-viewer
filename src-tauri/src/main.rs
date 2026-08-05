@@ -3,6 +3,7 @@
 
 mod browse;
 mod commands;
+mod decode;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -54,6 +55,7 @@ fn main() {
             commands::prev_image,
             commands::jump_folder,
             commands::get_initial_state,
+            commands::load_image,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

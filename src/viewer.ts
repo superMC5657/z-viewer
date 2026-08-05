@@ -1,14 +1,18 @@
 /**
- * 渲染与变换（纯前端，零 IPC）——《需求报告与技术方案.md》8.4
+ * 渲染与变换（纯前端，零 IPC）——《需求报告与技术方案.md》8.3/8.4
  *
  * 变换模型：图片以其自然中心为原点旋转/缩放/翻转，再平移到屏幕上的图片中心 (cx, cy)。
  *   transform: translate(cx,cy) rotate(r) scale(s*fx, s*fy) translate(-w/2, -h/2)
  * 总显示倍率 s = baseScale * userScale：
  *   - fit 模式：baseScale = 适应窗口倍率；userScale 为滚轮缩放倍率
  *   - actual 模式：baseScale = 1
+ *
+ * 渲染通道：
+ *   - 静态图 → <img>（asset 协议或 RAW 解码的 Blob URL）
+ *   - 动画图 → <canvas> 逐帧绘制（ImageBitmap 预解码 + setTimeout 链按帧延迟播放）
  */
 
-import { convertFileSrc } from "@tauri-apps/api/core";
+import type { FrameData } from "./types";
 
 const MIN_SCALE = 0.04;
 const MAX_SCALE = 20;
@@ -18,11 +22,14 @@ export type FitMode = "fit" | "actual";
 
 export class Viewer {
   private img: HTMLImageElement;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
   private stage: HTMLElement;
 
   private loaded = false;
   private naturalW = 0;
   private naturalH = 0;
+  private active: "img" | "canvas" = "img";
 
   // 变换状态
   private fitMode: FitMode = "fit";
@@ -37,14 +44,31 @@ export class Viewer {
   // 拖拽平移（rAF 合并，保证 60fps 高频输入只写一帧 style）
   private drag: { sx: number; sy: number; cx0: number; cy0: number } | null = null;
   private rafHandle: number | null = null;
+  /** 动画播放计时器 */
   private animTimer: number | undefined;
-  private onLoadCb: (() => void) | null = null;
+  /** 旋转/翻转过渡计时器（与播放器独立，互不干扰） */
+  private transformTimer: number | undefined;
   /** 沉浸模式：fit 时是否避让标题栏 */
   private immersive = false;
+  /** 加载代次：异步解码期间被新加载抢占时丢弃旧结果 */
+  private loadSeq = 0;
+  /** 进行中的静态加载（img 通道） */
+  private pending: { resolve: () => void; reject: (e: Error) => void; seq: number } | null = null;
 
-  constructor(stage: HTMLElement, img: HTMLImageElement) {
+  // 动画状态
+  private animFrames: ImageBitmap[] = [];
+  private animDelays: number[] = [];
+  private animIndex = 0;
+  private animPlaying = false;
+
+  /** 帧变化回调（index 从 1 开始） */
+  onFrameChange: ((index: number, total: number) => void) | null = null;
+
+  constructor(stage: HTMLElement, img: HTMLImageElement, canvas: HTMLCanvasElement) {
     this.stage = stage;
     this.img = img;
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d")!;
     this.img.addEventListener("load", () => this.handleLoad());
     this.img.addEventListener("error", () => this.handleError());
   }
@@ -61,16 +85,67 @@ export class Viewer {
     return this.baseScale * this.userScale;
   }
 
-  /** 加载新图片：重置变换并适应窗口 */
-  load(path: string): Promise<void> {
-    return new Promise((resolve) => {
-      this.onLoadCb = resolve;
-      this.resetTransform();
-      this.img.classList.remove("visible");
+  get isAnimation(): boolean {
+    return this.active === "canvas" && this.animFrames.length > 0;
+  }
+
+  get isPlaying(): boolean {
+    return this.animPlaying;
+  }
+
+  /** 当前显示尺寸（静态图 = 图像自然尺寸；动画 = 第一帧尺寸） */
+  get naturalWidth(): number {
+    return this.naturalW;
+  }
+
+  get naturalHeight(): number {
+    return this.naturalH;
+  }
+
+  /** 加载静态图（asset 协议 URL 或 RAW 解码的 Blob URL） */
+  loadStatic(url: string): Promise<void> {
+    this.stopAnimation();
+    this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
+    const seq = ++this.loadSeq;
+    this.active = "img";
+    this.canvas.classList.remove("visible");
+    this.resetTransform();
+    this.img.classList.remove("visible");
+    return new Promise((resolve, reject) => {
+      this.pending = { resolve, reject, seq };
       // 先清除 src 再赋值：同路径重复打开时也能触发 load 事件
       this.img.removeAttribute("src");
-      this.img.src = convertFileSrc(path);
+      this.img.src = url;
     });
+  }
+
+  /** 加载动画图：预解码全部帧后显示第一帧并自动播放 */
+  async loadAnimation(frames: FrameData[]): Promise<void> {
+    this.stopAnimation();
+    this.settlePending(); // 作废进行中的静态加载
+    const seq = ++this.loadSeq; // 先登记代次，防止 await 期间被抢占
+    this.active = "canvas";
+    this.img.classList.remove("visible");
+    this.img.removeAttribute("src");
+    this.resetTransform();
+    this.onFrameChange?.(0, frames.length); // 解码完成前先重置帧计数
+
+    if (frames.length === 0) return;
+    const bitmaps = await Promise.all(frames.map((f) => base64ToBitmap(f.png)));
+    if (seq !== this.loadSeq) return; // 已被更新的加载抢占
+
+    this.animFrames = bitmaps;
+    this.animDelays = frames.map((f) => f.delay_ms);
+    this.animIndex = 0;
+    this.naturalW = bitmaps[0].width;
+    this.naturalH = bitmaps[0].height;
+    this.canvas.width = this.naturalW;
+    this.canvas.height = this.naturalH;
+    this.loaded = true;
+    this.drawFrame();
+    this.fit();
+    this.canvas.classList.add("visible");
+    this.play();
   }
 
   /** 切换沉浸模式：fit 避让高度变化后重新布局（全屏动画后窗口尺寸才稳定，下一帧再校准一次） */
@@ -179,18 +254,69 @@ export class Viewer {
     return ew > this.stage.clientWidth + 4 || eh > this.stage.clientHeight + 4;
   }
 
-  /** rAF 合并平移写入：高频 mousemove 只每帧应用一次 transform */
-  private scheduleApply(): void {
-    if (this.rafHandle !== null) return;
-    this.rafHandle = requestAnimationFrame(() => {
-      this.rafHandle = null;
-      if (!this.loaded) return;
-      this.clampPan();
-      this.apply();
-    });
+  // ---------- 动画控制 ----------
+
+  play(): void {
+    if (!this.isAnimation || this.animPlaying) return;
+    this.animPlaying = true;
+    this.scheduleNext();
+  }
+
+  pause(): void {
+    this.animPlaying = false;
+    window.clearTimeout(this.animTimer);
+  }
+
+  togglePlay(): void {
+    if (this.animPlaying) this.pause();
+    else this.play();
+  }
+
+  /** 逐帧步进（暂停状态下） */
+  stepFrame(delta: number): void {
+    if (!this.isAnimation) return;
+    this.pause();
+    const n = this.animFrames.length;
+    this.animIndex = ((this.animIndex + delta) % n + n) % n;
+    this.drawFrame();
+  }
+
+  /** 跳到指定帧（0-based） */
+  seekFrame(index: number): void {
+    if (!this.isAnimation) return;
+    this.pause();
+    this.animIndex = clamp(index, 0, this.animFrames.length - 1);
+    this.drawFrame();
   }
 
   // ---------- 内部 ----------
+
+  private scheduleNext(): void {
+    if (!this.animPlaying) return;
+    const delay = this.animDelays[this.animIndex] ?? 100;
+    this.animTimer = window.setTimeout(() => {
+      if (!this.animPlaying) return;
+      this.animIndex = (this.animIndex + 1) % this.animFrames.length;
+      this.drawFrame();
+      this.scheduleNext();
+    }, delay);
+  }
+
+  private drawFrame(): void {
+    const bmp = this.animFrames[this.animIndex];
+    if (!bmp) return;
+    // 各帧统一按首帧画布尺寸拉伸绘制（避免重置 canvas 尺寸破坏 transform）
+    this.ctx.drawImage(bmp, 0, 0, this.canvas.width, this.canvas.height);
+    this.onFrameChange?.(this.animIndex + 1, this.animFrames.length);
+  }
+
+  private stopAnimation(): void {
+    this.animPlaying = false;
+    window.clearTimeout(this.animTimer);
+    this.animFrames = [];
+    this.animDelays = [];
+    this.animIndex = 0;
+  }
 
   private resetTransform(): void {
     this.loaded = false;
@@ -202,22 +328,35 @@ export class Viewer {
     this.flipV = false;
     this.stage.classList.remove("pannable", "dragging", "animating");
     this.img.classList.remove("animating");
+    this.canvas.classList.remove("animating");
   }
 
   private handleLoad(): void {
+    if (!this.pending || this.pending.seq !== this.loadSeq) return; // 已被更新的加载抢占
+    const p = this.pending;
+    this.pending = null;
     this.naturalW = this.img.naturalWidth;
     this.naturalH = this.img.naturalHeight;
     this.loaded = true;
     this.fit();
     this.img.classList.add("visible");
-    this.onLoadCb?.();
-    this.onLoadCb = null;
+    p.resolve();
   }
 
   private handleError(): void {
-    // asset 协议读取失败：保留空状态即可
-    this.onLoadCb?.();
-    this.onLoadCb = null;
+    if (!this.pending || this.pending.seq !== this.loadSeq) return;
+    const p = this.pending;
+    this.pending = null;
+    p.reject(new Error("图片加载失败"));
+  }
+
+  /** 作废进行中的静态加载：静默 resolve，让新加载覆盖显示 */
+  private settlePending(): void {
+    if (this.pending) {
+      const p = this.pending;
+      this.pending = null;
+      p.resolve();
+    }
   }
 
   private fit(): void {
@@ -236,10 +375,11 @@ export class Viewer {
 
   private apply(): void {
     if (!this.loaded) return;
+    const el = this.active === "img" ? this.img : this.canvas;
     const s = this.currentScale;
     const fx = this.flipH ? -1 : 1;
     const fy = this.flipV ? -1 : 1;
-    this.img.style.transform =
+    el.style.transform =
       `translate(${this.cx}px, ${this.cy}px) ` +
       `rotate(${this.rotation}deg) ` +
       `scale(${s * fx}, ${s * fy}) ` +
@@ -260,21 +400,42 @@ export class Viewer {
     this.cy = clamp(this.cy, Math.min(minY, maxY), Math.max(minY, maxY));
   }
 
+  /** rAF 合并平移写入：高频 mousemove 只每帧应用一次 transform */
+  private scheduleApply(): void {
+    if (this.rafHandle !== null) return;
+    this.rafHandle = requestAnimationFrame(() => {
+      this.rafHandle = null;
+      if (!this.loaded) return;
+      this.clampPan();
+      this.apply();
+    });
+  }
+
   private updatePanState(): void {
     this.stage.classList.toggle("pannable", this.isPannable());
   }
 
   /** 旋转/翻转时的 200ms ease-in-out 过渡 */
   private animateTransform(): void {
-    this.img.classList.add("animating");
-    window.clearTimeout(this.animTimer);
-    this.animTimer = window.setTimeout(() => {
-      this.img.classList.remove("animating");
+    const el = this.active === "img" ? this.img : this.canvas;
+    el.classList.add("animating");
+    window.clearTimeout(this.transformTimer);
+    this.transformTimer = window.setTimeout(() => {
+      el.classList.remove("animating");
     }, ROTATE_MS);
   }
 }
 
 const TITLEBAR_H = 32;
+
+/** base64 PNG → ImageBitmap（动画帧预解码） */
+async function base64ToBitmap(b64: string): Promise<ImageBitmap> {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const blob = new Blob([bytes], { type: "image/png" });
+  return createImageBitmap(blob);
+}
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;

@@ -65,7 +65,8 @@ body {
   overflow: hidden;
 }
 
-#image {
+#image,
+#frame-canvas {
   position: absolute;
   top: 0;
   left: 0;
@@ -76,11 +77,13 @@ body {
   pointer-events: none;
 }
 
-#image.visible {
+#image.visible,
+#frame-canvas.visible {
   opacity: 1;
 }
 
-#image.animating {
+#image.animating,
+#frame-canvas.animating {
   transition: transform var(--t-rotate) ease-in-out;
 }
 
@@ -420,6 +423,37 @@ body.immersive #info-bar {
 .tb-btn-icon:hover::after {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
+}
+
+/* ============================================================
+   帧控制浮条（仅动画图片显示，草图 3.7）
+   ============================================================ */
+#frame-bar {
+  position: fixed;
+  bottom: calc(var(--floating-margin) + 56px); /* 叠加在工具栏上方 */
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--btn-gap);
+  padding: 6px;
+  z-index: 41;
+  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+}
+#frame-bar.hidden {
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px);
+  pointer-events: none;
+}
+.frame-count {
+  padding: 0 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+#frame-play.active {
+  color: var(--accent);
 }
 
 /* ============================================================

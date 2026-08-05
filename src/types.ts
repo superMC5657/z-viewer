@@ -17,3 +17,19 @@ export interface NavResult {
   boundary: string | null;
   state: BrowseState | null;
 }
+
+/** Rust 端 decode::FrameData */
+export interface FrameData {
+  /** base64 编码的 PNG 帧 */
+  png: string;
+  delay_ms: number;
+}
+
+/** Rust 端 decode::LoadResult */
+export interface LoadResult {
+  /** "asset" | "raw" | "animated" */
+  mode: string;
+  /** raw 模式：base64 JPEG */
+  data?: string | null;
+  frames?: FrameData[] | null;
+}

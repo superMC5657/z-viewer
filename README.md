@@ -1,6 +1,6 @@
 # Image Viewer
 
-基于 Tauri 2.x 的精美快速看图软件。深色毛玻璃 UI，核心特色是**跨同级文件夹无缝浏览**。
+基于 Tauri 2.x 的精美快速看图软件。深色毛玻璃 UI，核心特色是**跨同级文件夹无缝浏览**与**RAW/动画格式支持**。
 
 > 文档：`docs/需求报告与技术方案.md`（需求与技术方案）、`docs/UI设计草图.md`（界面唯一依据）、`docs/开发阶段规划.md`（里程碑追踪）
 
@@ -9,6 +9,15 @@
 - **应用框架**：Tauri 2.x（Rust 后端 + WebView2 前端）
 - **前端**：Vanilla TypeScript + Vite（无框架运行时开销）
 - **包管理**：pnpm
+- **图片解码**：rawler（RAW：CR2/CR3/NEF/ARW/DNG 等）+ image crate（GIF/APNG/WebP 动画拆帧）
+
+## 功能
+
+- 跨同级文件夹无缝浏览（natord 自然排序，与资源管理器一致）
+- 常见格式：JPG / PNG / GIF / WebP / BMP / ICO / SVG
+- 相机 RAW：CR2 / CR3 / NEF / ARW / DNG 等（rawler 解码 + demosaic + 降采样显示）
+- 动画格式：GIF / APNG / 动态 WebP 逐帧控制（播放/暂停/上一帧/下一帧）
+- 沉浸模式（F）、窗口置顶（T）、缩放/旋转/翻转、1:1/适应窗口
 
 ## 开发
 
@@ -61,6 +70,7 @@ src/                  # 前端代码
   ui.css              # 毛玻璃样式（设计 Token 按设计草图）
 src-tauri/            # Rust 后端
   src/browse.rs       # 浏览模型：目录枚举、自然排序、跨文件夹导航
+  src/decode.rs       # 解码服务：RAW（rawler）+ 动画拆帧（image crate）+ 通道分发
   src/commands.rs     # Tauri IPC commands
   src/main.rs         # 入口、启动参数
 scripts/              # 图标 / 测试图片生成脚本
