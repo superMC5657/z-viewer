@@ -34,10 +34,13 @@ export class Viewer {
   private cx = 0; // 图片中心（屏幕坐标）
   private cy = 0;
 
-  // 拖拽平移
+  // 拖拽平移（rAF 合并，保证 60fps 高频输入只写一帧 style）
   private drag: { sx: number; sy: number; cx0: number; cy0: number } | null = null;
+  private rafHandle: number | null = null;
   private animTimer: number | undefined;
   private onLoadCb: (() => void) | null = null;
+  /** 沉浸模式：fit 时是否避让标题栏 */
+  private immersive = false;
 
   constructor(stage: HTMLElement, img: HTMLImageElement) {
     this.stage = stage;
@@ -68,6 +71,13 @@ export class Viewer {
       this.img.removeAttribute("src");
       this.img.src = convertFileSrc(path);
     });
+  }
+
+  /** 切换沉浸模式：fit 避让高度变化后重新布局（全屏动画后窗口尺寸才稳定，下一帧再校准一次） */
+  setImmersive(immersive: boolean): void {
+    this.immersive = immersive;
+    this.onResize();
+    requestAnimationFrame(() => this.onResize());
   }
 
   /** 重新计算（窗口尺寸变化时调用） */
@@ -143,13 +153,21 @@ export class Viewer {
     if (!this.drag) return;
     this.cx = this.drag.cx0 + (x - this.drag.sx);
     this.cy = this.drag.cy0 + (y - this.drag.sy);
-    this.clampPan();
-    this.apply();
+    this.scheduleApply();
   }
 
   endPan(): void {
     this.drag = null;
     this.stage.classList.remove("dragging");
+    // 取消挂起的 rAF 帧，同步应用最终位置，避免幂等重放
+    if (this.rafHandle !== null) {
+      cancelAnimationFrame(this.rafHandle);
+      this.rafHandle = null;
+    }
+    if (this.loaded) {
+      this.clampPan();
+      this.apply();
+    }
   }
 
   /** 是否可拖拽平移：图片显示尺寸超过视口 */
@@ -159,6 +177,17 @@ export class Viewer {
     const ew = (this.rotation % 180 === 0 ? this.naturalW : this.naturalH) * s;
     const eh = (this.rotation % 180 === 0 ? this.naturalH : this.naturalW) * s;
     return ew > this.stage.clientWidth + 4 || eh > this.stage.clientHeight + 4;
+  }
+
+  /** rAF 合并平移写入：高频 mousemove 只每帧应用一次 transform */
+  private scheduleApply(): void {
+    if (this.rafHandle !== null) return;
+    this.rafHandle = requestAnimationFrame(() => {
+      this.rafHandle = null;
+      if (!this.loaded) return;
+      this.clampPan();
+      this.apply();
+    });
   }
 
   // ---------- 内部 ----------
@@ -194,12 +223,13 @@ export class Viewer {
   private fit(): void {
     if (!this.loaded) return;
     const availW = this.stage.clientWidth;
-    const availH = this.stage.clientHeight - TITLEBAR_H; // 避让常驻标题栏
+    // 避让常驻标题栏（沉浸模式无标题栏，全屏可用）
+    const availH = this.stage.clientHeight - (this.immersive ? 0 : TITLEBAR_H);
     const ew = this.rotation % 180 === 0 ? this.naturalW : this.naturalH;
     const eh = this.rotation % 180 === 0 ? this.naturalH : this.naturalW;
     this.baseScale = Math.min(availW / ew, availH / eh);
     this.cx = availW / 2;
-    this.cy = TITLEBAR_H + availH / 2;
+    this.cy = (this.immersive ? 0 : TITLEBAR_H) + availH / 2;
     this.apply();
     this.updatePanState();
   }

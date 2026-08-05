@@ -12,6 +12,9 @@ export interface InputHandlers {
   onNext: () => void;
   onJumpFolder: (target: FolderJump) => void;
   onSetMode: (mode: FitMode) => void;
+  onToggleImmersive: () => void;
+  onExitImmersive: () => void;
+  onTogglePin: () => void;
   onWake: () => void;
 }
 
@@ -72,6 +75,22 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
       case "V":
         handlers.onWake();
         viewer.flip("v");
+        break;
+      case "F":
+      case "f":
+      case "F11":
+        // 沉浸模式切换（草图 3.5）；F11 兼容需求文档
+        e.preventDefault();
+        handlers.onToggleImmersive();
+        break;
+      case "Escape":
+        // 仅退出沉浸模式（草图 3.5）
+        e.preventDefault();
+        handlers.onExitImmersive();
+        break;
+      case "T":
+      case "t":
+        handlers.onTogglePin();
         break;
     }
   };

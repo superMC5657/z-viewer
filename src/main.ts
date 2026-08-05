@@ -9,6 +9,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Viewer, type FitMode } from "./viewer";
 import { UI } from "./ui";
+import { WindowState } from "./window-state";
 import { attachInput } from "./input";
 import type { BrowseState, NavResult } from "./types";
 import "./ui.css";
@@ -20,6 +21,7 @@ const dropOverlay = document.getElementById("drop-overlay")!;
 const viewer = new Viewer(stage, img);
 const ui = new UI();
 ui.buildToolbar({ onAction: handleToolbarAction });
+const windowState = new WindowState(getCurrentWindow(), viewer, ui);
 
 // ---------- 状态 ----------
 let currentDims: { w: number; h: number } | null = null;
@@ -112,10 +114,14 @@ function handleToolbarAction(id: string): void {
     case "zoom-fit":
       setFitMode("fit");
       break;
-    // 以下为后续阶段功能（M2/M4），先给出提示
-    case "slideshow":
     case "pin":
+      void windowState.togglePin();
+      break;
     case "fullscreen":
+      void windowState.toggleImmersive();
+      break;
+    // 幻灯片为 M4 功能，先给出提示
+    case "slideshow":
       ui.showToast("该功能将在后续版本提供");
       break;
   }
@@ -136,6 +142,9 @@ function bindEvents(): void {
     onNext: () => void nav(() => invoke("next_image")),
     onJumpFolder: (t) => void nav(() => invoke("jump_folder", { target: t })),
     onSetMode: setFitMode,
+    onToggleImmersive: () => void windowState.toggleImmersive(),
+    onExitImmersive: () => void windowState.exitImmersive(),
+    onTogglePin: () => void windowState.togglePin(),
     onWake: () => ui.wake(),
   });
 

@@ -41,7 +41,9 @@ export const ICONS: Record<string, string> = {
   pause: svgIcon('<path d="M8 5v14" stroke-width="2.2"/><path d="M16 5v14" stroke-width="2.2"/>'),
 
   // —— 窗口 ——
-  pin: svgIcon('<circle cx="12" cy="7" r="4"/><path d="M12 11v10"/>'),
+  pin: svgIcon(
+    '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/>'
+  ),
   "maximize-2": svgIcon(
     '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>'
   ),
@@ -104,8 +106,8 @@ export const TOOLBAR_GROUPS: ToolbarGroup[] = [
   {
     id: "window",
     items: [
-      { id: "pin", icon: "pin", tip: "窗口置顶 · T（M2）", enabled: false },
-      { id: "fullscreen", icon: "maximize-2", tip: "沉浸模式 · F（M2）", enabled: false },
+      { id: "pin", icon: "pin", tip: "窗口置顶 · T", enabled: true },
+      { id: "fullscreen", icon: "maximize-2", tip: "沉浸模式 · F", enabled: true },
     ],
   },
 ];

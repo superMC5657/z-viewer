@@ -98,6 +98,25 @@ export class UI {
     }, TOAST_MS);
   }
 
+  /** 沉浸模式切换：body.immersive 驱动 CSS（标题栏/浮层位置），进入时隐藏全部浮层 */
+  setImmersive(immersive: boolean): void {
+    document.body.classList.toggle("immersive", immersive);
+    if (immersive) {
+      this.hideAll();
+    } else {
+      this.wake();
+    }
+  }
+
+  /** 立即隐藏所有浮层（进入沉浸模式时调用） */
+  hideAll(): void {
+    this.infoBar.classList.add("hidden");
+    this.toolbar.classList.add("hidden");
+    this.infoBar.setAttribute("aria-hidden", "true");
+    this.toolbar.setAttribute("aria-hidden", "true");
+    window.clearTimeout(this.idleTimer);
+  }
+
   // ---------- 浮层闲置隐藏（设计语言「用完即走」） ----------
 
   /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1） */

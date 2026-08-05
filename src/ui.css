@@ -108,6 +108,10 @@ body {
 #empty-state.hidden {
   opacity: 0;
 }
+/* 沉浸模式纯黑看图，空状态提示一并隐藏 */
+body.immersive #empty-state {
+  opacity: 0;
+}
 .empty-icon {
   font-size: 44px;
   filter: grayscale(0.4) opacity(0.7);
@@ -179,6 +183,14 @@ body {
   -webkit-backdrop-filter: var(--glass-blur);
   border-bottom: 1px solid var(--glass-border);
   z-index: 50;
+  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+}
+
+/* 沉浸模式（草图 3.5）：标题栏隐藏，浮层定位适配全屏 */
+body.immersive #titlebar {
+  opacity: 0;
+  transform: translateY(-100%);
+  pointer-events: none;
 }
 
 .tb-left {
@@ -264,6 +276,11 @@ body {
   white-space: nowrap;
   z-index: 40;
   transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+}
+
+/* 沉浸模式下无标题栏，信息条距顶 16px（草图 3.5） */
+body.immersive #info-bar {
+  top: var(--floating-margin);
 }
 #info-bar.hidden {
   opacity: 0;
