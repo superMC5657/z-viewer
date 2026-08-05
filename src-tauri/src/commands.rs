@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, State};
 
 use crate::browse::{Boundary, BrowseModel, BrowseState, FolderTarget};
-use crate::cache::DecodeCache;
+use crate::cache::{DecodeCache, FolderFirstCache};
 
 /// 后台扫描完成事件（携带最新 BrowseState，前端刷新位置计数）
 pub const BROWSE_SCAN_READY: &str = "browse://scan-ready";
@@ -14,43 +14,38 @@ pub const BROWSE_SCAN_READY: &str = "browse://scan-ready";
 /// 全局浏览模型（Mutex：Tauri 命令在独立线程执行）
 pub struct AppState(pub Mutex<Option<BrowseModel>>);
 
-/// 用户设置（缓存强度等）
+/// 用户设置（缓存开关/深度）
 pub struct SettingsState(pub Mutex<AppSettings>);
 
-/// 缓存强度（0..=10）：
-/// - 0：不缓存不预加载
-/// - 1：前后各 1 张
-/// - 2..=10：前 1 张，后 2..=10 张（维护 LRU 缓存队列）
+/// 用户设置
+/// - enabled：缓存总开关（UI 为工具栏一个按钮，激活态 = 开启）
+/// - neighbor_depth：当前文件夹前后图片缓存等级（默认 1 = 前后各 1；留参数以后配置）
+/// - folder_first_depth：文件夹首图队列深度（默认 1；跨文件夹跳转缓存）
 #[derive(serde::Serialize, Clone, Copy)]
 pub struct AppSettings {
-    pub cache_strength: usize,
+    pub enabled: bool,
+    pub neighbor_depth: usize,
+    pub folder_first_depth: usize,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
-        Self { cache_strength: 1 }
+        Self {
+            enabled: true,
+            neighbor_depth: 1,
+            folder_first_depth: 1,
+        }
     }
 }
 
 impl AppSettings {
-    /// 按强度换算预取数量：返回 (prev_n, next_n)
-    pub fn prefetch_window(&self) -> (usize, usize) {
-        let s = self.cache_strength.min(10);
-        match s {
-            0 => (0, 0),
-            1 => (1, 1),
-            n => (1, n), // 2..=10：前 1 后 n
+    /// 邻居预取数量：neighbor_depth 前后各 n；enabled=false 或 depth=0 → 不预取
+    pub fn neighbor_window(&self) -> (usize, usize) {
+        if !self.enabled {
+            return (0, 0);
         }
-    }
-
-    /// 按强度换算缓存容量（覆盖预取窗口 + 当前图 + 余量）
-    pub fn cache_capacity(&self) -> usize {
-        let s = self.cache_strength.min(10);
-        match s {
-            0 => 0,
-            1 => 4,
-            n => (2 * n + 1).max(8),
-        }
+        let n = self.neighbor_depth;
+        (n, n)
     }
 }
 
@@ -99,11 +94,11 @@ fn nav_ok_or_none(model: &mut BrowseModel, nav: crate::browse::Nav) -> NavResult
 
 /// 导航成功后后台预取上下文图片（按缓存强度），填充解码缓存（8.2）
 /// 仅缓存 RAW/动画（asset 通道由 WebView 自身缓存）；失败静默忽略
-/// begin_prefetch 去重：同一路径已在解码中则跳过
+/// 队列 B：当前文件夹前后邻居预取（enabled 且 depth>0 时）
 fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, settings: &AppSettings) {
-    let (prev_n, next_n) = settings.prefetch_window();
+    let (prev_n, next_n) = settings.neighbor_window();
     if prev_n + next_n == 0 {
-        return; // 强度 0：不预加载
+        return; // 缓存关闭或 depth=0：不预加载
     }
     for p in model.context_paths(prev_n, next_n) {
         let path = p.to_string_lossy().to_string();
@@ -129,6 +124,40 @@ fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, settings: &AppSett
     }
 }
 
+/// 队列 A：每个文件夹第一张图预取（跨文件夹跳转无延迟）
+/// 当前文件夹的邻居文件夹首图 → FolderFirstCache
+fn prefetch_folder_firsts(
+    model: &BrowseModel,
+    first_cache: &FolderFirstCache,
+    settings: &AppSettings,
+) {
+    if !settings.enabled || settings.folder_first_depth == 0 {
+        return;
+    }
+    let depth = settings.folder_first_depth.min(3); // 首图队列深度上限 3
+    for folder in model.neighbor_folders(depth) {
+        let folder_str = folder.to_string_lossy().to_string();
+        if first_cache.peek(&folder_str) {
+            continue;
+        }
+        // 取该文件夹第一张图并解码入队
+        let first = BrowseModel::first_image_of(&folder);
+        let Some(first) = first else { continue };
+        let path = first.to_string_lossy().to_string();
+        if crate::decode::is_asset_ext(&path) {
+            continue; // asset 由前端池预热
+        }
+        let first_cache = first_cache.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Ok(result) = crate::decode::load_image(&path) {
+                if result.mode != "asset" {
+                    first_cache.put(folder_str, Arc::new(result));
+                }
+            }
+        });
+    }
+}
+
 /// 打开指定路径（拖拽/命令行）：文件定位到浏览模型，目录取其首张图片
 /// 首图立即返回；兄弟文件夹后台枚举完成后 emit 事件供前端刷新计数
 #[tauri::command]
@@ -136,6 +165,7 @@ pub fn open_path(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     cache: State<'_, DecodeCache>,
+    first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
     path: String,
 ) -> Result<NavResult, String> {
@@ -154,6 +184,7 @@ pub fn open_path(
     {
         let s = settings.0.lock().map_err(|e| e.to_string())?;
         prefetch_context(&model, cache.inner(), &s);
+        prefetch_folder_firsts(&model, first_cache.inner(), &s);
     }
     *state.0.lock().map_err(|e| e.to_string())? = Some(model);
     Ok(NavResult::ok(st))
@@ -163,6 +194,7 @@ pub fn open_path(
 pub fn next_image(
     state: State<'_, AppState>,
     cache: State<'_, DecodeCache>,
+    first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
 ) -> Result<NavResult, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -173,6 +205,7 @@ pub fn next_image(
             if r.state.is_some() {
                 let s = settings.0.lock().map_err(|e| e.to_string())?;
                 prefetch_context(m, cache.inner(), &s);
+                prefetch_folder_firsts(m, first_cache.inner(), &s);
             }
             Ok(r)
         }
@@ -184,6 +217,7 @@ pub fn next_image(
 pub fn prev_image(
     state: State<'_, AppState>,
     cache: State<'_, DecodeCache>,
+    first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
 ) -> Result<NavResult, String> {
     let mut guard = state.0.lock().map_err(|e| e.to_string())?;
@@ -194,6 +228,7 @@ pub fn prev_image(
             if r.state.is_some() {
                 let s = settings.0.lock().map_err(|e| e.to_string())?;
                 prefetch_context(m, cache.inner(), &s);
+                prefetch_folder_firsts(m, first_cache.inner(), &s);
             }
             Ok(r)
         }
@@ -206,6 +241,7 @@ pub fn prev_image(
 pub fn jump_folder(
     state: State<'_, AppState>,
     cache: State<'_, DecodeCache>,
+    first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
     target: String,
 ) -> Result<NavResult, String> {
@@ -224,6 +260,7 @@ pub fn jump_folder(
             if r.state.is_some() {
                 let s = settings.0.lock().map_err(|e| e.to_string())?;
                 prefetch_context(m, cache.inner(), &s);
+                prefetch_folder_firsts(m, first_cache.inner(), &s);
             }
             Ok(r)
         }
@@ -239,14 +276,14 @@ pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
 
 /// 图片加载通道分发：常见格式 → asset（前端直读）；RAW → 解码 JPEG；动画 → 帧序列
 /// 命中缓存直接返回（≤50ms 目标）；spawn_blocking 避免 CPU 密集解码占用 runtime 线程
-/// 缓存强度 0 时跳过缓存读写（不缓存）
+/// 缓存关闭（enabled=false）时跳过缓存读写（不缓存）
 #[tauri::command]
 pub async fn load_image(
     path: String,
     cache: State<'_, DecodeCache>,
     settings: State<'_, SettingsState>,
 ) -> Result<crate::decode::LoadResult, String> {
-    let caching = settings.0.lock().map_err(|e| e.to_string())?.cache_strength > 0;
+    let caching = settings.0.lock().map_err(|e| e.to_string())?.enabled;
     if caching {
         if let Some(hit) = cache.get(&path) {
             return Ok((*hit).clone());
@@ -284,18 +321,25 @@ pub async fn load_image(
     }
 }
 
-/// 设置缓存强度（0..=10），并联动缓存容量
-/// - 0：不缓存不预加载；1：前后各 1；2..=10：前 1 后 n（LRU 队列）
+/// 缓存总开关（UI 工具栏按钮，激活态 = 开启）
 #[tauri::command]
-pub fn set_cache_strength(
+pub fn set_cache_enabled(
     cache: State<'_, DecodeCache>,
+    first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
-    strength: usize,
+    enabled: bool,
 ) -> Result<AppSettings, String> {
-    let s = strength.min(10);
     let mut g = settings.0.lock().map_err(|e| e.to_string())?;
-    g.cache_strength = s;
-    cache.set_capacity(g.cache_capacity());
+    g.enabled = enabled;
+    if enabled {
+        // 开启时恢复容量
+        cache.set_capacity(cache.capacity().max(4));
+        first_cache.set_capacity(first_cache.capacity().max(4));
+    } else {
+        // 关闭时清空队列
+        cache.set_capacity(0);
+        first_cache.set_capacity(0);
+    }
     Ok(*g)
 }
 
@@ -319,7 +363,7 @@ pub fn get_context(
         .0
         .lock()
         .map_err(|e| e.to_string())?
-        .prefetch_window();
+        .neighbor_window();
     Ok(model
         .context_paths(prev_n, next_n)
         .into_iter()
@@ -332,24 +376,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prefetch_window_rules() {
-        let s = |n| AppSettings { cache_strength: n };
-        assert_eq!(s(0).prefetch_window(), (0, 0), "0：不预加载");
-        assert_eq!(s(1).prefetch_window(), (1, 1), "1：前后各 1");
-        assert_eq!(s(2).prefetch_window(), (1, 2), "2：前 1 后 2");
-        assert_eq!(s(5).prefetch_window(), (1, 5), "5：前 1 后 5");
-        assert_eq!(s(10).prefetch_window(), (1, 10), "10：前 1 后 10");
-        assert_eq!(s(99).prefetch_window(), (1, 10), "超限钳制到 10");
-    }
-
-    #[test]
-    fn cache_capacity_rules() {
-        let s = |n| AppSettings { cache_strength: n };
-        assert_eq!(s(0).cache_capacity(), 0, "0：不缓存");
-        assert_eq!(s(1).cache_capacity(), 4);
-        assert_eq!(s(2).cache_capacity(), 8, "2*2+1=5 → 下限 8");
-        assert_eq!(s(5).cache_capacity(), 11);
-        assert_eq!(s(10).cache_capacity(), 21);
+    fn neighbor_window_rules() {
+        let s = AppSettings { enabled: true, neighbor_depth: 1, folder_first_depth: 1 };
+        assert_eq!(s.neighbor_window(), (1, 1), "默认：前后各 1");
+        let s2 = AppSettings { enabled: false, neighbor_depth: 3, folder_first_depth: 1 };
+        assert_eq!(s2.neighbor_window(), (0, 0), "关闭时不预取");
+        let s3 = AppSettings { enabled: true, neighbor_depth: 0, folder_first_depth: 1 };
+        assert_eq!(s3.neighbor_window(), (0, 0), "depth=0 不预取");
+        let s4 = AppSettings { enabled: true, neighbor_depth: 5, folder_first_depth: 1 };
+        assert_eq!(s4.neighbor_window(), (5, 5), "前后各 5（等级参数）");
     }
 }
 

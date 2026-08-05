@@ -35,7 +35,7 @@ ui.buildToolbar({ onAction: handleToolbarAction });
 const windowState = new WindowState(getCurrentWindow(), viewer, ui);
 const slideshow = new Slideshow();
 const prefetch = new PrefetchPool();
-let cacheStrength = 1;
+let cacheEnabled = true;
 
 // ---------- 状态 ----------
 let currentDims: { w: number; h: number } | null = null;
@@ -232,8 +232,8 @@ function handleToolbarAction(id: string): void {
     case "fullscreen":
       void windowState.toggleImmersive();
       break;
-    case "settings":
-      ui.setSettingsBarVisible(!ui.settingsVisible);
+    case "cache-toggle":
+      void toggleCache();
       break;
     case "slideshow":
       slideshow.toggle();
@@ -307,27 +307,30 @@ function buildSlideshowBar(): void {
   };
 }
 
-// ---------- 设置（缓存强度） ----------
+// ---------- 缓存开关 ----------
 
-function buildSettingsBar(): void {
-  const sel = document.getElementById("cache-strength") as HTMLSelectElement;
-  sel.value = String(cacheStrength);
-  sel.addEventListener("change", () => {
-    const v = Number(sel.value);
-    cacheStrength = v;
+/** 切换缓存总开关（工具栏按钮，激活态 = 开启） */
+async function toggleCache(): Promise<void> {
+  const next = !cacheEnabled;
+  try {
+    await invoke<AppSettings>("set_cache_enabled", { enabled: next });
+    cacheEnabled = next;
     try {
-      localStorage.setItem("cache-strength", String(v));
+      localStorage.setItem("cache-enabled", String(next));
     } catch {
       /* 忽略持久化失败 */
     }
-    void invoke<AppSettings>("set_cache_strength", { strength: v })
-      .then(() => {
-        // 强度变化后立即按新窗口预取
-        void refreshContext();
-        ui.setSettingsBarVisible(false); // 选择完收起
-      })
-      .catch((err) => ui.showToast(`设置失败：${String(err)}`));
-  });
+    ui.setToolbarActive("cache-toggle", next);
+    if (next) {
+      // 开启后立即按当前上下文预取
+      void refreshContext();
+      ui.showToast("预取缓存已开启");
+    } else {
+      ui.showToast("预取缓存已关闭");
+    }
+  } catch (err) {
+    ui.showToast(`切换失败：${String(err)}`);
+  }
 }
 
 // ---------- 事件装配 ----------
@@ -401,7 +404,6 @@ async function init(): Promise<void> {
   bindEvents();
   buildFrameBar();
   buildSlideshowBar();
-  buildSettingsBar();
   ui.setEmpty(true);
   // 空状态初始隐藏帧条（打开图片后由 showImage 按需设置）
   ui.setFrameBarVisible(false);
@@ -423,14 +425,14 @@ async function init(): Promise<void> {
       await showImage(state);
       ui.setEmpty(false);
     }
-    // 读取缓存强度设置并同步 UI（localStorage 持久化优先，否则 Rust 默认）
+    // 读取缓存设置并同步 UI（localStorage 持久化优先，否则 Rust 默认）
     const settings = await invoke<AppSettings>("get_settings");
-    const saved = Number(localStorage.getItem("cache-strength"));
-    const strength = Number.isFinite(saved) && saved >= 0 && saved <= 10 ? saved : settings.cache_strength;
-    cacheStrength = strength;
-    (document.getElementById("cache-strength") as HTMLSelectElement).value = String(strength);
-    if (strength !== settings.cache_strength) {
-      await invoke<AppSettings>("set_cache_strength", { strength }).catch(() => undefined);
+    const saved = localStorage.getItem("cache-enabled");
+    const enabled = saved !== null ? saved === "true" : settings.enabled;
+    cacheEnabled = enabled;
+    ui.setToolbarActive("cache-toggle", enabled);
+    if (enabled !== settings.enabled) {
+      await invoke<AppSettings>("set_cache_enabled", { enabled }).catch(() => undefined);
     }
   } catch (err) {
     console.error(err);

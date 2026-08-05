@@ -38,7 +38,11 @@ export interface LoadResult {
 
 /** Rust 端 AppSettings */
 export interface AppSettings {
-  cache_strength: number;
+  enabled: boolean;
+  /** 当前文件夹前后图片缓存等级（默认 1 = 前后各 1，留参数以后配置） */
+  neighbor_depth: number;
+  /** 文件夹首图队列深度（默认 1） */
+  folder_first_depth: number;
 }
 
 /** 需走 IPC 的扩展名（可能多帧动画或 RAW），其余浏览器原生解码直接 asset */

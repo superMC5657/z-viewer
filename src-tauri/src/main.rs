@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use browse::BrowseModel;
-use cache::DecodeCache;
+use cache::{DecodeCache, FolderFirstCache};
 use commands::{AppSettings, AppState, SettingsState};
 use tauri::{Emitter, Manager};
 
@@ -58,7 +58,8 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState(Mutex::new(None)))
         .manage(SettingsState(Mutex::new(AppSettings::default())))
-        .manage(DecodeCache::new(AppSettings::default().cache_capacity()))
+        .manage(DecodeCache::new(4))
+        .manage(FolderFirstCache::new(4))
         .setup(|app| {
             // 双击图片打开 / 命令行传参（文件或目录）：初始化浏览模型
             if let Some(path) = startup_image_path() {
@@ -90,7 +91,7 @@ fn main() {
             commands::jump_folder,
             commands::get_initial_state,
             commands::load_image,
-            commands::set_cache_strength,
+            commands::set_cache_enabled,
             commands::get_settings,
             commands::get_context,
         ])

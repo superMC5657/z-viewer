@@ -412,6 +412,25 @@ impl BrowseModel {
         out
     }
 
+    /// 当前文件夹相邻的文件夹路径（前 depth 个 + 后 depth 个，跨文件夹跳转预取队列 A 用）
+    pub fn neighbor_folders(&self, depth: usize) -> Vec<PathBuf> {
+        let d = self.inner.m.lock().unwrap();
+        let fi = d.folder_index;
+        let mut out = Vec::new();
+        for i in (fi.saturating_sub(depth))..fi {
+            out.push(d.folders[i].path.clone());
+        }
+        for i in (fi + 1)..=(fi + depth).min(d.folders.len() - 1) {
+            out.push(d.folders[i].path.clone());
+        }
+        out
+    }
+
+    /// 取某文件夹的第一张图片（自然排序首张）
+    pub fn first_image_of(dir: &Path) -> Option<PathBuf> {
+        Self::list_images(dir).into_iter().next()
+    }
+
     pub fn state(&self) -> BrowseState {
         Self::state_from_inner(&self.inner)
     }

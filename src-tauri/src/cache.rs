@@ -9,6 +9,72 @@ use std::sync::{Arc, Mutex};
 
 use crate::decode::LoadResult;
 
+/// 队列 A：每个文件夹第一张图片的解码缓存（LRU）
+/// 跨文件夹跳转（PgUp/PgDn/⏮⏭）时命中首图缓存 → 无延迟显示
+/// key = 文件夹路径，value = 该文件夹第一张图的解码结果（raw/animated）
+pub struct FolderFirstCache {
+    inner: Arc<Mutex<VecDeque<(String, Arc<LoadResult>)>>>,
+    capacity: std::sync::atomic::AtomicUsize,
+}
+
+impl Clone for FolderFirstCache {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            capacity: std::sync::atomic::AtomicUsize::new(self.capacity()),
+        }
+    }
+}
+
+impl FolderFirstCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            capacity: std::sync::atomic::AtomicUsize::new(capacity),
+        }
+    }
+
+    pub fn get(&self, folder: &str) -> Option<Arc<LoadResult>> {
+        let mut q = self.inner.lock().ok()?;
+        let pos = q.iter().position(|(f, _)| f == folder)?;
+        let item = q.remove(pos)?;
+        q.push_back(item.clone());
+        Some(item.1)
+    }
+
+    pub fn peek(&self, folder: &str) -> bool {
+        self.inner
+            .lock()
+            .map(|q| q.iter().any(|(f, _)| f == folder))
+            .unwrap_or(false)
+    }
+
+    pub fn put(&self, folder: String, result: Arc<LoadResult>) {
+        if let Ok(mut q) = self.inner.lock() {
+            if let Some(pos) = q.iter().position(|(f, _)| *f == folder) {
+                q.remove(pos);
+            }
+            q.push_back((folder, result));
+            while q.len() > self.capacity() {
+                q.pop_front();
+            }
+        }
+    }
+
+    pub fn set_capacity(&self, capacity: usize) {
+        self.capacity.store(capacity, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut q) = self.inner.lock() {
+            while q.len() > self.capacity() {
+                q.pop_front();
+            }
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 pub struct DecodeCache {
     inner: Arc<Mutex<VecDeque<(String, Arc<LoadResult>)>>>,
     /// 正在后台解码的路径（预取去重，防止快速翻页重复解码 RAW）
@@ -225,5 +291,21 @@ mod tests {
         assert!(cache.get("p1").is_none());
         assert!(cache.get("p2").is_some());
         assert!(cache.get("p3").is_some());
+    }
+
+    #[test]
+    fn folder_first_cache_lru() {
+        let cache = FolderFirstCache::new(2);
+        cache.put("A".into(), sample("a"));
+        cache.put("B".into(), sample("b"));
+        assert!(cache.peek("A"));
+        assert!(cache.get("A").is_some(), "命中 A 并移到 MRU");
+        cache.put("C".into(), sample("c"));
+        assert!(cache.get("B").is_none(), "A 被访问后 B 是 LRU 被淘汰");
+        assert!(cache.get("A").is_some());
+        assert!(cache.get("C").is_some());
+        // 关闭缓存：set_capacity(0) 清空
+        cache.set_capacity(0);
+        assert!(cache.get("A").is_none(), "容量 0 全清");
     }
 }
