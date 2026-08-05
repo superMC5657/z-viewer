@@ -265,7 +265,9 @@ export class Viewer {
     const s = this.currentScale;
     const ew = (this.rotation % 180 === 0 ? this.naturalW : this.naturalH) * s;
     const eh = (this.rotation % 180 === 0 ? this.naturalH : this.naturalW) * s;
-    return ew > this.stage.clientWidth + 4 || eh > this.stage.clientHeight + 4;
+    // 可拖 = 图片任一边真正超出视口（需 > 2*margin 才有可动空间，与 clampPan 一致）
+    // 若仅超出 4px 容差，clamp 会把图片钉死（边缘强制留 margin），拖了没效果
+    return ew > this.stage.clientWidth + PAN_MARGIN * 2 || eh > this.stage.clientHeight + PAN_MARGIN * 2;
   }
 
   // ---------- 动画控制 ----------
@@ -406,7 +408,7 @@ export class Viewer {
     const s = this.currentScale;
     const ew = (this.rotation % 180 === 0 ? this.naturalW : this.naturalH) * s;
     const eh = (this.rotation % 180 === 0 ? this.naturalH : this.naturalW) * s;
-    const margin = 24;
+    const margin = PAN_MARGIN;
     const minX = margin - ew / 2;
     const maxX = this.stage.clientWidth - margin + ew / 2;
     const minY = margin - eh / 2;
@@ -442,6 +444,9 @@ export class Viewer {
 }
 
 const TITLEBAR_H = 32;
+
+/** 平移边距：图片边缘与视口保留的最小间距（isPannable/clampPan 共用） */
+const PAN_MARGIN = 24;
 
 /** base64 PNG → ImageBitmap（动画帧预解码） */
 async function base64ToBitmap(b64: string): Promise<ImageBitmap> {
