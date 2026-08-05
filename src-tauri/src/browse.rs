@@ -347,41 +347,69 @@ impl BrowseModel {
 
     // ---------- 状态 ----------
 
-    /// 当前图片相邻路径（跨文件夹衔接），用于预加载缓存（8.2）
-    /// 非阻塞：目标文件夹未填充时该方向跳过（预取是优化，不等待）
-    pub fn neighbor_paths(&self) -> (Option<PathBuf>, Option<PathBuf>) {
+    /// 当前图片上下文的路径（跨文件夹衔接），用于预加载缓存（8.2）
+    /// 前 prev_n 张 + 后 next_n 张；未填充的文件夹方向跳过（预取是优化，不等待）
+    pub fn context_paths(&self, prev_n: usize, next_n: usize) -> Vec<PathBuf> {
         let d = self.inner.m.lock().unwrap();
         let fi = d.folder_index;
         let ii = d.image_index;
-        let cur = d.folders[fi].images.as_ref();
+        let mut out = Vec::with_capacity(prev_n + next_n);
 
-        let prev = if ii > 0 {
-            cur.and_then(|imgs| imgs.get(ii - 1)).cloned()
-        } else if fi > 0 {
-            d.folders[fi - 1]
-                .images
-                .as_ref()
-                .and_then(|imgs| imgs.last())
-                .cloned()
-        } else {
-            None
-        };
-        let next = if let Some(imgs) = cur {
-            if ii + 1 < imgs.len() {
-                imgs.get(ii + 1).cloned()
-            } else if fi + 1 < d.folders.len() {
-                d.folders[fi + 1]
+        // 向前 prev_n 张（跨文件夹：当前文件夹内往前，耗尽则上一文件夹末尾）
+        {
+            let mut remaining = prev_n;
+            let mut fi_cursor = fi;
+            let mut prev_idx = ii; // 线性上一张索引
+            while remaining > 0 {
+                if prev_idx > 0 {
+                    if let Some(imgs) = d.folders[fi_cursor].images.as_ref() {
+                        if prev_idx - 1 < imgs.len() {
+                            out.push(imgs[prev_idx - 1].clone());
+                            prev_idx -= 1;
+                            remaining -= 1;
+                            continue;
+                        }
+                    }
+                }
+                if fi_cursor > 0 {
+                    fi_cursor -= 1;
+                    prev_idx = d.folders[fi_cursor]
+                        .images
+                        .as_ref()
+                        .map(|imgs| imgs.len())
+                        .unwrap_or(0);
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // 向后 next_n 张（跨文件夹：当前文件夹内往后，耗尽则下一文件夹开头）
+        {
+            let mut remaining = next_n;
+            let mut fi_cursor = fi;
+            let mut next_idx = ii + 1; // 线性下一张索引
+            while remaining > 0 {
+                let cur_len = d.folders[fi_cursor]
                     .images
                     .as_ref()
-                    .and_then(|imgs| imgs.first())
-                    .cloned()
-            } else {
-                None
+                    .map(|imgs| imgs.len())
+                    .unwrap_or(0);
+                if next_idx < cur_len {
+                    if let Some(imgs) = d.folders[fi_cursor].images.as_ref() {
+                        out.push(imgs[next_idx].clone());
+                    }
+                    next_idx += 1;
+                    remaining -= 1;
+                } else if fi_cursor + 1 < d.folders.len() {
+                    fi_cursor += 1;
+                    next_idx = 0;
+                } else {
+                    break;
+                }
             }
-        } else {
-            None
-        };
-        (prev, next)
+        }
+        out
     }
 
     pub fn state(&self) -> BrowseState {
@@ -742,6 +770,43 @@ mod tests {
         );
         assert_eq!(m.state().folder_name, "B");
         assert_eq!(m.state().file_name, "b1.jpg");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn context_paths_forward_in_first_folder() {
+        // 首文件夹中间图向前：应在当前文件夹内取（回归：fi==0 时被整段跳过）
+        let base = build_tree();
+        let m = open_sync(&base.join("A/a2.png"));
+        let ctx = m.context_paths(2, 0);
+        assert_eq!(ctx.len(), 1, "A 是第一文件夹，a2 向前只有 a1 一张");
+        assert_eq!(ctx[0].file_name().unwrap(), "a1.png", "向前第 1 张");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn context_paths_cross_folder_both_directions() {
+        // B/b1：向前 1 应到 A 的 a10（跨文件夹末尾），向后 2 应到 b2 与 C 的 c1
+        let base = build_tree();
+        let m = open_sync(&base.join("B/b1.jpg"));
+        let ctx = m.context_paths(1, 2);
+        let names: Vec<String> = ctx
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
+            .collect();
+        assert_eq!(names, vec!["a10.png", "b2.jpg", "c1.png"], "前1后2（跨文件夹）");
+        cleanup(&base);
+    }
+
+    #[test]
+    fn context_paths_at_global_boundaries() {
+        let base = build_tree();
+        // 全局第一张：向前 0，向后应 C 内 2 张 + B 的 2 张...
+        let m = open_sync(&base.join("A/a1.png"));
+        assert!(m.context_paths(1, 0).is_empty(), "全局第一张无向前");
+        // 全局最后一张：向后 0
+        let m2 = open_sync(&base.join("C/c1.png"));
+        assert!(m2.context_paths(0, 2).is_empty(), "全局最后一张无向后");
         cleanup(&base);
     }
 }

@@ -17,9 +17,11 @@ import { Viewer, type FitMode } from "./viewer";
 import { UI } from "./ui";
 import { WindowState } from "./window-state";
 import { Slideshow } from "./slideshow";
+import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
 import { ICONS } from "./icons";
-import type { BrowseState, LoadResult, NavResult } from "./types";
+import type { AppSettings, BrowseState, LoadResult, NavResult } from "./types";
+import { needsIpc } from "./types";
 import "./ui.css";
 
 const stage = document.getElementById("stage")!;
@@ -32,6 +34,8 @@ const ui = new UI();
 ui.buildToolbar({ onAction: handleToolbarAction });
 const windowState = new WindowState(getCurrentWindow(), viewer, ui);
 const slideshow = new Slideshow();
+const prefetch = new PrefetchPool();
+let cacheStrength = 1;
 
 // ---------- 状态 ----------
 let currentDims: { w: number; h: number } | null = null;
@@ -53,6 +57,27 @@ async function showImage(state: BrowseState): Promise<void> {
   if (currentBlobUrl) {
     URL.revokeObjectURL(currentBlobUrl);
     currentBlobUrl = null;
+  }
+
+  // 预取下一批上下文（方案三/四：asset 预热 + Rust 缓存）
+  void refreshContext();
+
+  // 方案二：asset 快速通道 —— 浏览器原生解码格式直接 convertFileSrc，跳过 IPC
+  if (!needsIpc(state.path)) {
+    try {
+      await viewer.loadStatic(convertFileSrc(state.path));
+    } catch (err) {
+      if (seq === showSeq) {
+        ui.showToast(`无法显示图片：${String(err)}`);
+      }
+      return;
+    }
+    if (seq !== showSeq) return;
+    currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
+    ui.updateInfo(state, currentDims);
+    ui.setFramePlaying(viewer.isPlaying);
+    ui.setSlideshowProgress(state.global_index + 1, state.global_total);
+    return;
   }
 
   let result: LoadResult;
@@ -80,7 +105,7 @@ async function showImage(state: BrowseState): Promise<void> {
       }
       currentBlobUrl = url;
     } else {
-      // 常见格式：asset 协议直读
+      // 动画格式但单帧：asset 协议直读
       await viewer.loadStatic(convertFileSrc(state.path));
     }
   } catch (err) {
@@ -97,6 +122,16 @@ async function showImage(state: BrowseState): Promise<void> {
   ui.setFramePlaying(viewer.isPlaying);
   // 幻灯片进度计数（播放中实时更新）
   ui.setSlideshowProgress(state.global_index + 1, state.global_total);
+}
+
+/** 获取当前上下文路径并预热（方案三/四） */
+async function refreshContext(): Promise<void> {
+  try {
+    const paths = await invoke<string[]>("get_context");
+    prefetch.warm(paths, needsIpc);
+  } catch (err) {
+    console.error("预取上下文失败", err);
+  }
 }
 
 /** 边界 Toast 文案（图片级 / 文件夹级，见《UI设计草图.md》第 6 节） */
@@ -129,6 +164,7 @@ async function nav(fn: () => Promise<NavResult>): Promise<void> {
 
 async function openPath(path: string): Promise<void> {
   slideshow.stop(); // 打开新图片停止幻灯片
+  prefetch.clear(); // 新上下文，清空旧预解码池
   try {
     const result = await invoke<NavResult>("open_path", { path });
     if (result.state) await showImage(result.state);
@@ -188,6 +224,9 @@ function handleToolbarAction(id: string): void {
       break;
     case "fullscreen":
       void windowState.toggleImmersive();
+      break;
+    case "settings":
+      ui.setSettingsBarVisible(!ui.settingsVisible);
       break;
     case "slideshow":
       slideshow.toggle();
@@ -261,6 +300,29 @@ function buildSlideshowBar(): void {
   };
 }
 
+// ---------- 设置（缓存强度） ----------
+
+function buildSettingsBar(): void {
+  const sel = document.getElementById("cache-strength") as HTMLSelectElement;
+  sel.value = String(cacheStrength);
+  sel.addEventListener("change", () => {
+    const v = Number(sel.value);
+    cacheStrength = v;
+    try {
+      localStorage.setItem("cache-strength", String(v));
+    } catch {
+      /* 忽略持久化失败 */
+    }
+    void invoke<AppSettings>("set_cache_strength", { strength: v })
+      .then(() => {
+        // 强度变化后立即按新窗口预取
+        void refreshContext();
+        ui.setSettingsBarVisible(false); // 选择完收起
+      })
+      .catch((err) => ui.showToast(`设置失败：${String(err)}`));
+  });
+}
+
 // ---------- 事件装配 ----------
 
 function bindEvents(): void {
@@ -332,6 +394,7 @@ async function init(): Promise<void> {
   bindEvents();
   buildFrameBar();
   buildSlideshowBar();
+  buildSettingsBar();
   ui.setEmpty(true);
   // 空状态初始隐藏帧条（打开图片后由 showImage 按需设置）
   ui.setFrameBarVisible(false);
@@ -350,6 +413,15 @@ async function init(): Promise<void> {
     if (state) {
       await showImage(state);
       ui.setEmpty(false);
+    }
+    // 读取缓存强度设置并同步 UI（localStorage 持久化优先，否则 Rust 默认）
+    const settings = await invoke<AppSettings>("get_settings");
+    const saved = Number(localStorage.getItem("cache-strength"));
+    const strength = Number.isFinite(saved) && saved >= 0 && saved <= 10 ? saved : settings.cache_strength;
+    cacheStrength = strength;
+    (document.getElementById("cache-strength") as HTMLSelectElement).value = String(strength);
+    if (strength !== settings.cache_strength) {
+      await invoke<AppSettings>("set_cache_strength", { strength }).catch(() => undefined);
     }
   } catch (err) {
     console.error(err);

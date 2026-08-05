@@ -88,6 +88,24 @@
       <span id="ss-progress" class="ss-progress">0/0</span>
     </div>
 
+    <!-- ===== 设置浮条（缓存强度） ===== -->
+    <div id="settings-bar" class="glass hidden" aria-hidden="true">
+      <span class="ss-interval">预取强度</span>
+      <select id="cache-strength" class="ss-interval">
+        <option value="0">0 · 不预加载</option>
+        <option value="1" selected>1 · 前后各 1</option>
+        <option value="2">2 · 前1后2</option>
+        <option value="3">3 · 前1后3</option>
+        <option value="4">4 · 前1后4</option>
+        <option value="5">5 · 前1后5</option>
+        <option value="6">6 · 前1后6</option>
+        <option value="7">7 · 前1后7</option>
+        <option value="8">8 · 前1后8</option>
+        <option value="9">9 · 前1后9</option>
+        <option value="10">10 · 前1后10</option>
+      </select>
+    </div>
+
     <!-- ===== 边界提醒 Toast ===== -->
     <div id="toast" class="glass" role="status">
       <svg class="toast-icon" viewBox="0 0 24 24">

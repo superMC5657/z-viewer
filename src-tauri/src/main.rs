@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use browse::BrowseModel;
 use cache::DecodeCache;
-use commands::AppState;
+use commands::{AppSettings, AppState, SettingsState};
 use tauri::{Emitter, Manager};
 
 /// 解析命令行传入的路径：相对路径优先按项目根解析
@@ -57,7 +57,8 @@ fn startup_image_path() -> Option<String> {
 fn main() {
     tauri::Builder::default()
         .manage(AppState(Mutex::new(None)))
-        .manage(DecodeCache::new(8))
+        .manage(SettingsState(Mutex::new(AppSettings::default())))
+        .manage(DecodeCache::new(AppSettings::default().cache_capacity()))
         .setup(|app| {
             // 双击图片打开 / 命令行传参（文件或目录）：初始化浏览模型
             if let Some(path) = startup_image_path() {
@@ -89,6 +90,9 @@ fn main() {
             commands::jump_folder,
             commands::get_initial_state,
             commands::load_image,
+            commands::set_cache_strength,
+            commands::get_settings,
+            commands::get_context,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -19,6 +19,7 @@ export class UI {
   private toolbar: HTMLElement;
   private frameBar: HTMLElement;
   private slideshowBar: HTMLElement;
+  private settingsBar: HTMLElement;
   private toast: HTMLElement;
   private toastText: HTMLElement;
   private tbFile: HTMLElement;
@@ -32,6 +33,7 @@ export class UI {
     this.toolbar = document.getElementById("toolbar")!;
     this.frameBar = document.getElementById("frame-bar")!;
     this.slideshowBar = document.getElementById("slideshow-bar")!;
+    this.settingsBar = document.getElementById("settings-bar")!;
     this.toast = document.getElementById("toast")!;
     this.toastText = document.getElementById("toast-text")!;
     this.tbFile = document.getElementById("tb-file")!;
@@ -156,6 +158,17 @@ export class UI {
     }
   }
 
+  /** 设置浮条显隐 */
+  setSettingsBarVisible(visible: boolean): void {
+    this.settingsBar.classList.toggle("hidden", !visible);
+    this.settingsBar.setAttribute("aria-hidden", String(!visible));
+  }
+
+  /** 当前设置浮条是否可见 */
+  get settingsVisible(): boolean {
+    return !this.settingsBar.classList.contains("hidden");
+  }
+
   // ---------- 边界 Toast（草图 3.4） ----------
 
   showToast(text: string): void {
@@ -186,10 +199,12 @@ export class UI {
     this.toolbar.classList.add("hidden");
     this.frameBar.classList.add("hidden");
     this.slideshowBar.classList.add("hidden");
+    this.settingsBar.classList.add("hidden");
     this.infoBar.setAttribute("aria-hidden", "true");
     this.toolbar.setAttribute("aria-hidden", "true");
     this.frameBar.setAttribute("aria-hidden", "true");
     this.slideshowBar.setAttribute("aria-hidden", "true");
+    this.settingsBar.setAttribute("aria-hidden", "true");
     window.clearTimeout(this.idleTimer);
   }
 

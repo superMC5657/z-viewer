@@ -35,3 +35,21 @@ export interface LoadResult {
   data?: string | null;
   frames?: FrameData[] | null;
 }
+
+/** Rust 端 AppSettings */
+export interface AppSettings {
+  cache_strength: number;
+}
+
+/** 需走 IPC 的扩展名（可能多帧动画或 RAW），其余浏览器原生解码直接 asset */
+const IPC_EXTS = new Set([
+  "gif", "png", "webp", // 可能动画，需 Rust 拆帧判断
+  "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
+  "3fr", "kdc", "dcr", "mrw", "mef", "mos", "iiq", "fff", "ari", // RAW
+]);
+
+/** 判断图片是否需走 IPC 通道（动画/RAW），false 则浏览器原生解码直接 asset */
+export function needsIpc(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return IPC_EXTS.has(ext);
+}

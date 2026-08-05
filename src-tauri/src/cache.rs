@@ -13,7 +13,8 @@ pub struct DecodeCache {
     inner: Arc<Mutex<VecDeque<(String, Arc<LoadResult>)>>>,
     /// 正在后台解码的路径（预取去重，防止快速翻页重复解码 RAW）
     in_flight: Arc<Mutex<HashSet<String>>>,
-    capacity: usize,
+    /// 容量（缓存强度变化时调整；原子读，锁内写）
+    capacity: std::sync::atomic::AtomicUsize,
 }
 
 impl Clone for DecodeCache {
@@ -21,7 +22,7 @@ impl Clone for DecodeCache {
         Self {
             inner: Arc::clone(&self.inner),
             in_flight: Arc::clone(&self.in_flight),
-            capacity: self.capacity,
+            capacity: std::sync::atomic::AtomicUsize::new(self.capacity()),
         }
     }
 }
@@ -31,7 +32,7 @@ impl DecodeCache {
         Self {
             inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
-            capacity,
+            capacity: std::sync::atomic::AtomicUsize::new(capacity),
         }
     }
 
@@ -77,10 +78,24 @@ impl DecodeCache {
                 q.remove(pos);
             }
             q.push_back((path, result));
-            while q.len() > self.capacity {
+            while q.len() > self.capacity() {
                 q.pop_front();
             }
         }
+    }
+
+    /// 调整容量（缓存强度变化时调用）；超出新容量的条目淘汰
+    pub fn set_capacity(&self, capacity: usize) {
+        self.capacity.store(capacity, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut q) = self.inner.lock() {
+            while q.len() > self.capacity() {
+                q.pop_front();
+            }
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
