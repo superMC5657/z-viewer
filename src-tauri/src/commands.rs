@@ -56,20 +56,23 @@ fn nav_ok_or_none(model: &mut BrowseModel, nav: crate::browse::Nav) -> NavResult
 
 /// 导航成功后后台预取相邻图片（前1后1，跨文件夹），填充解码缓存（8.2）
 /// 仅缓存 RAW/动画（asset 通道由 WebView 自身缓存）；失败静默忽略
+/// begin_prefetch 去重：同一路径已在解码中则跳过
 fn prefetch_neighbors(model: &BrowseModel, cache: &DecodeCache) {
     let (prev, next) = model.neighbor_paths();
     for p in [prev, next].into_iter().flatten() {
         let path = p.to_string_lossy().to_string();
-        if cache.get(&path).is_some() {
+        if !cache.begin_prefetch(&path) {
             continue;
         }
         let cache = cache.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            if let Ok(result) = crate::decode::load_image(&path) {
+            let result = crate::decode::load_image(&path).ok();
+            if let Some(result) = result {
                 if result.mode != "asset" {
-                    cache.put(path, Arc::new(result));
+                    cache.put(path.clone(), Arc::new(result));
                 }
             }
+            cache.end_prefetch(&path);
         });
     }
 }
@@ -169,7 +172,10 @@ pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
 /// 图片加载通道分发：常见格式 → asset（前端直读）；RAW → 解码 JPEG；动画 → 帧序列
 /// 命中缓存直接返回（≤50ms 目标）；spawn_blocking 避免 CPU 密集解码占用 runtime 线程
 #[tauri::command]
-pub async fn load_image(path: String, cache: State<'_, DecodeCache>) -> Result<crate::decode::LoadResult, String> {
+pub async fn load_image(
+    path: String,
+    cache: State<'_, DecodeCache>,
+) -> Result<crate::decode::LoadResult, String> {
     if let Some(hit) = cache.get(&path) {
         return Ok((*hit).clone());
     }
@@ -177,6 +183,8 @@ pub async fn load_image(path: String, cache: State<'_, DecodeCache>) -> Result<c
     let result = tauri::async_runtime::spawn_blocking(move || crate::decode::load_image(&path2))
         .await
         .map_err(|e| format!("解码任务失败: {e}"))??;
-    cache.put(path, Arc::new(result.clone()));
-    Ok(result)
+    // Arc 包装避免深拷贝（结果含 base64 JPEG/帧数据）
+    let arc = Arc::new(result);
+    cache.put(path, Arc::clone(&arc));
+    Ok((*arc).clone())
 }

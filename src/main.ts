@@ -36,10 +36,13 @@ const slideshow = new Slideshow();
 let currentDims: { w: number; h: number } | null = null;
 /** 当前 RAW 解码的 Blob URL（切换图片时 revoke，防止内存累积） */
 let currentBlobUrl: string | null = null;
+/** showImage 代次：播放中手动翻页等并发加载时，丢弃过期响应 */
+let showSeq = 0;
 
 // ---------- 图片显示 ----------
 
 async function showImage(state: BrowseState): Promise<void> {
+  const seq = ++showSeq;
   ui.setEmpty(false);
   ui.updateTitleFile(state.file_name);
   ui.updateInfo(state, null);
@@ -55,9 +58,10 @@ async function showImage(state: BrowseState): Promise<void> {
   try {
     result = await invoke<LoadResult>("load_image", { path: state.path });
   } catch (err) {
-    ui.showToast(`无法加载图片：${String(err)}`);
+    if (seq === showSeq) ui.showToast(`无法加载图片：${String(err)}`);
     return;
   }
+  if (seq !== showSeq) return; // 已被更新的加载抢占
 
   try {
     if (result.mode === "animated" && result.frames?.length) {
@@ -67,17 +71,25 @@ async function showImage(state: BrowseState): Promise<void> {
     } else if (result.mode === "raw" && result.data) {
       // RAW：解码 JPEG Blob
       const url = URL.createObjectURL(base64ToBlob(result.data, "image/jpeg"));
-      currentBlobUrl = url;
       await viewer.loadStatic(url);
+      if (seq !== showSeq) {
+        // 已被抢占：立即释放本函数创建的 Blob
+        URL.revokeObjectURL(url);
+        return;
+      }
+      currentBlobUrl = url;
     } else {
       // 常见格式：asset 协议直读
       await viewer.loadStatic(convertFileSrc(state.path));
     }
   } catch (err) {
-    ui.showToast(`无法显示图片：${String(err)}`);
-    ui.setFrameBarVisible(false);
+    if (seq === showSeq) {
+      ui.showToast(`无法显示图片：${String(err)}`);
+      ui.setFrameBarVisible(false);
+    }
     return;
   }
+  if (seq !== showSeq) return;
 
   currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
   ui.updateInfo(state, currentDims);
@@ -232,7 +244,8 @@ function buildSlideshowBar(): void {
       ui.showToast("已播放完所有图片");
       return false;
     }
-    if (result.state) await showImage(result.state);
+    if (!result.state) return false; // 空模型（未打开图片）：停止空转
+    await showImage(result.state);
     return true;
   };
 

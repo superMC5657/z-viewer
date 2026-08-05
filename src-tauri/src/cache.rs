@@ -4,13 +4,15 @@
 //! 命中即移到末尾（MRU），超容量淘汰队首（LRU）。
 //! Arc 共享避免深拷贝；Clone 派生供 spawn_blocking 闭包移动。
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::decode::LoadResult;
 
 pub struct DecodeCache {
     inner: Arc<Mutex<VecDeque<(String, Arc<LoadResult>)>>>,
+    /// 正在后台解码的路径（预取去重，防止快速翻页重复解码 RAW）
+    in_flight: Arc<Mutex<HashSet<String>>>,
     capacity: usize,
 }
 
@@ -18,6 +20,7 @@ impl Clone for DecodeCache {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            in_flight: Arc::clone(&self.in_flight),
             capacity: self.capacity,
         }
     }
@@ -27,6 +30,7 @@ impl DecodeCache {
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
             capacity,
         }
     }
@@ -38,6 +42,32 @@ impl DecodeCache {
         let item = q.remove(pos)?;
         q.push_back(item.clone());
         Some(item.1)
+    }
+
+    /// 存在性检查（不移位，供预取判断用）
+    pub fn peek(&self, path: &str) -> bool {
+        self.inner
+            .lock()
+            .map(|q| q.iter().any(|(p, _)| p == path))
+            .unwrap_or(false)
+    }
+
+    /// 预取去重：路径不在解码中则登记并返回 true；已在解码中返回 false
+    pub fn begin_prefetch(&self, path: &str) -> bool {
+        if self.peek(path) {
+            return false;
+        }
+        self.in_flight
+            .lock()
+            .map(|mut s| s.insert(path.to_string()))
+            .unwrap_or(false)
+    }
+
+    /// 预取完成/失败后释放登记
+    pub fn end_prefetch(&self, path: &str) {
+        if let Ok(mut s) = self.in_flight.lock() {
+            s.remove(path);
+        }
     }
 
     /// 写入缓存；已存在则更新并移到末尾，超出容量淘汰队首
@@ -104,5 +134,29 @@ mod tests {
         assert!(c2.get("a").is_some(), "clone 共享内部 Arc");
         c2.put("b".into(), sample("b"));
         assert!(cache.get("b").is_some(), "clone 写入对原实例可见");
+    }
+
+    #[test]
+    fn prefetch_dedup() {
+        let cache = DecodeCache::new(4);
+        assert!(cache.begin_prefetch("a"), "首次登记成功");
+        assert!(!cache.begin_prefetch("a"), "重复登记被拒");
+        assert!(!cache.begin_prefetch("a"), "仍被拒（未释放）");
+        cache.end_prefetch("a");
+        assert!(cache.begin_prefetch("a"), "释放后可再次登记");
+        cache.end_prefetch("a");
+    }
+
+    #[test]
+    fn peek_does_not_move() {
+        let cache = DecodeCache::new(3);
+        cache.put("a".into(), sample("a"));
+        cache.put("b".into(), sample("b"));
+        cache.put("c".into(), sample("c"));
+        assert!(cache.peek("a"), "peek 应命中");
+        // a 仍是最旧：写入 d 应淘汰 a（若 peek 移了位则淘汰 b）
+        cache.put("d".into(), sample("d"));
+        assert!(cache.get("a").is_none(), "peek 不应把 a 移到 MRU");
+        assert!(cache.get("b").is_some());
     }
 }
