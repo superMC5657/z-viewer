@@ -128,7 +128,14 @@ async function showImage(state: BrowseState): Promise<void> {
 async function refreshContext(): Promise<void> {
   try {
     const paths = await invoke<string[]>("get_context");
+    // asset 图：WebView2 预解码池
     prefetch.warm(paths, needsIpc);
+    // RAW/动画图：逐个 load_image 走 Rust DecodeCache（等价 Rust 预取，scan-ready 后补跨文件夹邻居）
+    for (const p of paths) {
+      if (needsIpc(p)) {
+        void invoke<LoadResult>("load_image", { path: p }).catch(() => undefined);
+      }
+    }
   } catch (err) {
     console.error("预取上下文失败", err);
   }
@@ -405,6 +412,8 @@ async function init(): Promise<void> {
     const st = event.payload;
     ui.updateInfo(st, currentDims);
     ui.setSlideshowProgress(st.global_index + 1, st.global_total);
+    // 兄弟文件夹枚举完成：重新按强度预取（此前跨文件夹路径取不到）
+    void refreshContext();
   });
 
   try {

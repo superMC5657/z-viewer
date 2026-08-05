@@ -71,6 +71,12 @@ pub fn is_raw_ext(ext: &str) -> bool {
     RAW_EXTS.contains(&ext.to_ascii_lowercase().as_str())
 }
 
+/// 浏览器原生解码的 asset 扩展名（前端 PrefetchPool 预热，Rust 预取跳过）
+pub fn is_asset_ext(path: &str) -> bool {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(ext.as_str(), "jpg" | "jpeg" | "bmp" | "ico" | "svg")
+}
+
 /// RAW 解码 → develop（demosaic + 白平衡 + 色彩校准 + sRGB）→ 降采样 → JPEG
 fn decode_raw(path: &str) -> Result<LoadResult, String> {
     let rawimage = rawler::decode_file(path).map_err(|e| format!("RAW 解码失败: {e}"))?;

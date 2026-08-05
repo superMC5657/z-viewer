@@ -71,6 +71,19 @@ impl DecodeCache {
         }
     }
 
+    /// 实时加载完成：清除预取登记（实时解码已覆盖预取语义，预取任务应跳过 put）
+    pub fn finish_load(&self, path: &str) {
+        self.end_prefetch(path);
+    }
+
+    /// 是否正在预取解码中（load_image 实时路径可选等待，避免重复解码）
+    pub fn is_prefetching(&self, path: &str) -> bool {
+        self.in_flight
+            .lock()
+            .map(|s| s.contains(path))
+            .unwrap_or(false)
+    }
+
     /// 写入缓存；已存在则更新并移到末尾，超出容量淘汰队首
     pub fn put(&self, path: String, result: Arc<LoadResult>) {
         if let Ok(mut q) = self.inner.lock() {
@@ -173,5 +186,44 @@ mod tests {
         cache.put("d".into(), sample("d"));
         assert!(cache.get("a").is_none(), "peek 不应把 a 移到 MRU");
         assert!(cache.get("b").is_some());
+    }
+
+    #[test]
+    fn finish_load_clears_prefetch_registration() {
+        let cache = DecodeCache::new(4);
+        assert!(cache.begin_prefetch("a"));
+        assert!(cache.is_prefetching("a"), "登记后 in_flight");
+        // 实时加载完成 → finish_load 清登记
+        cache.finish_load("a");
+        assert!(!cache.is_prefetching("a"), "finish_load 后不再预取中");
+        // 预取任务此时 put（peek 检查在 commands 层）：登记已清，可再次 begin
+        assert!(cache.begin_prefetch("a"), "可重新登记");
+        cache.end_prefetch("a");
+    }
+
+    #[test]
+    fn prefetch_put_skips_if_already_cached() {
+        // 模拟：实时加载先 put，预取任务后 decode 完成 → peek 命中则跳过 put（不覆盖/不重复 LRU 操作）
+        let cache = DecodeCache::new(4);
+        cache.put("a".into(), sample("realtime"));
+        // 预取任务逻辑：decode 完成后 peek 检查
+        let skip = cache.peek("a");
+        assert!(skip, "实时已缓存 → 预取应跳过 put");
+        let hit = cache.get("a").expect("命中实时数据");
+        assert_eq!(hit.data.as_deref(), Some("data-realtime"), "未被预取覆盖");
+    }
+
+    #[test]
+    fn set_capacity_evicts_immediately() {
+        let cache = DecodeCache::new(4);
+        for i in 0..4 {
+            cache.put(format!("p{i}"), sample(&format!("p{i}")));
+        }
+        cache.set_capacity(2);
+        assert_eq!(cache.capacity(), 2);
+        assert!(cache.get("p0").is_none(), "容量收紧后淘汰最旧");
+        assert!(cache.get("p1").is_none());
+        assert!(cache.get("p2").is_some());
+        assert!(cache.get("p3").is_some());
     }
 }

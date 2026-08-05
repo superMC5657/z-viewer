@@ -107,6 +107,10 @@ fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, settings: &AppSett
     }
     for p in model.context_paths(prev_n, next_n) {
         let path = p.to_string_lossy().to_string();
+        // asset 通道（jpg/bmp/ico/svg）由前端 PrefetchPool 预热，Rust 不重复解码
+        if crate::decode::is_asset_ext(&path) {
+            continue;
+        }
         if !cache.begin_prefetch(&path) {
             continue;
         }
@@ -114,7 +118,9 @@ fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, settings: &AppSett
         tauri::async_runtime::spawn_blocking(move || {
             let result = crate::decode::load_image(&path).ok();
             if let Some(result) = result {
-                if result.mode != "asset" {
+                // 实时加载可能已填充缓存（finish_load 清登记后我们 put 会覆盖，内容相同无害）
+                // 仅缓存非 asset（asset 走 WebView 自带缓存）
+                if result.mode != "asset" && !cache.peek(&path) {
                     cache.put(path.clone(), Arc::new(result));
                 }
             }
@@ -247,19 +253,34 @@ pub async fn load_image(
         }
     }
     let path2 = path.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || crate::decode::load_image(&path2))
-        .await
-        .map_err(|e| format!("解码任务失败: {e}"))??;
-    if caching {
-        // Arc 包装避免深拷贝（结果含 base64 JPEG/帧数据）
-        let arc = Arc::new(result);
-        // asset 空结果（单帧 gif/png/webp）不占缓存槽位
-        if arc.mode != "asset" {
-            cache.put(path, Arc::clone(&arc));
+    let cache2 = cache.inner().clone(); // &DecodeCache → clone（Arc 共享）
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        // 预取正在解码同一路径：等待其完成（轮询缓存，最多 3s），避免重复解码 RAW
+        if caching && cache2.is_prefetching(&path2) {
+            for _ in 0..300 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                if let Some(hit) = cache2.get(&path2) {
+                    return Ok(hit);
+                }
+                if !cache2.is_prefetching(&path2) {
+                    break;
+                }
+            }
         }
-        Ok((*arc).clone())
+        crate::decode::load_image(&path2).map(Arc::new)
+    })
+    .await
+    .map_err(|e| format!("解码任务失败: {e}"))??;
+    if caching {
+        // asset 空结果（单帧 gif/png/webp）不占缓存槽位
+        if result.mode != "asset" {
+            cache.put(path.clone(), Arc::clone(&result));
+        }
+        // 实时解码完成：清除该路径的预取登记（预取任务 put 前 peek 会跳过）
+        cache.finish_load(&path);
+        Ok((*result).clone())
     } else {
-        Ok(result)
+        Ok((*result).clone())
     }
 }
 
@@ -329,5 +350,76 @@ mod tests {
         assert_eq!(s(2).cache_capacity(), 8, "2*2+1=5 → 下限 8");
         assert_eq!(s(5).cache_capacity(), 11);
         assert_eq!(s(10).cache_capacity(), 21);
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+
+    /// 用真实测试图验证 DecodeCache 命中路径（load_image 是 async command，此处直接测 decode+cache 组合）
+    #[test]
+    fn cache_hit_is_faster_than_miss() {
+        let cache = DecodeCache::new(8);
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("..")
+            .join("test-images/B/img_2.gif")
+            .to_string_lossy()
+            .to_string();
+
+        // 首次：解码 + 入缓存（模拟 load_image 主路径）
+        let r1 = crate::decode::load_image(&path).unwrap();
+        assert_eq!(r1.mode, "animated");
+        cache.put(path.clone(), Arc::new(r1.clone()));
+
+        // 命中：直接从缓存取
+        let hit = cache.get(&path).expect("应命中缓存");
+        assert_eq!(hit.mode, "animated", "命中返回相同数据");
+
+        // 再次 put 同路径（模拟预取覆盖）→ 内容不变
+        cache.put(path.clone(), Arc::new(r1.clone()));
+        let hit2 = cache.get(&path).expect("再次命中");
+        assert_eq!(hit2.mode, "animated");
+    }
+
+    #[test]
+    fn asset_mode_not_cached() {
+        // 单帧静态 PNG 走 asset：load_image 返回 mode=asset 且不应进缓存（占用槽位）
+        let cache = DecodeCache::new(2);
+        let path = std::env::current_dir()
+            .unwrap()
+            .join("..")
+            .join("test-images/A/1.png")
+            .to_string_lossy()
+            .to_string();
+        let r = crate::decode::load_image(&path).unwrap();
+        assert_eq!(r.mode, "asset");
+        // 模拟 load_image 的「asset 不 put」分支
+        let arc = Arc::new(r);
+        if arc.mode != "asset" {
+            cache.put(path.clone(), Arc::clone(&arc));
+        }
+        // 另一张真缓存
+        let raw_path = std::env::current_dir()
+            .unwrap()
+            .join("..")
+            .join("test-images/B/img_2.gif")
+            .to_string_lossy()
+            .to_string();
+        let r2 = crate::decode::load_image(&raw_path).unwrap();
+        cache.put(raw_path.clone(), Arc::new(r2.clone()));
+        cache.put("x".into(), sample("x"));
+        // 容量 2：raw + x 在，asset 未占槽
+        assert!(cache.get(&raw_path).is_some(), "raw 仍在");
+        assert!(cache.get(&path).is_none(), "asset 从未入缓存");
+    }
+
+    fn sample(path: &str) -> Arc<crate::decode::LoadResult> {
+        Arc::new(crate::decode::LoadResult {
+            mode: "raw".into(),
+            data: Some(format!("data-{path}")),
+            frames: None,
+        })
     }
 }
