@@ -22,33 +22,32 @@ impl BrowseModel {
 
         // 同级文件夹（含自身）：枚举图片所在目录的兄弟目录；盘根目录时仅自身
         // 此步骤仅列目录名，开销小，同步完成
-        let mut dirs: Vec<PathBuf> = Vec::new();
+        // 优化：预计算文件夹名（每目录一次分配）排序后再丢弃，避免比较器内 O(n log n) 次分配
+        let mut dirs: Vec<(String, PathBuf)> = Vec::new();
         match parent.parent() {
             Some(base) => {
                 if let Ok(rd) = std::fs::read_dir(base) {
                     for entry in rd.flatten() {
                         let p = entry.path();
                         if p.is_dir() {
-                            dirs.push(p);
+                            if let Some(name) = p.file_name() {
+                                dirs.push((name.to_string_lossy().to_string(), p));
+                            }
                         }
                     }
                 }
             }
-            None => dirs.push(parent.to_path_buf()),
+            None => {
+                let name = parent
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                dirs.push((name, parent.to_path_buf()));
+            }
         }
-        dirs.sort_by(|a, b| {
-            let an = a
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let bn = b
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            natord::compare(&an, &bn)
-        });
+        dirs.sort_by(|a, b| natord::compare(&a.0, &b.0));
+        let dirs: Vec<PathBuf> = dirs.into_iter().map(|(_, p)| p).collect();
 
         // 同步枚举当前文件夹（定位当前图片必需）
         let current_images = Self::list_images(parent);
@@ -60,10 +59,16 @@ impl BrowseModel {
         })?;
 
         // 构建 folders：当前文件夹已填充，其余 None（后台填充）
+        // 优化：用文件夹名定位当前文件夹（同级目录名唯一），
+        // 免去对每个兄弟目录做 std::fs::canonicalize 系统调用（N 目录 = N 次 fs 访问）
+        let current_folder_name = current_folder_canon
+            .file_name()
+            .unwrap_or_default()
+            .to_os_string();
         let mut folder_index = None;
         let mut folders = Vec::with_capacity(dirs.len());
         for (i, d) in dirs.iter().enumerate() {
-            if canonical(d) == current_folder_canon {
+            if d.file_name().unwrap_or_default() == current_folder_name.as_os_str() {
                 folder_index = Some(i);
                 folders.push(Folder {
                     path: d.clone(),
@@ -84,6 +89,9 @@ impl BrowseModel {
                 folders,
                 folder_index,
                 image_index,
+                // 初始仅当前文件夹已填充：总数 = 当前图片数，位置 = 当前索引
+                global_total: current_images.len(),
+                global_index: image_index,
                 loading: pending_total > 1,
                 cancelled: false,
             }),
@@ -104,24 +112,23 @@ impl BrowseModel {
     }
 
     pub(super) fn list_images(dir: &Path) -> Vec<PathBuf> {
-        let mut imgs: Vec<PathBuf> = Vec::new();
+        // 预计算文件名（每图片一次分配）排序后再丢弃，避免比较器内 O(n log n) 次分配
+        let mut imgs: Vec<(String, PathBuf)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(dir) {
             for entry in rd.flatten() {
                 let p = entry.path();
-                if p.is_file()
-                    && is_image_file(&p.file_name().unwrap_or_default().to_string_lossy())
-                {
-                    imgs.push(p);
+                if p.is_file() {
+                    if let Some(name) = p.file_name() {
+                        let name = name.to_string_lossy().to_string();
+                        if is_image_file(&name) {
+                            imgs.push((name, p));
+                        }
+                    }
                 }
             }
         }
-        imgs.sort_by(|a, b| {
-            natord::compare(
-                &a.file_name().unwrap_or_default().to_string_lossy(),
-                &b.file_name().unwrap_or_default().to_string_lossy(),
-            )
-        });
-        imgs
+        imgs.sort_by(|a, b| natord::compare(&a.0, &b.0));
+        imgs.into_iter().map(|(_, p)| p).collect()
     }
 }
 
@@ -149,7 +156,13 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         if d.cancelled {
             return;
         }
+        // 增量维护全局计数：总数 +len；当前文件夹之前的新填充 → 全局位置前移 +len
+        let filled = imgs.len();
         d.folders[idx].images = Some(imgs);
+        d.global_total += filled;
+        if idx < d.folder_index {
+            d.global_index += filled;
+        }
     }
 
     // 全部填充完成：压缩空文件夹（open 时无法预知哪些兄弟为空）。
@@ -208,6 +221,18 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         d.folder_index = old_index - removed_before;
     }
     d.loading = false;
+    // 压缩后一次性重算全局计数（此后为增量维护的基准）
+    let (mut total, mut prefix) = (0usize, 0usize);
+    for (i, f) in d.folders.iter().enumerate() {
+        if let Some(imgs) = &f.images {
+            total += imgs.len();
+            if i < d.folder_index {
+                prefix += imgs.len();
+            }
+        }
+    }
+    d.global_total = total;
+    d.global_index = prefix + d.image_index;
     drop(d); // 先释放锁，state_from_inner 会再次加锁
     let state = BrowseModel::state_from_inner(&scan_inner);
     if let Some(cb) = on_ready {

@@ -36,28 +36,39 @@ pub(super) fn decode_animation(path: &str) -> Result<Option<Vec<FrameData>>, Str
 }
 
 fn collect_frames(iter: image::Frames<'_>) -> Result<Option<Vec<FrameData>>, String> {
-    // 先解码帧（不编码 PNG），帧数 < 2 时直接判定静态，避免无谓编码
-    let mut decoded: Vec<(image::RgbaImage, u32)> = Vec::new();
-    for frame in iter {
-        let frame = frame.map_err(|e| format!("动画帧解码失败: {e}"))?;
-        let (num, den) = frame.delay().numer_denom_ms();
-        // GIF 规范：0 延迟按 100ms；den 为 0 时兜底
-        let delay_ms = if den == 0 || num == 0 { 100 } else { num / den };
-        decoded.push((frame.into_buffer(), delay_ms));
-    }
-    if decoded.len() < 2 {
+    let mut frame_iter = iter;
+
+    // 前两帧仅解码不编码：帧数 < 2 直接判定静态，避免无谓 PNG 编码
+    let Some(first) = frame_iter.next() else {
         return Ok(None);
-    }
-    let mut frames = Vec::with_capacity(decoded.len());
-    for (buf, delay_ms) in decoded {
-        let mut png: Vec<u8> = Vec::new();
-        image::DynamicImage::ImageRgba8(buf)
-            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
-            .map_err(|e| format!("帧 PNG 编码失败: {e}"))?;
-        frames.push(FrameData {
-            png: b64(&png),
-            delay_ms,
-        });
+    };
+    let first = first.map_err(|e| format!("动画帧解码失败: {e}"))?;
+    let Some(second) = frame_iter.next() else {
+        return Ok(None);
+    };
+    let second = second.map_err(|e| format!("动画帧解码失败: {e}"))?;
+
+    // 确认多帧后边解码边编码、逐帧释放：长 GIF 峰值内存 = ~2 帧（而非全部帧驻留）
+    let mut frames = Vec::new();
+    frames.push(encode_frame(first)?);
+    frames.push(encode_frame(second)?);
+    for frame in frame_iter {
+        let frame = frame.map_err(|e| format!("动画帧解码失败: {e}"))?;
+        frames.push(encode_frame(frame)?);
     }
     Ok(Some(frames))
+}
+
+/// 单帧 → base64 PNG + 延迟（GIF 规范：0 延迟按 100ms；den 为 0 时兜底）
+fn encode_frame(frame: image::Frame) -> Result<FrameData, String> {
+    let (num, den) = frame.delay().numer_denom_ms();
+    let delay_ms = if den == 0 || num == 0 { 100 } else { num / den };
+    let mut png: Vec<u8> = Vec::new();
+    image::DynamicImage::ImageRgba8(frame.into_buffer())
+        .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| format!("帧 PNG 编码失败: {e}"))?;
+    Ok(FrameData {
+        png: b64(&png),
+        delay_ms,
+    })
 }

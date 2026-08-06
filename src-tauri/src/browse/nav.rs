@@ -13,12 +13,12 @@ impl BrowseModel {
         let (cur_len, mut d) = Self::wait_folder_len(&self.inner, d, fi);
         if d.image_index + 1 < cur_len {
             d.image_index += 1;
+            d.global_index += 1;
             Nav::Ok
         } else if let Some((nf, _len, mut d)) =
             Self::find_nonempty_folder(&self.inner, d, fi + 1, true)
         {
-            d.folder_index = nf;
-            d.image_index = 0;
+            Self::move_to_folder(&mut d, nf, 0);
             Nav::Ok
         } else {
             Nav::Boundary(Boundary::LastImage)
@@ -32,13 +32,13 @@ impl BrowseModel {
         if d.image_index > 0 {
             let mut d = d;
             d.image_index -= 1;
+            d.global_index -= 1;
             Nav::Ok
         } else if fi > 0 {
             if let Some((pf, plen, mut d)) =
                 Self::find_nonempty_folder(&self.inner, d, fi - 1, false)
             {
-                d.folder_index = pf;
-                d.image_index = plen - 1;
+                Self::move_to_folder(&mut d, pf, plen - 1);
                 Nav::Ok
             } else {
                 Nav::Boundary(Boundary::FirstImage)
@@ -56,8 +56,7 @@ impl BrowseModel {
             FolderTarget::First => {
                 if let Some((f0, _len, mut d)) = Self::find_nonempty_folder(&self.inner, d, 0, true)
                 {
-                    d.folder_index = f0;
-                    d.image_index = 0;
+                    Self::move_to_folder(&mut d, f0, 0);
                     Nav::Ok
                 } else {
                     Nav::Boundary(Boundary::FirstFolder)
@@ -68,8 +67,7 @@ impl BrowseModel {
                 if let Some((lf, _len, mut d)) =
                     Self::find_nonempty_folder(&self.inner, d, last, false)
                 {
-                    d.folder_index = lf;
-                    d.image_index = 0;
+                    Self::move_to_folder(&mut d, lf, 0);
                     Nav::Ok
                 } else {
                     Nav::Boundary(Boundary::LastFolder)
@@ -81,8 +79,7 @@ impl BrowseModel {
                     if let Some((pf, _len, mut d)) =
                         Self::find_nonempty_folder(&self.inner, d, cur - 1, false)
                     {
-                        d.folder_index = pf;
-                        d.image_index = 0;
+                        Self::move_to_folder(&mut d, pf, 0);
                         Nav::Ok
                     } else {
                         Nav::Boundary(Boundary::FirstFolder)
@@ -97,8 +94,7 @@ impl BrowseModel {
                     if let Some((nf, _len, mut d)) =
                         Self::find_nonempty_folder(&self.inner, d, cur + 1, true)
                     {
-                        d.folder_index = nf;
-                        d.image_index = 0;
+                        Self::move_to_folder(&mut d, nf, 0);
                         Nav::Ok
                     } else {
                         Nav::Boundary(Boundary::LastFolder)
@@ -108,6 +104,33 @@ impl BrowseModel {
                 }
             }
         }
+    }
+
+    /// 计算 folders[min(a,b)..max(a,b)) 中已填充图片数（未填充的 None 计 0）。
+    /// 下标由调用方保证有效（find_nonempty_folder 返回的索引 < folders.len()）。
+    fn filled_in_range(d: &InnerData, a: usize, b: usize) -> usize {
+        let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+        d.folders[lo..hi]
+            .iter()
+            .map(|f| f.images.as_ref().map_or(0, |v| v.len()))
+            .sum()
+    }
+
+    /// 变更 folder_index 后校正 global_index（增量，不用全量重算）：
+    /// prefix(new_fi) = prefix(old_fi) ± Σ[old_fi..new_fi)（已填充数），再加 new_ii。
+    /// 相邻文件夹跳转 O(1)；First/Last 长距离跳转 O(range)（低频，可接受）。
+    fn move_to_folder(d: &mut InnerData, new_fi: usize, new_ii: usize) {
+        let old_fi = d.folder_index;
+        let old_prefix = d.global_index - d.image_index; // 先取出旧 prefix（image_index 尚未改）
+        let mid = Self::filled_in_range(d, old_fi, new_fi);
+        let new_prefix = if new_fi > old_fi {
+            old_prefix + mid
+        } else {
+            old_prefix - mid
+        };
+        d.folder_index = new_fi;
+        d.image_index = new_ii;
+        d.global_index = new_prefix + new_ii;
     }
 
     /// 在已持有锁的情况下等待某文件夹填充完成；返回 (长度, guard)。

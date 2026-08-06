@@ -38,11 +38,6 @@ export class Slideshow {
   /** 播放状态变化（true=开始 false=停止），用于 UI 切换 */
   onStateChange: ((running: boolean) => void) | null = null;
 
-  get isRunning(): boolean {
-    feLog(`幻灯片 isRunning: ${this.running}`);
-    return this.running;
-  }
-
   /** 开始播放（从当前图片开始） */
   start(): void {
     feLog(`幻灯片 start: running=${this.running}, 间隔=${this.intervalMs}ms`);
@@ -79,11 +74,6 @@ export class Slideshow {
       this.nextTickAt = performance.now() + this.intervalMs;
       this.schedule();
     }
-  }
-
-  get interval(): number {
-    feLog(`幻灯片 interval: ${this.intervalMs}ms`);
-    return this.intervalMs;
   }
 
   /** 手动翻页/跳转后重置计时（不中断播放）：从当前时刻起算下一间隔 */

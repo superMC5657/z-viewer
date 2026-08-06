@@ -19,23 +19,18 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::decode::LoadResult;
-
 pub use decode_cache::DecodeCache;
-pub use folder_first::FolderFirstCache;
+pub use folder_first::{FolderFirst, FolderFirstCache};
 
-/// LRU 条目：key → 解码结果
-type Entry = (String, Arc<LoadResult>);
-
-/// 通用 LRU 队列（String key → Arc<LoadResult>）
+/// 通用 LRU 队列（String key → 任意值 V，V: Clone）
 /// clone 共享内部队列与容量（供 spawn_blocking 闭包移动），操作均线程安全
 #[derive(Clone)]
-pub(super) struct LruQueue {
-    inner: Arc<Mutex<VecDeque<Entry>>>,
+pub(super) struct LruQueue<V> {
+    inner: Arc<Mutex<VecDeque<(String, V)>>>,
     capacity: Arc<AtomicUsize>,
 }
 
-impl LruQueue {
+impl<V> LruQueue<V> {
     pub(super) fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
@@ -44,7 +39,10 @@ impl LruQueue {
     }
 
     /// 命中返回缓存值并移到末尾；未命中返回 None
-    pub(super) fn get(&self, key: &str) -> Option<Arc<LoadResult>> {
+    pub(super) fn get(&self, key: &str) -> Option<V>
+    where
+        V: Clone,
+    {
         let mut q = self.inner.lock().ok()?;
         let pos = q.iter().position(|(k, _)| k == key)?;
         let (k, v) = q.remove(pos)?;
@@ -61,12 +59,12 @@ impl LruQueue {
     }
 
     /// 写入；已存在则更新并移到末尾，超出容量淘汰队首
-    pub(super) fn put(&self, key: String, result: Arc<LoadResult>) {
+    pub(super) fn put(&self, key: String, value: V) {
         if let Ok(mut q) = self.inner.lock() {
             if let Some(pos) = q.iter().position(|(k, _)| *k == key) {
                 q.remove(pos);
             }
-            q.push_back((key, result));
+            q.push_back((key, value));
             while q.len() > self.capacity() {
                 q.pop_front();
             }

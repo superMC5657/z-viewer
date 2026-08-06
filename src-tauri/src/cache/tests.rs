@@ -2,12 +2,21 @@
 //! 测试通过 `super::*` 访问 LruQueue 与两个缓存类型。
 
 use super::*;
+use crate::decode::LoadResult;
 
 fn sample(path: &str) -> Arc<LoadResult> {
     Arc::new(LoadResult {
         mode: "raw".into(),
         data: Some(format!("data-{path}")),
         frames: None,
+    })
+}
+
+/// 构造 FolderFirst 条目（首图路径 + 解码结果）
+fn sample_first(path: &str) -> Arc<FolderFirst> {
+    Arc::new(FolderFirst {
+        path: format!("{path}-first.png"),
+        result: sample(path),
     })
 }
 
@@ -103,11 +112,12 @@ fn set_capacity_evicts_immediately() {
 #[test]
 fn folder_first_cache_lru() {
     let cache = FolderFirstCache::new(2);
-    cache.put("A".into(), sample("a"));
-    cache.put("B".into(), sample("b"));
+    cache.put("A".into(), sample_first("A"));
+    cache.put("B".into(), sample_first("B"));
     assert!(cache.peek("A"));
-    assert!(cache.get("A").is_some(), "命中 A 并移到 MRU");
-    cache.put("C".into(), sample("c"));
+    let first_a = cache.get("A").expect("命中 A 并移到 MRU");
+    assert_eq!(first_a.path, "A-first.png", "首图路径随缓存值保存");
+    cache.put("C".into(), sample_first("C"));
     assert!(cache.get("B").is_none(), "A 被访问后 B 是 LRU 被淘汰");
     assert!(cache.get("A").is_some());
     assert!(cache.get("C").is_some());

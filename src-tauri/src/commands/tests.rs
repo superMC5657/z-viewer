@@ -11,8 +11,8 @@ fn neighbor_window_rules() {
     assert_eq!(s(0).neighbor_window(), (0, 0), "0：不预取");
     assert_eq!(s(1).neighbor_window(), (1, 1), "1：前后各 1");
     assert_eq!(s(2).neighbor_window(), (1, 3), "2(高)：前 1 后 3");
-    assert_eq!(s(2).is_enabled(), true);
-    assert_eq!(s(0).is_enabled(), false);
+    assert!(s(2).is_enabled());
+    assert!(!s(0).is_enabled());
 }
 
 /// 用真实测试图验证 DecodeCache 命中路径（load_image 是 async command，此处直接测 decode+cache 组合）
@@ -102,7 +102,7 @@ fn folder_first_cache_promote_to_neighbor() {
     // 关键验证：get_context 必须包含相邻文件夹首图路径（asset 供前端池预热）
     // 直接验证 first_image_of 与 neighbor_folders 的衔接
     let neighbors = model.neighbor_folders(1);
-    assert!(neighbors.len() >= 1, "B 应有相邻文件夹");
+    assert!(!neighbors.is_empty(), "B 应有相邻文件夹");
     for f in &neighbors {
         let first = BrowseModel::first_image_of(f).expect("相邻文件夹应有首图");
         assert!(first.is_file(), "首图路径应有效");

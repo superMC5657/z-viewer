@@ -129,18 +129,9 @@ impl BrowseModel {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| folder.path.to_string_lossy().to_string());
 
-                // 全局位置：已填充文件夹累计 + 当前索引
-                let mut global_index = 0usize;
-                let mut global_total = 0usize;
-                for (i, f) in d.folders.iter().enumerate() {
-                    if let Some(imgs) = &f.images {
-                        global_total += imgs.len();
-                        if i < d.folder_index {
-                            global_index += imgs.len();
-                        }
-                    }
-                }
-                global_index += d.image_index;
+                // 全局位置/总数：增量维护（open 初始化，导航/后台填充时更新），读取 O(1)
+                let global_index = d.global_index;
+                let global_total = d.global_total;
 
                 let path = img
                     .as_ref()

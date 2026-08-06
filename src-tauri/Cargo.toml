@@ -1,6 +1,6 @@
 [package]
 name = "image-viewer"
-version = "0.2.2"
+version = "0.2.3"
 description = "精美快速的看图软件"
 edition = "2021"
 
@@ -48,3 +48,10 @@ lto = "fat"              # 全程序链接时优化（比 thin LTO 更彻底）
 codegen-units = 1        # 单 codegen 单元，最大化内联/消除
 strip = "symbols"        # 剥离符号表
 panic = "abort"          # 无 unwinding，减小体积
+
+# 解码热路径（image/rawler 的 JPEG/RAW 解码、demosaic）是纯 CPU 密集，
+# 单独提到 -O3 提速（比 -Os 快 10-30%），其余 crate 维持 -Os 保体积
+[profile.release.package.image]
+opt-level = 3
+[profile.release.package.rawler]
+opt-level = 3

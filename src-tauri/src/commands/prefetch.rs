@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::browse::BrowseModel;
-use crate::cache::{DecodeCache, FolderFirstCache};
+use crate::cache::{DecodeCache, FolderFirst, FolderFirstCache};
 
 use super::settings::AppSettings;
 
@@ -68,7 +68,13 @@ pub(super) fn prefetch_folder_firsts(
             }
             if let Ok(result) = crate::decode::load_image(&path) {
                 if result.mode != "asset" {
-                    first_cache.put(folder_str, Arc::new(result));
+                    first_cache.put(
+                        folder_str,
+                        Arc::new(FolderFirst {
+                            path,
+                            result: Arc::new(result),
+                        }),
+                    );
                 }
             }
         });
@@ -77,17 +83,17 @@ pub(super) fn prefetch_folder_firsts(
 
 /// 导航进入新文件夹时，把 FolderFirstCache 命中的首图并入 DecodeCache
 /// （前端 load_image 按图片路径查队列 B，命中即零解码）
+/// 优化：首图路径已随缓存值保存（FolderFirst.path），无需再 list_images 扫目录定位，
+/// 避免在持有 AppState 锁的导航路径上做同步文件系统枚举（旧版会阻塞全部导航命令）
 pub(super) fn promote_folder_first(
     model: &BrowseModel,
     cache: &DecodeCache,
     first_cache: &FolderFirstCache,
 ) {
     let folder = model.current_folder_path();
-    let Some(result) = first_cache.get(&folder.to_string_lossy()) else {
+    let Some(first) = first_cache.get(&folder.to_string_lossy()) else {
         return; // 该文件夹首图未预取（无命中）
     };
     // 首图路径（同一张图）并入队列 B，前端 load_image 查 path 命中
-    if let Some(first) = BrowseModel::first_image_of(&folder) {
-        cache.put(first.to_string_lossy().to_string(), result);
-    }
+    cache.put(first.path.clone(), first.result.clone());
 }

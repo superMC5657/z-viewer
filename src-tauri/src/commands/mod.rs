@@ -21,6 +21,7 @@ use crate::cache::{DecodeCache, FolderFirstCache};
 
 pub use settings::AppSettings;
 
+#[cfg(debug_assertions)]
 use crate::dev_log;
 use prefetch::{prefetch_context, prefetch_folder_firsts, promote_folder_first};
 
@@ -146,6 +147,8 @@ pub fn next_image(
 ) -> Result<NavResult, String> {
     let r = navigate(state.inner(), cache.inner(), first_cache.inner(), settings.inner(), |m| m.next());
     // 仅幻灯片自动播放使用的 next_image 打印跳转日志（手动 prev/next/jump_folder 不打）
+    // 整个 if-let 用 cfg 门控：release 下连绑定一起剥离，避免 dev_log 空展开产生未使用变量警告
+    #[cfg(debug_assertions)]
     if let Ok(result) = &r {
         if let Some(st) = &result.state {
             dev_log!("next_image 跳转: {} [{}] ({}/{})", st.file_name, st.folder_name, st.global_index + 1, st.global_total);

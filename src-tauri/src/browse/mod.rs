@@ -70,6 +70,10 @@ struct InnerData {
     folders: Vec<Folder>,
     folder_index: usize,
     image_index: usize,
+    /// 已填充图片总数（增量维护，状态读取 O(1)）
+    global_total: usize,
+    /// 当前图片全局位置 = folder_index 之前已填充图片数 + image_index（增量维护）
+    global_index: usize,
     /// 是否仍有文件夹在后台填充
     loading: bool,
     /// Drop 后置位：扫描线程尽快退出

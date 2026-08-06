@@ -12,7 +12,7 @@ fn temp_base() -> PathBuf {
     std::env::temp_dir().join(format!("image-viewer-test-{}-{n}", std::process::id()))
 }
 
-fn touch(p: &PathBuf) {
+fn touch(p: &Path) {
     fs::create_dir_all(p.parent().unwrap()).unwrap();
     fs::write(p, b"x").unwrap();
 }
@@ -31,11 +31,11 @@ fn build_tree() -> PathBuf {
     base
 }
 
-fn cleanup(base: &PathBuf) {
+fn cleanup(base: &Path) {
     let _ = fs::remove_dir_all(base);
 }
 
-fn open_sync(path: &PathBuf) -> BrowseModel {
+fn open_sync(path: &Path) -> BrowseModel {
     let m = BrowseModel::open(path, None).unwrap();
     m.wait_ready(); // 等待后台枚举完成，保证断言稳定
     m

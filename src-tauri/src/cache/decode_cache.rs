@@ -10,7 +10,7 @@ use super::LruQueue;
 
 #[derive(Clone)]
 pub struct DecodeCache {
-    lru: LruQueue,
+    lru: LruQueue<Arc<LoadResult>>,
     /// 正在后台解码的路径（预取去重，防止快速翻页重复解码 RAW）
     in_flight: Arc<Mutex<HashSet<String>>>,
 }
