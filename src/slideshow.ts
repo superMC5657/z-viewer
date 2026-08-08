@@ -24,7 +24,7 @@ import { feLog } from "./logger";
 export class Slideshow {
   /** 定时器句柄（null = 未播放） */
   private timerId: number | null = null;
-  private intervalMs = 2000;
+  private intervalMs = 5000;
   private running = false;
   /** 正在执行 onAdvance（防重入：上一跳未完成时跳过本拍） */
   private advancing = false;
