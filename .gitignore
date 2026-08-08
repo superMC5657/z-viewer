@@ -23,5 +23,9 @@ npm-debug.log*
 .env
 .env.local
 
+# 授权服务：签名私钥与激活数据绝不入库
+backend-mock/keys/
+backend-mock/data.json
+
 # 开发会话日志（P3-4：避免误提交进公开仓库）
 .reasonix/

@@ -47,7 +47,7 @@ pub enum Boundary {
     LastFolder,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Nav {
     /// 正常切换，无边界
     Ok,

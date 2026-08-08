@@ -35,9 +35,10 @@ pub struct AppState(pub Mutex<Option<BrowseModel>>);
 pub struct SettingsState(pub Mutex<AppSettings>);
 
 /// 导航结果：boundary 为 Some 时表示撞到全局边界（前端弹 Toast），state 不变
+/// boundary 取值："first-image" | "last-image" | "first-folder" | "last-folder" | "pro-required"
 #[derive(serde::Serialize)]
 pub struct NavResult {
-    pub boundary: Option<String>, // "first" | "last"
+    pub boundary: Option<String>,
     pub state: Option<BrowseState>,
 }
 
@@ -58,6 +59,13 @@ impl NavResult {
         Self {
             boundary: Some(msg.into()),
             state: Some(state),
+        }
+    }
+    /// 专业版功能锁定（免费版调用 jump_folder）：前端弹出解锁引导
+    fn pro_required() -> Self {
+        Self {
+            boundary: Some("pro-required".into()),
+            state: None,
         }
     }
     fn none() -> Self {
@@ -118,14 +126,16 @@ pub fn open_path(
     cache: State<'_, DecodeCache>,
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
+    license: State<'_, crate::license::LicenseManager>,
     path: String,
 ) -> Result<NavResult, String> {
     let p = Path::new(&path);
+    let pro = license.is_pro();
     let on_ready = Some(on_ready_callback(app.clone()));
     let model = if p.is_dir() {
-        BrowseModel::open_first_in_dir(p, on_ready)
+        BrowseModel::open_first_in_dir_gated(p, on_ready, pro)
     } else {
-        BrowseModel::open(p, on_ready)
+        BrowseModel::open_gated(p, on_ready, pro)
     };
     let model = model.ok_or_else(|| "无法打开：不是支持的图片格式".to_string())?;
     let st = model.state();
@@ -170,14 +180,19 @@ pub fn prev_image(
 }
 
 /// 文件夹级跳转：target ∈ "first" | "prev" | "next" | "last"
+/// 专业版功能：免费版返回 pro-required（前端弹解锁引导）
 #[tauri::command]
 pub fn jump_folder(
     state: State<'_, AppState>,
     cache: State<'_, DecodeCache>,
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
+    license: State<'_, crate::license::LicenseManager>,
     target: String,
 ) -> Result<NavResult, String> {
+    if !license.is_pro() {
+        return Ok(NavResult::pro_required());
+    }
     let t = match target.as_str() {
         "first" => FolderTarget::First,
         "prev" => FolderTarget::Prev,
@@ -196,14 +211,16 @@ pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
 
 /// 图片加载通道分发：常见格式 → asset（前端直读）；RAW → 解码 JPEG；动画 → 帧序列
 /// 命中缓存直接返回（≤50ms 目标）；spawn_blocking 避免 CPU 密集解码占用 runtime 线程
-/// 缓存关闭（enabled=false）时跳过缓存读写（不缓存）
+/// 缓存关闭（enabled=false / 免费版）时跳过缓存读写（不缓存）
 #[tauri::command]
 pub async fn load_image(
     path: String,
     cache: State<'_, DecodeCache>,
     settings: State<'_, SettingsState>,
+    license: State<'_, crate::license::LicenseManager>,
 ) -> Result<crate::decode::LoadResult, String> {
-    let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled();
+    let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled()
+        && license.is_pro();
     if caching {
         if let Some(hit) = cache.get(&path) {
             return Ok((*hit).clone());
@@ -229,13 +246,18 @@ pub async fn load_image(
 
 /// 设置缓存等级：0=关闭 1=开启（前后各1） 2=高（前1后3）
 /// 关闭清空双队列；开启/高等级恢复容量
+/// 专业版功能：免费版拒绝（前端引导解锁）
 #[tauri::command]
 pub fn set_cache_level(
     cache: State<'_, DecodeCache>,
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
+    license: State<'_, crate::license::LicenseManager>,
     level: usize,
 ) -> Result<AppSettings, String> {
+    if !license.is_pro() {
+        return Err("预取缓存是专业版功能，请解锁后使用".to_string());
+    }
     let level = level.min(2);
     let mut g = settings.0.lock().map_err(|e| e.to_string())?;
     g.cache_level = level;
@@ -251,19 +273,31 @@ pub fn set_cache_level(
     Ok(*g)
 }
 
-/// 查询当前设置
+/// 查询当前设置（免费版强制返回 cache_level=0，防前端本地存储恢复付费等级）
 #[tauri::command]
-pub fn get_settings(settings: State<'_, SettingsState>) -> AppSettings {
-    *settings.0.lock().unwrap_or_else(|e| e.into_inner())
+pub fn get_settings(
+    settings: State<'_, SettingsState>,
+    license: State<'_, crate::license::LicenseManager>,
+) -> AppSettings {
+    let mut s = *settings.0.lock().unwrap_or_else(|e| e.into_inner());
+    if !license.is_pro() {
+        s.cache_level = 0;
+    }
+    s
 }
 
 /// 查询当前图片上下文路径（按缓存强度），供前端预解码池（方案四）预热
 /// P3-1：相邻文件夹首图的目录枚举移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
+/// 专业版功能：免费版返回空（无预取）
 #[tauri::command]
 pub async fn get_context(
     state: State<'_, AppState>,
     settings: State<'_, SettingsState>,
+    license: State<'_, crate::license::LicenseManager>,
 ) -> Result<Vec<String>, String> {
+    if !license.is_pro() {
+        return Ok(Vec::new());
+    }
     // 锁内仅收集路径（快速）；目录枚举在释放锁后由后台线程完成
     let (mut paths, neighbors) = {
         let guard = state.0.lock().map_err(|e| e.to_string())?;

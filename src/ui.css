@@ -586,3 +586,97 @@ body.immersive #info-bar {
 #toast-text {
   white-space: nowrap;
 }
+
+/* ===== 专业版解锁对话框 ===== */
+.unlock-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+.unlock-mask.hidden {
+  display: none;
+}
+.unlock-card {
+  width: 380px;
+  padding: 24px 26px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-glass);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.unlock-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.unlock-desc {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.unlock-desc b {
+  color: var(--accent);
+  font-weight: 600;
+}
+.unlock-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 12px;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-btn);
+  outline: none;
+}
+.unlock-input:focus {
+  border-color: var(--accent);
+}
+.unlock-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.btn-text-plain {
+  color: var(--text-secondary);
+  padding: 0 10px;
+  width: auto;
+  font-size: 13px;
+}
+.btn-text-accent {
+  color: var(--accent);
+  padding: 0 14px;
+  width: auto;
+  font-size: 13px;
+  font-weight: 600;
+}
+.btn-text-accent:hover {
+  background: var(--btn-hover);
+}
+.unlock-error {
+  font-size: 12px;
+  color: var(--warn);
+  min-height: 14px;
+}
+.unlock-error.hidden {
+  display: none;
+}
+
+/* 免费版锁定态：功能可见但被锁定（点击由 main.ts 引导解锁） */
+.tb-btn-icon.locked {
+  opacity: 0.55;
+}
+.tb-btn-icon.locked:hover {
+  opacity: 0.85;
+  background: var(--btn-hover);
+}

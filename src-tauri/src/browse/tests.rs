@@ -336,3 +336,56 @@ fn nav_during_scan_never_panics() {
     assert!(!m.state().path.is_empty(), "导航后当前图片路径应有效");
     cleanup(&base);
 }
+
+// ---------- 专业版门控：免费版单文件夹模式 ----------
+
+#[test]
+fn free_mode_single_folder_no_cross() {
+    let base = build_tree();
+    // 免费版（cross_folder=false）：打开 A/a1.png 只浏览当前文件夹
+    let m = BrowseModel::open_gated(&base.join("A/a1.png"), None, false).unwrap();
+    {
+        let d = m.inner.m.lock().unwrap();
+        assert_eq!(d.folders.len(), 1, "免费版 folders 只含当前文件夹");
+        assert!(!d.loading, "免费版无后台扫描，loading=false");
+        assert_eq!(d.global_total, 3, "全局总数 = 当前文件夹图片数（不累计兄弟）");
+    }
+    // next 到文件夹末尾即停（不跨到 B）
+    let mut m = m;
+    assert_eq!(m.state().file_name, "a1.png");
+    for _ in 0..2 {
+        assert_eq!(m.next(), Nav::Ok, "文件夹内翻页正常");
+    }
+    assert_eq!(m.next(), Nav::Boundary(Boundary::LastImage), "文件夹末尾即全局边界（不跨文件夹）");
+    // prev 回退正常，回到开头后再 prev 撞全局边界
+    assert_eq!(m.prev(), Nav::Ok);
+    assert_eq!(m.prev(), Nav::Ok);
+    assert_eq!(m.prev(), Nav::Boundary(Boundary::FirstImage), "文件夹开头即全局边界");
+    // jump_folder 无目标可跳
+    assert_eq!(m.jump_folder(FolderTarget::Next), Nav::Boundary(Boundary::LastFolder));
+    cleanup(&base);
+}
+
+#[test]
+fn pro_mode_cross_folder_still_works() {
+    let base = build_tree();
+    // 专业版（cross_folder=true）：与旧行为一致，可跨到兄弟文件夹
+    let m = BrowseModel::open_gated(&base.join("A/a10.png"), None, true).unwrap();
+    {
+        let d = m.inner.m.lock().unwrap();
+        assert_eq!(d.folders.len(), 4, "专业版扫描全部同级目录（含空目录，后台压缩）");
+        assert!(d.loading);
+    }
+    m.wait_ready();
+    let m = m;
+    {
+        let d = m.inner.m.lock().unwrap();
+        assert_eq!(d.folders.len(), 3, "后台压缩后无图文件夹被排除");
+    }
+    let mut m = m;
+    // A 末张 a10.png → next 跨到 B/b1.jpg
+    let nav = m.next();
+    assert_eq!(nav, Nav::Ok);
+    assert_eq!(m.state().file_name, "b1.jpg", "专业版跨文件夹衔接");
+    cleanup(&base);
+}

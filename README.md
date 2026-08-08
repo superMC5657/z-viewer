@@ -13,15 +13,32 @@
 
 ## 功能
 
-- 跨同级文件夹无缝浏览（natord 自然排序，与资源管理器一致）
+- 跨同级文件夹无缝浏览（natord 自然排序，与资源管理器一致）— **专业版**
 - 常见格式：JPG / PNG / GIF / WebP / BMP / ICO / SVG
 - 相机 RAW：CR2 / CR3 / NEF / ARW / DNG 等（rawler 解码 + demosaic + 降采样显示）
 - 动画格式：GIF / APNG / 动态 WebP 逐帧控制（播放/暂停/上一帧/下一帧）
 - 沉浸模式（F）、窗口置顶（T）、缩放/旋转/翻转、1:1/适应窗口
 - 幻灯片播放（空格/▶，间隔 2s/5s/10s，自动跨文件夹，播放完自动停止）
-- 预加载缓存：相邻图片后台预取，RAW/动画 LRU 缓存（切换 ≤50ms）
+- 预加载缓存：相邻图片后台预取，RAW/动画 LRU 缓存（切换 ≤50ms）— **专业版**
 - 异步浏览：打开图片立即显示（只枚举当前文件夹），同级文件夹后台枚举，
   完成后自动刷新位置计数（加载中显示 "3/…"）
+
+> **专业版**（跨文件夹浏览 + 预取缓存）通过在线激活码解锁，
+> 免费版仅单文件夹浏览且不缓存。见 `backend/README.md`。
+
+## 专业版解锁
+
+应用内点「缓存」或「文件夹跳转」按钮 → 解锁对话框 → 输入激活码。
+
+```bash
+cd backend-mock
+node server.mjs                          # 启动授权服务（默认 127.0.0.1:8787）
+node gen-codes.mjs --count 5 --note "v0.3 发售"   # 生成激活码
+```
+
+- 激活码一次性绑定设备（每码 3 台），Ed25519 签名防篡改，吊销即时生效
+- **生产上线前必须更换签名密钥**（`node gen-keys.mjs`）并修改服务地址，
+  详见 `backend/README.md`
 
 ## 开发
 
@@ -71,14 +88,17 @@ src/                  # 前端代码
   input.ts            # 快捷键 / 滚轮
   window-state.ts     # 沉浸模式 / 窗口置顶控制
   slideshow.ts        # 幻灯片播放器（间隔/边界/计时）
-  ui.ts               # 信息条 / 工具栏 / Toast / 浮层
+  ui.ts               # 信息条 / 工具栏 / Toast / 浮层 / 解锁对话框
   icons.ts            # 线性 SVG 图标与工具栏定义
   ui.css              # 毛玻璃样式（设计 Token 按设计草图）
 src-tauri/            # Rust 后端
-  src/browse.rs       # 浏览模型：目录枚举、自然排序、跨文件夹导航
-  src/decode.rs       # 解码服务：RAW（rawler）+ 动画拆帧（image crate）+ 通道分发
-  src/commands.rs     # Tauri IPC commands
-  src/main.rs         # 入口、启动参数
+  src/browse/         # 浏览模型：目录枚举、自然排序、跨文件夹导航（含门控）
+  src/decode/         # 解码服务：RAW（rawler）+ 动画拆帧（image crate）+ 通道分发
+  src/cache/          # LRU 解码缓存 + 文件夹首图队列（专业版）
+  src/commands/       # Tauri IPC commands（含付费门控）
+  src/license.rs      # 专业版授权：设备指纹、验签、在线验证、激活
+  src/main.rs         # 入口、启动参数、授权初始化
+backend/              # 授权服务参考实现（零依赖 Node，见 backend/README.md）
 scripts/              # 图标 / 测试图片生成脚本
 test-images/          # 生成的测试图库（A/B/C 跨文件夹验证）
 ```

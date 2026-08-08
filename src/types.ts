@@ -44,6 +44,14 @@ export interface AppSettings {
   folder_first_depth: number;
 }
 
+/** Rust 端 license::LicenseInfo */
+export interface LicenseInfo {
+  /** "pro" | "free" */
+  status: string;
+  /** 当前设备指纹 */
+  device_id?: string | null;
+}
+
 /** 需走 IPC 的扩展名（可能多帧动画或 RAW），其余浏览器原生解码直接 asset */
 const IPC_EXTS = new Set([
   "gif", "png", "webp", // 可能动画，需 Rust 拆帧判断

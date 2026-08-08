@@ -94,6 +94,21 @@
       <span id="toast-text">已经是最后一张了</span>
     </div>
 
+    <!-- ===== 专业版解锁对话框 ===== -->
+    <div id="unlock-dialog" class="unlock-mask hidden" aria-hidden="true">
+      <div class="unlock-card glass">
+        <div class="unlock-title">解锁专业版</div>
+        <div class="unlock-desc">解锁后可使用：<b>跨文件夹无缝浏览</b> 与 <b>预取缓存</b>（翻页更流畅）</div>
+        <input id="unlock-code" class="unlock-input" type="text" placeholder="输入激活码（IV-XXXX-XXXX-XXXX）"
+               autocomplete="off" spellcheck="false" />
+        <div class="unlock-actions">
+          <button id="unlock-cancel" class="tb-btn-icon btn-text-plain">取消</button>
+          <button id="unlock-confirm" class="tb-btn-icon btn-text-accent">激活</button>
+        </div>
+        <div id="unlock-error" class="unlock-error hidden"></div>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

@@ -281,6 +281,41 @@ export class UI {
   private frameBarVisible = false;
   /** 幻灯片播放中（wake 只唤醒控制浮条） */
   private slideshowMode = false;
+
+  // ---------- 专业版解锁对话框 ----------
+
+  /** 解锁对话框显隐 */
+  showUnlockDialog(): void {
+    const mask = document.getElementById("unlock-dialog")!;
+    mask.classList.remove("hidden");
+    mask.setAttribute("aria-hidden", "false");
+    const input = document.getElementById("unlock-code") as HTMLInputElement;
+    input.value = "";
+    const err = document.getElementById("unlock-error")!;
+    err.classList.add("hidden");
+    window.setTimeout(() => input.focus(), 50);
+  }
+
+  hideUnlockDialog(): void {
+    const mask = document.getElementById("unlock-dialog")!;
+    mask.classList.add("hidden");
+    mask.setAttribute("aria-hidden", "true");
+  }
+
+  /** 免费版锁定态：禁用文件夹跳转与缓存按钮（点击仍触发解锁引导，见 main.ts 拦截） */
+  setLocked(locked: boolean): void {
+    for (const id of ["folder-prev", "folder-next", "cache-toggle"]) {
+      const btn = this.toolbar.querySelector<HTMLElement>(`[data-id="${id}"]`);
+      if (!btn) continue;
+      if (locked) {
+        if (!btn.dataset.origTip) btn.dataset.origTip = btn.dataset.tip;
+        btn.dataset.tip = "专业版功能 · 点击解锁";
+      } else {
+        btn.dataset.tip = btn.dataset.origTip ?? btn.dataset.tip;
+      }
+      btn.classList.toggle("locked", locked);
+    }
+  }
 }
 
 function sep(): HTMLElement {

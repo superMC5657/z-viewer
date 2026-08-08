@@ -7,9 +7,18 @@ use std::sync::Arc;
 use super::{canonical, is_image_file, BrowseModel, Folder, InnerData, ModelInner, OnReady};
 
 impl BrowseModel {
-    /// 以某张图片为起点建立浏览模型；图片或其父目录无效时返回 None
-    /// 仅同步枚举当前文件夹定位图片，兄弟文件夹后台填充
+    /// 以某张图片为起点建立浏览模型（完整功能：跨文件夹扫描）
+    /// 等价于 open_gated(..., cross_folder=true)；仅测试使用
+    #[cfg(test)]
     pub fn open(path: &Path, on_ready: Option<OnReady>) -> Option<Self> {
+        Self::open_gated(path, on_ready, true)
+    }
+
+    /// 门控打开：cross_folder=false（免费版）时只浏览当前文件夹 ——
+    /// 兄弟文件夹不扫描、不后台填充、不启动扫描线程，
+    /// next/prev 自然停在文件夹边界，jump_folder 亦无目标可跳。
+    /// 付费解锁（专业版）后调用方传入 true 恢复跨文件夹无缝浏览。
+    pub fn open_gated(path: &Path, on_ready: Option<OnReady>, cross_folder: bool) -> Option<Self> {
         if !path.is_file() || !is_image_file(&path.file_name()?.to_string_lossy()) {
             return None;
         }
@@ -20,31 +29,39 @@ impl BrowseModel {
 
         let current_folder_canon = canonical(parent);
 
-        // 同级文件夹（含自身）：枚举图片所在目录的兄弟目录；盘根目录时仅自身
-        // 此步骤仅列目录名，开销小，同步完成
-        // 优化：预计算文件夹名（每目录一次分配）排序后再丢弃，避免比较器内 O(n log n) 次分配
+        // 同级文件夹（含自身）：免费版仅当前文件夹；专业版枚举兄弟目录
+        // （免费版不枚举兄弟：既不泄露功能存在，也省一次目录遍历）
         let mut dirs: Vec<(String, PathBuf)> = Vec::new();
-        match parent.parent() {
-            Some(base) => {
-                if let Ok(rd) = std::fs::read_dir(base) {
-                    for entry in rd.flatten() {
-                        let p = entry.path();
-                        if p.is_dir() {
-                            if let Some(name) = p.file_name() {
-                                dirs.push((name.to_string_lossy().to_string(), p));
+        if cross_folder {
+            match parent.parent() {
+                Some(base) => {
+                    if let Ok(rd) = std::fs::read_dir(base) {
+                        for entry in rd.flatten() {
+                            let p = entry.path();
+                            if p.is_dir() {
+                                if let Some(name) = p.file_name() {
+                                    dirs.push((name.to_string_lossy().to_string(), p));
+                                }
                             }
                         }
                     }
                 }
+                None => {
+                    let name = parent
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+                    dirs.push((name, parent.to_path_buf()));
+                }
             }
-            None => {
-                let name = parent
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                dirs.push((name, parent.to_path_buf()));
-            }
+        } else {
+            let name = parent
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            dirs.push((name, parent.to_path_buf()));
         }
         dirs.sort_by(|a, b| natord::compare(&a.0, &b.0));
         let dirs: Vec<PathBuf> = dirs.into_iter().map(|(_, p)| p).collect();
@@ -83,6 +100,8 @@ impl BrowseModel {
         }
         let folder_index = folder_index?;
         let pending_total = folders.len();
+        // 免费版（cross_folder=false）无待填充文件夹，loading=false
+        let loading = cross_folder && pending_total > 1;
 
         let inner = Arc::new(ModelInner {
             m: std::sync::Mutex::new(InnerData {
@@ -92,23 +111,34 @@ impl BrowseModel {
                 // 初始仅当前文件夹已填充：总数 = 当前图片数，位置 = 当前索引
                 global_total: current_images.len(),
                 global_index: image_index,
-                loading: pending_total > 1,
+                loading,
                 cancelled: false,
             }),
             cv: std::sync::Condvar::new(),
         });
 
-        // 后台扫描兄弟文件夹
-        let scan_inner = Arc::clone(&inner);
-        std::thread::spawn(move || background_scan(scan_inner, on_ready));
+        // 后台扫描兄弟文件夹（免费版无兄弟可扫，跳过）
+        if cross_folder && pending_total > 1 {
+            let scan_inner = Arc::clone(&inner);
+            std::thread::spawn(move || background_scan(scan_inner, on_ready));
+        } else if let Some(cb) = on_ready {
+            // 免费版/单文件夹：无后台扫描，立即回调（状态即最终态）
+            cb(BrowseModel::state_from_inner(&inner));
+        }
 
         Some(Self { inner })
     }
 
-    /// 打开目录：取目录内第一张图片（自然排序）作为起点
-    pub fn open_first_in_dir(dir: &Path, on_ready: Option<OnReady>) -> Option<Self> {
+    /// 打开目录（门控）：取目录内第一张图片（自然排序）作为起点
+    pub fn open_first_in_dir_gated(dir: &Path, on_ready: Option<OnReady>, cross_folder: bool) -> Option<Self> {
         let first = Self::list_images(dir).into_iter().next()?;
-        Self::open(&first, on_ready)
+        Self::open_gated(&first, on_ready, cross_folder)
+    }
+
+    /// 打开目录（完整功能，等价 cross_folder=true；仅测试使用）
+    #[cfg(test)]
+    pub fn open_first_in_dir(dir: &Path, on_ready: Option<OnReady>) -> Option<Self> {
+        Self::open_first_in_dir_gated(dir, on_ready, true)
     }
 
     pub(super) fn list_images(dir: &Path) -> Vec<PathBuf> {

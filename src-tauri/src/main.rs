@@ -5,6 +5,7 @@ mod browse;
 mod cache;
 mod commands;
 mod decode;
+mod license;
 mod logger;
 
 use std::path::{Path, PathBuf};
@@ -64,14 +65,38 @@ fn main() {
         .manage(DecodeCache::new(4))
         .manage(FolderFirstCache::new(4))
         .setup(|app| {
+            // 授权状态：从磁盘加载许可证；后台在线验证（吊销生效，网络失败不阻止）
+            let license_path = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir())
+                .join("license.json");
+            let license = license::LicenseManager::load(license_path);
+            {
+                let license = license.clone();
+                tauri::async_runtime::spawn(async move { license.verify_online().await });
+            }
+            app.manage(license.clone());
+            let pro = license.is_pro();
+            if !pro {
+                // 免费版：缓存容量归零（队列清空），设置锁定为关闭
+                let cache = app.state::<DecodeCache>();
+                cache.set_capacity(0);
+                let first_cache = app.state::<FolderFirstCache>();
+                first_cache.set_capacity(0);
+                if let Ok(mut s) = app.state::<SettingsState>().0.lock() {
+                    s.cache_level = 0;
+                }
+            }
+
             // 双击图片打开 / 命令行传参（文件或目录）：初始化浏览模型
             if let Some(path) = startup_image_path() {
                 let p = Path::new(&path);
                 let on_ready = Some(commands::on_ready_callback(app.handle().clone()));
                 let model = if p.is_dir() {
-                    BrowseModel::open_first_in_dir(p, on_ready)
+                    BrowseModel::open_first_in_dir_gated(p, on_ready, pro)
                 } else {
-                    BrowseModel::open(p, on_ready)
+                    BrowseModel::open_gated(p, on_ready, pro)
                 };
                 if let Some(model) = model {
                     let state = app.state::<AppState>();
@@ -92,6 +117,8 @@ fn main() {
             commands::set_cache_level,
             commands::get_settings,
             commands::get_context,
+            license::activate_license,
+            license::get_license_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

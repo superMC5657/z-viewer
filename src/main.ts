@@ -23,7 +23,7 @@ import { Slideshow } from "./slideshow";
 import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
 import { ICONS } from "./icons";
-import type { AppSettings, BrowseState, LoadResult, NavResult } from "./types";
+import type { AppSettings, BrowseState, LicenseInfo, LoadResult, NavResult } from "./types";
 import { needsIpc } from "./types";
 import "./ui.css";
 
@@ -39,6 +39,8 @@ const windowState = new WindowState(getCurrentWindow(), viewer, ui);
 const slideshow = new Slideshow();
 const prefetch = new PrefetchPool();
 let cacheLevel = 1;
+/** 专业版是否已解锁（启动时查询；控制按钮锁定态与功能入口） */
+let pro = false;
 /** 缓存等级设置请求代次：并发切换时只应用最后一次（防幻灯片自动切换与手动切换竞态） */
 let cacheLevelGen = 0;
 /** 幻灯片播放前的缓存等级（退出模式时恢复） */
@@ -48,6 +50,8 @@ let slideshowMode = false;
 
 // ---------- 状态 ----------
 let currentDims: { w: number; h: number } | null = null;
+/** 最近一次浏览状态（解锁后重开当前图片以启用跨文件夹扫描） */
+let lastState: BrowseState | null = null;
 /** 当前 RAW 解码的 Blob URL（切换图片时 revoke，防止内存累积） */
 let currentBlobUrl: string | null = null;
 /** showImage 代次：播放中手动翻页等并发加载时，丢弃过期响应 */
@@ -56,6 +60,7 @@ let showSeq = 0;
 // ---------- 图片显示 ----------
 
 async function showImage(state: BrowseState): Promise<void> {
+  lastState = state;
   const seq = ++showSeq;
   feLog(`显示图片: ${state.file_name} (${state.folder_name}) [${state.global_index + 1}/${state.global_total}]`);
   ui.setEmpty(false);
@@ -153,7 +158,16 @@ const BOUNDARY_TEXT: Record<string, string> = {
   "last-image": "已经是最后一张了",
   "first-folder": "已经是第一个文件夹了",
   "last-folder": "已经是最后一个文件夹了",
+  "pro-required": "跨文件夹浏览是专业版功能",
 };
+
+/** 付费功能入口统一拦截：免费版弹出解锁引导（不发起 IPC） */
+function requirePro(): boolean {
+  if (pro) return true;
+  ui.showToast("专业版功能，解锁后可用");
+  ui.showUnlockDialog();
+  return false;
+}
 
 async function nav(fn: () => Promise<NavResult>): Promise<void> {
   let result: NavResult;
@@ -166,6 +180,8 @@ async function nav(fn: () => Promise<NavResult>): Promise<void> {
   if (result.boundary) {
     // 撞边界：图片未变化，只弹 Toast，不重载图片（避免闪烁与变换重置）
     ui.showToast(BOUNDARY_TEXT[result.boundary] ?? "已经到边界了");
+    // 专业版功能被锁定（jump_folder 拦截）：引导解锁
+    if (result.boundary === "pro-required") ui.showUnlockDialog();
     return;
   }
   if (result.state) {
@@ -203,6 +219,7 @@ function setFitMode(mode: FitMode): void {
 function handleToolbarAction(id: string): void {
   switch (id) {
     case "folder-prev":
+      if (!requirePro()) return;
       void nav(() => invoke("jump_folder", { target: "prev" }));
       break;
     case "image-prev":
@@ -212,6 +229,7 @@ function handleToolbarAction(id: string): void {
       void nav(() => invoke("next_image"));
       break;
     case "folder-next":
+      if (!requirePro()) return;
       void nav(() => invoke("jump_folder", { target: "next" }));
       break;
     case "rotate-cw":
@@ -239,6 +257,7 @@ function handleToolbarAction(id: string): void {
       void windowState.toggleImmersive();
       break;
     case "cache-toggle":
+      if (!requirePro()) return;
       void toggleCache();
       break;
     case "update":
@@ -423,7 +442,8 @@ function buildSlideshowBar(): void {
         // 才能命中（解码耗时常见 2.5s+ > 2s 间隔，蓝色前1后1 提前 1 拍总 miss）
         // 只在首次进入时记录播放前等级（暂停→继续不覆盖，恢复仍用最初的等级）
         slideshowPrevCacheLevel = cacheLevel;
-        if (cacheLevel !== 2) void setCacheLevel(2);
+        // 自动提级到高等级缓存（专业版功能）；免费版跳过（Rust 会拒绝，避免误弹错误）
+        if (pro && cacheLevel !== 2) void setCacheLevel(2);
       }
     }
     // running=false（暂停）：保持模式、保留进度计数、保留高等级缓存——随时可继续播放
@@ -441,7 +461,8 @@ function exitSlideshow(): void {
   // 恢复播放前的缓存等级。条件：播放前不是 2（说明自动启用请求可能已发出/在飞，必须 force 打回），
   // 或播放前是 2 但播放中被人为改过（当前播放时工具栏隐藏、无快捷键，仅防御未来扩展）。
   // 两者都不满足（播放前 2 且期间未变）则无需恢复，避免多余 invoke。
-  if (slideshowPrevCacheLevel !== null && (slideshowPrevCacheLevel !== 2 || cacheLevel !== 2)) {
+  // 免费版跳过：无在飞提级请求（进入时 pro 才提级），force 恢复会被 Rust 拒绝且误弹错误
+  if (pro && slideshowPrevCacheLevel !== null && (slideshowPrevCacheLevel !== 2 || cacheLevel !== 2)) {
     void setCacheLevel(slideshowPrevCacheLevel, undefined, true);
   }
   slideshowPrevCacheLevel = null;
@@ -486,6 +507,50 @@ async function toggleCache(): Promise<void> {
 function syncCacheButton(): void {
   ui.setToolbarActive("cache-toggle", cacheLevel >= 1);
   ui.setToolbarLevel("cache-toggle", cacheLevel >= 2);
+}
+
+// ---------- 专业版解锁 ----------
+
+async function activateLicense(code: string): Promise<void> {
+  const errEl = document.getElementById("unlock-error")!;
+  errEl.classList.add("hidden");
+  try {
+    const info = await invoke<LicenseInfo>("activate_license", { code });
+    if (info.status === "pro") {
+      pro = true;
+      ui.hideUnlockDialog();
+      ui.setLocked(false);
+      ui.showToast("专业版解锁成功");
+      // 恢复持久化的缓存等级（Rust 侧已放行）
+      const saved = Number(localStorage.getItem("cache-level"));
+      if (Number.isFinite(saved) && saved >= 1 && saved <= 2) {
+        void setCacheLevel(saved, undefined, true);
+      }
+      // 重开当前图片：以专业版模式重建浏览模型（启用兄弟文件夹扫描）
+      if (lastState) void openPath(lastState.path);
+    } else {
+      errEl.textContent = "激活失败，请检查激活码";
+      errEl.classList.remove("hidden");
+    }
+  } catch (err) {
+    errEl.textContent = String(err);
+    errEl.classList.remove("hidden");
+  }
+}
+
+/** 装配解锁对话框事件（取消 / 激活 / Enter 提交） */
+function bindUnlockDialog(): void {
+  document.getElementById("unlock-cancel")!.addEventListener("click", () => ui.hideUnlockDialog());
+  document.getElementById("unlock-confirm")!.addEventListener("click", () => {
+    const code = (document.getElementById("unlock-code") as HTMLInputElement).value;
+    void activateLicense(code);
+  });
+  document.getElementById("unlock-code")!.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const code = (e.target as HTMLInputElement).value;
+      void activateLicense(code);
+    }
+  });
 }
 
 // ---------- 事件装配 ----------
@@ -557,6 +622,7 @@ function bindEvents(): void {
 
 async function init(): Promise<void> {
   bindEvents();
+  bindUnlockDialog();
   buildFrameBar();
   buildSlideshowBar();
   // 应用持久化的幻灯片间隔（buildSlideshowBar 已同步下拉框显示）
@@ -577,6 +643,15 @@ async function init(): Promise<void> {
   });
 
   try {
+    // 授权状态：免费版锁定付费功能按钮
+    const info = await invoke<LicenseInfo>("get_license_status");
+    pro = info.status === "pro";
+    ui.setLocked(!pro);
+  } catch (err) {
+    console.error(err);
+  }
+
+  try {
     // 命令行 / 双击打开：Rust 端已注入浏览模型
     const state = await invoke<BrowseState | null>("get_initial_state");
     if (state) {
@@ -585,8 +660,13 @@ async function init(): Promise<void> {
     }
     // 读取缓存设置并同步 UI（localStorage 持久化优先，否则 Rust 默认）
     const settings = await invoke<AppSettings>("get_settings");
-    const saved = Number(localStorage.getItem("cache-level"));
-    cacheLevel = Number.isFinite(saved) && saved >= 0 && saved <= 2 ? saved : settings.cache_level;
+    if (!pro) {
+      // 免费版：缓存被锁定为关闭，忽略 localStorage 里的付费等级（避免显示橙色高等级态）
+      cacheLevel = 0;
+    } else {
+      const saved = Number(localStorage.getItem("cache-level"));
+      cacheLevel = Number.isFinite(saved) && saved >= 0 && saved <= 2 ? saved : settings.cache_level;
+    }
     syncCacheButton();
     if (cacheLevel !== settings.cache_level) {
       await invoke<AppSettings>("set_cache_level", { level: cacheLevel }).catch(() => undefined);
