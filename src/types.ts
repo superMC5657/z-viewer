@@ -52,6 +52,14 @@ export interface LicenseInfo {
   device_id?: string | null;
 }
 
+/** Rust 端 license::StoreInfo（购买入口） */
+export interface StoreInfo {
+  /** 产品标识（官网购买页 ?product= 参数） */
+  product: string;
+  /** 官网购买页 URL；null = 未配置 */
+  buyUrl: string | null;
+}
+
 /** 需走 IPC 的扩展名（可能多帧动画或 RAW），其余浏览器原生解码直接 asset */
 const IPC_EXTS = new Set([
   "gif", "png", "webp", // 可能动画，需 Rust 拆帧判断

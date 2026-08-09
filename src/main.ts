@@ -14,6 +14,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { Viewer, type FitMode } from "./viewer";
 import { feLog } from "./logger";
@@ -23,7 +24,7 @@ import { Slideshow } from "./slideshow";
 import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
 import { ICONS } from "./icons";
-import type { AppSettings, BrowseState, LicenseInfo, LoadResult, NavResult } from "./types";
+import type { AppSettings, BrowseState, LicenseInfo, LoadResult, NavResult, StoreInfo } from "./types";
 import { needsIpc } from "./types";
 import "./ui.css";
 
@@ -538,13 +539,32 @@ async function activateLicense(code: string): Promise<void> {
   }
 }
 
-/** 装配解锁对话框事件（取消 / 激活 / Enter 提交） */
+/** 打开官网购买页（Rust 返回 buy_url，未配置时给出提示） */
+async function openStorePage(): Promise<void> {
+  const errEl = document.getElementById("unlock-error")!;
+  errEl.classList.add("hidden");
+  try {
+    const info = await invoke<StoreInfo>("get_store_info");
+    if (!info.buyUrl) {
+      errEl.textContent = "在线购买地址尚未配置，请联系开发者";
+      errEl.classList.remove("hidden");
+      return;
+    }
+    await openUrl(info.buyUrl);
+  } catch (err) {
+    errEl.textContent = String(err);
+    errEl.classList.remove("hidden");
+  }
+}
+
+/** 装配解锁对话框事件（取消 / 激活 / 在线购买 / Enter 提交） */
 function bindUnlockDialog(): void {
   document.getElementById("unlock-cancel")!.addEventListener("click", () => ui.hideUnlockDialog());
   document.getElementById("unlock-confirm")!.addEventListener("click", () => {
     const code = (document.getElementById("unlock-code") as HTMLInputElement).value;
     void activateLicense(code);
   });
+  document.getElementById("unlock-buy")!.addEventListener("click", () => void openStorePage());
   document.getElementById("unlock-code")!.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const code = (e.target as HTMLInputElement).value;

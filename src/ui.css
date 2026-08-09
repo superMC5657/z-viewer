@@ -671,6 +671,26 @@ body.immersive #info-bar {
 .unlock-error.hidden {
   display: none;
 }
+/* 在线购买入口：链接式按钮，常驻输入框下方 */
+.unlock-buy-row {
+  display: flex;
+  justify-content: center;
+  padding-top: 2px;
+}
+.unlock-buy {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 12.5px;
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: var(--radius-btn);
+  transition: background 0.15s ease;
+}
+.unlock-buy:hover {
+  background: var(--btn-hover);
+  text-decoration: underline;
+}
 
 /* 免费版锁定态：功能可见但被锁定（点击由 main.ts 引导解锁） */
 .tb-btn-icon.locked {

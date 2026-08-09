@@ -68,6 +68,15 @@
       "windows": {
         "installMode": "passive"
       }
+    },
+    "store": {
+      "apiBase": "http://127.0.0.1:8787",
+      "buyUrl": "https://www.bilibili.com/",
+      "licensePublicKeyB64": "HHvVDoB7i1gMlCH7PreE2h2lovqa+taR6mb756xpmyE=",
+      "product": "image-viewer",
+      "licenseFileName": "license.json",
+      "activatePath": "/api/activate",
+      "verifyPath": "/api/verify"
     }
   }
 }

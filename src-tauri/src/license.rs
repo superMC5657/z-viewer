@@ -17,16 +17,74 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-/// 许可证服务 API 地址（dev 默认本地参考后端；发布前替换为生产地址）
-const LICENSE_API_BASE: &str = "http://127.0.0.1:8787";
-
-/// 客户端内置 Ed25519 公钥（base64，32 字节 raw）
-/// 对应 backend-mock/keys/ed25519-public.pem；**生产发布前必须换成自己的密钥对**
-/// （生成：node backend-mock/scripts/gen-keys.mjs，替换此常量与后端私钥）
-const LICENSE_PUBLIC_KEY_B64: &str = "HHvVDoB7i1gMlCH7PreE2h2lovqa+taR6mb756xpmyE=";
-
 /// 功能位：当前捆绑为一个 "pro"（跨文件夹浏览 + 预取缓存）
 pub const FEATURE_PRO: &str = "pro";
+
+/// 商店/授权服务配置（**唯一真源：tauri.conf.json → plugins.store**，编译时固化随二进制分发）
+///
+/// tauri.conf.json 示例：
+/// ```json
+/// "plugins": {
+///   "store": {
+///     "apiBase": "https://your-server.example.com",
+///     "buyUrl": "https://your-server.example.com/buy?product=image-viewer",
+///     "licensePublicKeyB64": "<该产品的 Ed25519 公钥 base64>",
+///     "product": "image-viewer",
+///     "licenseFileName": "license.json",
+///     "activatePath": "/api/activate",
+///     "verifyPath": "/api/verify"
+///   }
+/// }
+/// ```
+///
+/// 字段缺失/为空即视为未配置：apiBase 未配置时激活报错、不联网验证；
+/// 公钥未配置时验签必失败（无法激活）。无任何内置默认值。
+#[derive(Clone, Debug)]
+pub struct StoreConfig {
+    /// 授权服务 API base（激活/在线验证）；空 = 未配置
+    pub api_base: String,
+    /// 官网购买页 URL；None = 未配置（前端购买按钮给出提示）
+    pub buy_url: Option<String>,
+    /// 许可证验签公钥（base64，32 字节 raw）；空 = 未配置
+    pub public_key_b64: String,
+    /// 产品标识（官网购买页 `?product=` 参数，get_store_info 返回给前端）
+    pub product: String,
+    /// 许可证存储文件名（app_data_dir 下）
+    pub license_file_name: String,
+    /// 激活接口路径（拼在 api_base 后）
+    pub activate_path: String,
+    /// 在线验证接口路径（拼在 api_base 后）
+    pub verify_path: String,
+}
+
+impl StoreConfig {
+    /// 从 tauri.conf.json 的 plugins.store 读取（编译期配置，运行时不可改）
+    pub fn from_config(config: &tauri::Config) -> Self {
+        let v = config
+            .plugins
+            .0
+            .get("store")
+            .cloned()
+            .unwrap_or_default();
+        let s = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        };
+        Self {
+            api_base: s("apiBase").unwrap_or_default().to_string(),
+            buy_url: s("buyUrl").map(String::from),
+            public_key_b64: s("licensePublicKeyB64")
+                .unwrap_or_default()
+                .to_string(),
+            product: s("product").unwrap_or_default().to_string(),
+            license_file_name: s("licenseFileName").unwrap_or_default().to_string(),
+            activate_path: s("activatePath").unwrap_or_default().to_string(),
+            verify_path: s("verifyPath").unwrap_or_default().to_string(),
+        }
+    }
+}
 
 /// 许可证（服务端签发、客户端验签后信任）
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -57,18 +115,20 @@ pub struct LicenseInfo {
 pub struct LicenseManager {
     license: Arc<Mutex<Option<License>>>,
     storage: PathBuf,
+    store: StoreConfig,
 }
 
 impl LicenseManager {
-    /// 从磁盘加载许可证（不存在 = 免费版）
-    pub fn load(storage: PathBuf) -> Self {
+    /// 从磁盘加载许可证（不存在 = 免费版）；store 为编译期配置（tauri.conf.json plugins.store）
+    pub fn load(storage: PathBuf, store: StoreConfig) -> Self {
         let license = std::fs::read_to_string(&storage)
             .ok()
             .and_then(|s| serde_json::from_str::<License>(&s).ok())
-            .filter(|lic| lic.is_valid(&device_id()));
+            .filter(|lic| lic.is_valid_with(&device_id(), &store.public_key_b64));
         Self {
             license: Arc::new(Mutex::new(license)),
             storage,
+            store,
         }
     }
 
@@ -97,22 +157,35 @@ impl LicenseManager {
         }
         #[cfg(not(debug_assertions))]
         {
-            Self::is_pro_impl(&self.license.lock().ok().and_then(|g| g.clone()))
+            let pubkey = self.store.public_key_b64.clone();
+            Self::is_pro_with(&self.license.lock().ok().and_then(|g| g.clone()), &pubkey)
         }
     }
 
-    /// 门控核心判定（不含 cfg，供单元测试验证免费版分支）
+    /// 门控核心判定（不含 cfg，供单元测试验证免费版分支；用 store 公钥验签）
+    #[cfg(any(not(debug_assertions), test))]
+    fn is_pro_with(lic: &Option<License>, pubkey_b64: &str) -> bool {
+        lic.as_ref()
+            .is_some_and(|lic| lic.is_valid_with(&device_id(), pubkey_b64))
+    }
+
+    /// 门控核心判定（测试用：空公钥下验签必失败，仅验证业务字段分支）
     #[cfg(any(not(debug_assertions), test))]
     fn is_pro_impl(lic: &Option<License>) -> bool {
-        lic.as_ref().is_some_and(|lic| lic.is_valid(&device_id()))
+        lic.as_ref()
+            .is_some_and(|lic| lic.is_valid_with(&device_id(), ""))
     }
 
     /// 激活：调后端换取许可证 → 验签 → 校验设备与功能位 → 落盘
     pub async fn activate(&self, code: String) -> Result<License, String> {
+        if self.store.api_base.is_empty() {
+            return Err("授权服务器未配置（tauri.conf.json plugins.store.apiBase）".to_string());
+        }
         let dev = device_id();
         let client = reqwest::Client::new();
+        let url = format!("{}{}", self.store.api_base, self.store.activate_path);
         let resp = client
-            .post(format!("{LICENSE_API_BASE}/api/activate"))
+            .post(url)
             .json(&serde_json::json!({ "code": code, "device_id": dev }))
             .send()
             .await
@@ -126,7 +199,7 @@ impl LicenseManager {
         }
         let lic: License = serde_json::from_value(body.get("license").cloned().unwrap_or_default())
             .map_err(|_| "授权服务器返回格式错误".to_string())?;
-        if !lic.is_valid(&dev) {
+        if !lic.is_valid_with(&dev, &self.store.public_key_b64) {
             return Err("激活码无效（许可证校验失败）".to_string());
         }
         *self.license.lock().map_err(|e| e.to_string())? = Some(lic.clone());
@@ -137,9 +210,13 @@ impl LicenseManager {
     /// 在线验证（启动时后台调用）：吊销生效；网络失败静默（本地有效即可用）
     pub async fn verify_online(&self) {
         let Some(lic) = self.license() else { return };
+        if self.store.api_base.is_empty() {
+            return; // 未配置授权服务器：不联网验证
+        }
         let client = reqwest::Client::new();
+        let url = format!("{}{}", self.store.api_base, self.store.verify_path);
         let resp = client
-            .post(format!("{LICENSE_API_BASE}/api/verify"))
+            .post(url)
             .json(&serde_json::json!({ "device_id": lic.device_id, "license": lic }))
             .send()
             .await;
@@ -162,9 +239,9 @@ impl LicenseManager {
 }
 
 impl License {
-    /// 完整校验：签名有效 && 未过期 && 设备匹配 && 含 pro 功能位
-    pub fn is_valid(&self, dev: &str) -> bool {
-        self.checks_ok(dev) && self.verify_signature()
+    /// 完整校验（指定公钥：tauri.conf.json plugins.store.licensePublicKeyB64 配置的正式公钥）
+    pub fn is_valid_with(&self, dev: &str, pubkey_b64: &str) -> bool {
+        self.checks_ok(dev) && self.verify_signature_with(pubkey_b64)
     }
 
     /// 业务字段校验（不含签名）：设备匹配、含 pro、未过期
@@ -186,16 +263,15 @@ impl License {
         )
     }
 
-    /// Ed25519 验签（内置公钥）
-    fn verify_signature(&self) -> bool {
+    /// Ed25519 验签（指定公钥 base64）
+    fn verify_signature_with(&self, pubkey_b64: &str) -> bool {
         use ed25519_dalek::{Signature, VerifyingKey};
         use base64::Engine;
-        let Ok(pubkey_b64) = base64::engine::general_purpose::STANDARD
-            .decode(LICENSE_PUBLIC_KEY_B64)
+        let Ok(pubkey_bytes) = base64::engine::general_purpose::STANDARD.decode(pubkey_b64)
         else {
             return false;
         };
-        let Ok(key_bytes): Result<[u8; 32], _> = pubkey_b64.as_slice().try_into() else {
+        let Ok(key_bytes): Result<[u8; 32], _> = pubkey_bytes.as_slice().try_into() else {
             return false;
         };
         let Ok(pubkey) = VerifyingKey::from_bytes(&key_bytes) else {
@@ -240,6 +316,25 @@ pub fn device_id() -> String {
 }
 
 // ---------- Tauri 命令 ----------
+
+/// 前端可见的商店信息（购买入口用）
+#[derive(Clone, Serialize, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreInfo {
+    /// 产品标识（官网购买页 `?product=` 参数）
+    pub product: String,
+    /// 官网购买页 URL；None = 未配置（前端提示联系开发者）
+    pub buy_url: Option<String>,
+}
+
+/// 查询商店信息（购买按钮：获取官网购买页地址）
+#[tauri::command]
+pub fn get_store_info(state: State<'_, LicenseManager>) -> StoreInfo {
+    StoreInfo {
+        product: state.store.product.clone(),
+        buy_url: state.store.buy_url.clone(),
+    }
+}
 
 /// 激活专业版（输入激活码）
 #[tauri::command]
@@ -419,6 +514,10 @@ mod gate_tests {
 mod e2e {
     use super::*;
 
+    /// 本地联调后端地址与 demo 公钥（backend-mock，仅测试用；生产值在 tauri.conf.json plugins.store）
+    const MOCK_API: &str = "http://127.0.0.1:8787";
+    const MOCK_PUBKEY_B64: &str = "HHvVDoB7i1gMlCH7PreE2h2lovqa+taR6mb756xpmyE=";
+
     #[test]
     #[ignore = "需要本地授权后端运行（backend-mock/server.mjs）"]
     fn real_backend_signature_passes() {
@@ -427,7 +526,7 @@ mod e2e {
             let client = reqwest::Client::new();
             // 1. 生成激活码（管理 API）
             let r = client
-                .post(format!("{LICENSE_API_BASE}/api/admin/gen"))
+                .post(format!("{MOCK_API}/api/admin/gen"))
                 .json(&serde_json::json!({ "apiKey": "dev-admin-key", "count": 1 }))
                 .send()
                 .await
@@ -436,7 +535,7 @@ mod e2e {
             let code = body["codes"][0].as_str().unwrap().to_string();
             // 2. 激活 → 后端用私钥签发
             let r = client
-                .post(format!("{LICENSE_API_BASE}/api/activate"))
+                .post(format!("{MOCK_API}/api/activate"))
                 .json(&serde_json::json!({ "code": code, "device_id": dev }))
                 .send()
                 .await
@@ -446,12 +545,12 @@ mod e2e {
         });
 
         assert_eq!(lic.device_id, dev, "许可证应绑定本机");
-        assert!(lic.verify_signature(), "后端私钥签发的许可证必须通过客户端内置公钥验签");
-        assert!(lic.is_valid(&dev), "完整校验通过");
+        assert!(lic.verify_signature_with(MOCK_PUBKEY_B64), "后端私钥签发的许可证必须通过客户端内置公钥验签");
+        assert!(lic.is_valid_with(&dev, MOCK_PUBKEY_B64), "完整校验通过");
 
         // 篡改：改 device_id 后验签必须失败（防本地伪造）
         let mut tampered = lic.clone();
         tampered.device_id = "hacked-device".into();
-        assert!(!tampered.verify_signature(), "篡改后验签应失败");
+        assert!(!tampered.verify_signature_with(MOCK_PUBKEY_B64), "篡改后验签应失败");
     }
 }

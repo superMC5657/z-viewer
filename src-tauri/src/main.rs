@@ -60,18 +60,21 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState(Mutex::new(None)))
         .manage(SettingsState(Mutex::new(AppSettings::default())))
         .manage(DecodeCache::new(4))
         .manage(FolderFirstCache::new(4))
         .setup(|app| {
             // 授权状态：从磁盘加载许可证；后台在线验证（吊销生效，网络失败不阻止）
+            // 商店/授权配置：编译期固化在 tauri.conf.json → plugins.store
+            let store = license::StoreConfig::from_config(app.config());
             let license_path = app
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir())
-                .join("license.json");
-            let license = license::LicenseManager::load(license_path);
+                .join(&store.license_file_name);
+            let license = license::LicenseManager::load(license_path, store);
             {
                 let license = license.clone();
                 tauri::async_runtime::spawn(async move { license.verify_online().await });
@@ -119,6 +122,7 @@ fn main() {
             commands::get_context,
             license::activate_license,
             license::get_license_status,
+            license::get_store_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
