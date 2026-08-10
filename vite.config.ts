@@ -1,7 +1,11 @@
 import { defineConfig } from "vite";
 
 // https://vitejs.dev/config/
-export default defineConfig(async () => ({
+export default defineConfig({
+  // 前端源码根目录：index.html 位于 src/ 下
+  root: "src",
+  // 公共静态资源仍在项目根 public/（不随 root 移动）
+  publicDir: "../public",
   // Vite options tailored for Tauri development.
   clearScreen: false,
   server: {
@@ -13,6 +17,9 @@ export default defineConfig(async () => ({
     },
   },
   build: {
+    // 产物输出到项目根 dist/（root 为 src/，需相对回退一层；并显式清空旧产物）
+    outDir: "../dist",
+    emptyOutDir: true,
     // 产物目标：WebView2（Chromium 系）支持现代语法，无需为旧浏览器降级
     // 保留 ES2021（与 tsconfig 一致），让 Vite 不做多余转译，产物更小
     target: "es2021",
@@ -35,4 +42,4 @@ export default defineConfig(async () => ({
     // 预构建优化：依赖预打包用 esbuild，与 dev 一致（避免 build/dev 行为差异）
     sourcemap: false,
   },
-}));
+});
