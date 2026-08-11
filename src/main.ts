@@ -93,6 +93,8 @@ async function showImage(state: BrowseState): Promise<void> {
     ui.updateInfo(state, currentDims);
     ui.setFramePlaying(viewer.isPlaying);
     ui.setSlideshowProgress(state.global_index + 1, state.global_total);
+    // 埋点：asset 通道显示成功（jpg 等浏览器原生解码不经 load_image，必须单独计数）
+    void invoke("record_view", { path: state.path });
     return;
   }
 
@@ -138,6 +140,8 @@ async function showImage(state: BrowseState): Promise<void> {
   ui.setFramePlaying(viewer.isPlaying);
   // 幻灯片进度计数（播放中实时更新）
   ui.setSlideshowProgress(state.global_index + 1, state.global_total);
+  // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身已不再计数）
+  void invoke("record_view", { path: state.path });
 }
 
 /** 获取当前上下文路径并预热（方案三/四） */

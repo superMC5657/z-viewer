@@ -18,8 +18,9 @@ node gen-codes.mjs --count 3 --note "本地测试"   # 生成激活码
 
 | 接口 | 说明 |
 |---|---|
-| `POST /api/activate` | `{ code, device_id }` → `{ license }`；激活码一次性绑定设备（每码 3 台，重复激活幂等） |
+| `POST /api/activate` | `{ code, device_id }` → `{ license }`；激活码绑定设备（每码最多 3 台同时在线，满员时**自动踢掉最旧设备**，FIFO；重复激活幂等） |
 | `POST /api/verify` | `{ device_id, license }` → `{ valid }`；客户端启动时调用，吊销生效 |
+| `POST /api/analytics` | 会话统计埋点（客户端正常退出时上报，负载见下）；本参考实现仅打印，生产端自行接入存储/看板 |
 | `POST /api/admin/gen` | `{ apiKey, count, note }` → `{ codes }` |
 | `POST /api/admin/revoke` | `{ apiKey, code }` → `{ ok }` |
 | `GET /api/health` | 健康检查 |
@@ -76,10 +77,37 @@ license = { device_id, features:["pro"], issued_at, expires_at:0, sig: base64(ed
 
 - 服务端用私钥签发；客户端内置公钥验签（`license.rs::verify_signature`）
 - 防篡改：本地改动 license.json 任何字段都会验签失败
-- 防分享：激活码绑设备（每码 3 台），吊销后客户端在线验证降级为免费版
-- 离线可用：网络失败不阻止已付费用户（仅吊销场景需要在线）
+- 防分享：激活码绑设备（每码最多 3 台**同时在线**，满员时新设备激活自动踢掉最旧设备
+  ——FIFO 滑动窗口；被踢设备下次启动在线验证降级为免费版）
+- 离线可用：网络失败不阻止已付费用户（仅吊销/被踢场景需要在线）
+
+## 会话统计埋点（POST /api/analytics）
+
+客户端在**正常退出**（点关闭/Alt+F4/菜单退出）时上报；`kill`/任务管理器强杀
+进程无代码执行机会，无法上报（已知限制）。上报地址 = `plugins.store.apiBase`
++ `analyticsPath`（tauri.conf.json 编译期配置）。
+
+负载（全部为聚合统计，**不含任何文件路径/文件名**）：
+
+```json
+{
+  "deviceId": "机器指纹（与授权相同）",
+  "licenseStatus": "pro | free",
+  "version": "0.3.2",
+  "os": "Windows 11 Pro (build 26100)",
+  "arch": "x86_64",
+  "sessionStart": 1750000000,
+  "sessionEnd": 1750003600,
+  "imagesViewed": 128,
+  "uniqueImages": 42,
+  "formats": { "jpg": 90, "png": 30, "gif": 5, "cr2": 3 },
+  "foldersViewed": 2,
+  "cacheLevel": 2
+}
+```
 
 ## 限制与取舍
 
-- 设备指纹用 MachineGuid 哈希，重装系统会变化 → 后台 `revoke` 旧设备后再激活即可（3 台上限）
+- 设备指纹用 MachineGuid 哈希，重装系统会变化 → 后台 `revoke` 旧设备后再激活即可（3 台同时在线）
+- 满员踢出是 **FIFO（最旧先踢）**，不是"距离上次使用最久先踢"——mock 不记录设备最后活跃时间；若需 LRU 策略需在 `devices` 里加时间戳（生产 Go 后端可加）
 - JSON 文件存储无并发保护，多实例部署前请迁移数据库

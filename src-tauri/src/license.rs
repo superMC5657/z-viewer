@@ -32,7 +32,8 @@ pub const FEATURE_PRO: &str = "pro";
 ///     "product": "image-viewer",
 ///     "licenseFileName": "license.json",
 ///     "activatePath": "/api/activate",
-///     "verifyPath": "/api/verify"
+///     "verifyPath": "/api/verify",
+///     "analyticsPath": "/api/analytics"
 ///   }
 /// }
 /// ```
@@ -55,6 +56,8 @@ pub struct StoreConfig {
     pub activate_path: String,
     /// 在线验证接口路径（拼在 api_base 后）
     pub verify_path: String,
+    /// 会话统计上报接口路径（拼在 api_base 后）；空 = 不上报
+    pub analytics_path: String,
 }
 
 impl StoreConfig {
@@ -82,6 +85,7 @@ impl StoreConfig {
             license_file_name: s("licenseFileName").unwrap_or_default().to_string(),
             activate_path: s("activatePath").unwrap_or_default().to_string(),
             verify_path: s("verifyPath").unwrap_or_default().to_string(),
+            analytics_path: s("analyticsPath").unwrap_or_default().to_string(),
         }
     }
 }
@@ -132,10 +136,17 @@ impl LicenseManager {
         }
     }
 
-    fn persist(&self, lic: &License) {
-        if let Ok(s) = serde_json::to_string_pretty(lic) {
-            let _ = std::fs::write(&self.storage, s);
+    /// 许可证落盘：先确保存储目录存在（首次运行时 AppData 目录可能尚未创建，
+    /// 直接 write 会静默失败导致激活状态丢失——重启后又要重新激活），再写入。
+    /// 失败返回错误，由 activate 命令上报给前端（不再静默吞掉）。
+    fn persist(&self, lic: &License) -> Result<(), String> {
+        let s = serde_json::to_string_pretty(lic).map_err(|e| e.to_string())?;
+        if let Some(dir) = self.storage.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| format!("无法创建许可证目录 {}: {e}", dir.display()))?;
         }
+        std::fs::write(&self.storage, s)
+            .map_err(|e| format!("无法保存许可证到 {}: {e}", self.storage.display()))
     }
 
     fn clear(&self) {
@@ -203,7 +214,7 @@ impl LicenseManager {
             return Err("激活码无效（许可证校验失败）".to_string());
         }
         *self.license.lock().map_err(|e| e.to_string())? = Some(lic.clone());
-        self.persist(&lic);
+        self.persist(&lic)?;
         Ok(lic)
     }
 
@@ -484,6 +495,54 @@ mod tests {
             return false;
         };
         pubkey.verify_strict(lic.payload().as_bytes(), &sig).is_ok()
+    }
+
+    /// 许可证持久化：storage 目录不存在（首次运行）时 persist 应自动创建目录并落盘，
+    /// 重新 load（模拟重启）后能读回同一许可证——修复「激活后重启又要激活」。
+    #[test]
+    fn license_survives_restart_with_missing_dir() {
+        let (pubkey, signing) = test_keypair();
+        let pubkey_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, pubkey);
+        // 指向一个不存在的临时目录（模拟首次运行时 AppData 目录尚未创建）
+        let dir = std::env::temp_dir().join(format!("iv-license-test-{}", std::process::id()));
+        let storage = dir.join("nested").join("license.json");
+
+        let store = StoreConfig {
+            api_base: String::new(),
+            buy_url: None,
+            public_key_b64: pubkey_b64.clone(),
+            product: "test".into(),
+            license_file_name: "license.json".into(),
+            activate_path: String::new(),
+            verify_path: String::new(),
+            analytics_path: String::new(),
+        };
+
+        // 激活：写入内存 + 落盘（persist 内部 create_dir_all）
+        let m = LicenseManager::load(storage.clone(), store.clone());
+        let mut lic = License {
+            device_id: device_id(),
+            features: vec![FEATURE_PRO.into()],
+            issued_at: now(),
+            expires_at: 0,
+            sig: String::new(),
+        };
+        sign_license(&mut lic, &signing);
+        *m.license.lock().unwrap() = Some(lic.clone());
+        m.persist(&lic).expect("persist 应自动创建目录并成功落盘");
+
+        // 模拟重启：重新 load 同一 storage
+        let m2 = LicenseManager::load(storage.clone(), store);
+        let loaded = m2.license().expect("重启后应从磁盘读回许可证");
+        assert_eq!(loaded, lic);
+        assert!(
+            LicenseManager::is_pro_with(&m2.license(), &pubkey_b64),
+            "重启后仍应判为已解锁"
+        );
+
+        // 清理临时目录
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

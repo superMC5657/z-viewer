@@ -1,6 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod analytics;
 mod browse;
 mod cache;
 mod commands;
@@ -62,6 +63,7 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState(Mutex::new(None)))
+        .manage(analytics::SessionStats::new())
         .manage(SettingsState(Mutex::new(AppSettings::default())))
         .manage(DecodeCache::new(4))
         .manage(FolderFirstCache::new(4))
@@ -117,6 +119,7 @@ fn main() {
             commands::jump_folder,
             commands::get_initial_state,
             commands::load_image,
+            commands::record_view,
             commands::set_cache_level,
             commands::get_settings,
             commands::get_context,
@@ -124,6 +127,12 @@ fn main() {
             license::get_license_status,
             license::get_store_info,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // 正常退出（点关闭/Alt+F4/菜单退出）时上报会话统计；kill 强杀无执行机会
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                analytics::report_exit(app);
+            }
+        });
 }

@@ -244,6 +244,15 @@ pub async fn load_image(
     Ok((*result).clone())
 }
 
+/// 会话统计计数点（埋点）：前端在图片**显示成功**后调用一次（唯一的"用户看到"事件）。
+/// asset 快速通道（jpg/bmp 等浏览器原生解码，不经 load_image）与 IPC 通道
+/// （RAW/动画）都在 `showImage` 显示成功后各调一次；解码失败/被抢占的显示不调。
+/// 仅聚合统计路径，不上报路径本身（analytics.rs 只输出数量与格式分布）。
+#[tauri::command]
+pub fn record_view(path: String, stats: State<'_, crate::analytics::SessionStats>) {
+    stats.record(&path);
+}
+
 /// 设置缓存等级：0=关闭 1=开启（前后各1） 2=高（前1后3）
 /// 关闭清空双队列；开启/高等级恢复容量
 /// 专业版功能：免费版拒绝（前端引导解锁）

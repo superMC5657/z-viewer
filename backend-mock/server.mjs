@@ -10,7 +10,9 @@
  *
  * API：
  *   POST /api/activate   { code, device_id }            → { license } | { error }
+ *                        （每码最多 MAX_DEVICES 台同时在线；满员时自动踢掉最旧设备，FIFO）
  *   POST /api/verify     { device_id, license }         → { valid, reason? }
+ *   POST /api/analytics  <会话统计负载>                  → { ok }（仅打印，不落盘）
  *   GET  /api/health                                    → { ok }
  *   POST /api/admin/gen     { apiKey, count?, note? }   → { codes: [...] }
  *   POST /api/admin/revoke  { apiKey, code }            → { ok }
@@ -117,7 +119,11 @@ function genCodes(count, note) {
 
 // ---------- 业务 ----------
 
-/** 激活：校验激活码 → 绑定设备 → 签发许可证 */
+/** 激活：校验激活码 → 绑定设备 → 签发许可证
+ * 设备数策略（FIFO 滑动窗口）：同一激活码最多 `max_devices`（默认 3）台设备同时在线；
+ * 满员时新设备激活 → **自动踢掉最旧的一台**，新设备顶上（而不是拒绝）。
+ * 被踢设备下次启动在线验证返回 valid:false，客户端自动清许可证降级免费版。
+ */
 function activate({ code, device_id }) {
   if (!code || !device_id) return { error: "缺少激活码或设备标识" };
   const c = data.codes.find((x) => x.code === code.toUpperCase());
@@ -127,8 +133,15 @@ function activate({ code, device_id }) {
     // 同一设备重复激活：直接返回已签发的许可证（幂等）
     return { license: signLicense(device_id, ["pro"], c.created_at, 0) };
   }
-  if (c.status === "exhausted" || c.devices.length >= c.max_devices) {
-    return { error: `激活码已达设备上限（${c.max_devices} 台），可在后台解绑` };
+  if (c.status === "exhausted") {
+    return { error: "激活码已封禁，无法继续绑定设备" };
+  }
+  if (c.devices.length >= c.max_devices) {
+    // 满员：踢掉最旧一台（数组头部），新设备顶上
+    const kicked = c.devices.shift();
+    console.log(
+      `[license] ${c.code} 设备满员（${c.max_devices} 台）：踢掉 ${kicked}，绑定 ${device_id}`
+    );
   }
   c.devices.push(device_id);
   saveData();
@@ -205,6 +218,16 @@ const server = createServer(async (req, res) => {
     if (path === "/api/verify" && method === "POST") {
       const body = await readBody(req);
       return send(res, 200, verify(body));
+    }
+
+    // 会话统计埋点（客户端退出时上报；仅打印观察，生产端自行接入存储/看板）
+    if (path === "/api/analytics" && method === "POST") {
+      const body = await readBody(req);
+      console.log(
+        `[analytics] ${new Date().toISOString()} 收到会话上报:`,
+        JSON.stringify(body, null, 2)
+      );
+      return send(res, 200, { ok: true });
     }
 
     // 健康检查
