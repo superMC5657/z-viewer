@@ -23,22 +23,18 @@
 - 异步浏览：打开图片立即显示（只枚举当前文件夹），同级文件夹后台枚举，
   完成后自动刷新位置计数（加载中显示 "3/…"）
 
-> **专业版**（跨文件夹浏览 + 预取缓存）通过在线激活码解锁，
-> 免费版仅单文件夹浏览且不缓存。见 `backend/README.md`。
+> **专业版**（跨文件夹浏览 + 预取缓存）通过 soft-candy 在线激活码解锁，
+> 免费版仅单文件夹浏览且不缓存。授权协议见 soft-candy `docs/api.md` §4.2/4.3。
 
 ## 专业版解锁
 
 应用内点「缓存」或「文件夹跳转」按钮 → 解锁对话框 → 输入激活码。
 
-```bash
-cd backend-mock
-node server.mjs                          # 启动授权服务（默认 127.0.0.1:8787）
-node gen-codes.mjs --count 5 --note "v0.3 发售"   # 生成激活码
-```
-
-- 激活码一次性绑定设备（每码 3 台），Ed25519 签名防篡改，吊销即时生效
-- **生产上线前必须更换签名密钥**（`node gen-keys.mjs`）并修改服务地址，
-  详见 `backend/README.md`
+- 激活码由 soft-candy 服务端绑定设备，签发 EdDSA JWT
+- JWT claims：`iss/aud/sub/code/app/level/levelLabel/deviceId/features/iat/exp`
+- 客户端内置当前产品对应等级的公钥，离线验签可用；启动时联网续验换新 JWT
+- 激活/续验地址、等级公钥在 `src-tauri/tauri.conf.json` → `plugins.store` 配置
+- 等级公钥支持 raw 32 字节 base64、完整 SPKI DER base64 或 PEM，客户端会自动解包
 
 ## 开发
 
@@ -98,7 +94,7 @@ src-tauri/            # Rust 后端
   src/commands/       # Tauri IPC commands（含付费门控）
   src/license.rs      # 专业版授权：设备指纹、验签、在线验证、激活
   src/main.rs         # 入口、启动参数、授权初始化
-backend/              # 授权服务参考实现（零依赖 Node，见 backend/README.md）
+backend-mock/         # 旧授权参考实现，已废弃（soft-candy 为当前授权服务）
 scripts/              # 图标 / 测试图片生成脚本
 test-images/          # 生成的测试图库（A/B/C 跨文件夹验证）
 ```

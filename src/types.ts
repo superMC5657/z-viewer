@@ -50,6 +50,10 @@ export interface LicenseInfo {
   status: string;
   /** 当前设备指纹 */
   device_id?: string | null;
+  /** 当前 JWT 的等级标识，如 pro / enterprise */
+  level?: string | null;
+  /** 当前 JWT 的等级名称，如 专业版 */
+  levelLabel?: string | null;
 }
 
 /** Rust 端 license::StoreInfo（购买入口） */

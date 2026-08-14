@@ -70,14 +70,17 @@
       }
     },
     "store": {
-      "apiBase": "http://127.0.0.1:8787",
+      "apiBase": "http://127.0.0.1:8080",
       "buyUrl": "https://www.bilibili.com/",
-      "licensePublicKeyB64": "HHvVDoB7i1gMlCH7PreE2h2lovqa+taR6mb756xpmyE=",
       "product": "image-viewer",
+      "licenseLevel": "pro",
+      "licensePublicKeys": {
+        "pro": "HHvVDoB7i1gMlCH7PreE2h2lovqa+taR6mb756xpmyE="
+      },
       "licenseFileName": "license.json",
-      "activatePath": "/api/activate",
-      "verifyPath": "/api/verify",
-      "analyticsPath": "/api/analytics"
+      "activatePath": "/api/v1/apps/image-viewer/activate",
+      "verifyPath": "/api/v1/apps/image-viewer/verify",
+      "analyticsPath": "/api/v1/apps/image-viewer/analytics"
     }
   }
 }
