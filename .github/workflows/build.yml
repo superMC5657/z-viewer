@@ -5,10 +5,7 @@ permissions:
 
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
-  pull_request:
-    branches: [main]
+    tags: ['v*']
 
 jobs:
   # Check types and linting
@@ -82,11 +79,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 下载 tauri-action 生成的官方 latest.json（release 此时已创建）
-          curl -fsSL "https://github.com/superMC5657/image-viewer/releases/download/${{ github.ref_name }}/latest.json" -o latest.json
+          # 优先取本地构建产物（tauri build 生成，signature 必然与本次构建一致），
+          # 避免依赖 release 上的官方 latest.json——同一 tag 重跑时 tauri-action 不会重新上传它。
+          LATEST_JSON="$(find src-tauri/target/release -name latest.json | head -n1)"
+          if [ -z "$LATEST_JSON" ]; then
+            # 兜底：带 token 从 release 下载（私有仓库也可）
+            gh release download "${{ github.ref_name }}" --pattern latest.json --dir . --clobber
+            LATEST_JSON="./latest.json"
+          fi
           # 把安装包下载地址改写为国内加速代理前缀
-          sed -i 's|https://github.com/superMC5657/image-viewer/releases/download/|https://gh-proxy.com/https://github.com/superMC5657/image-viewer/releases/download/|g' latest.json
+          sed -i 's|https://github.com/superMC5657/image-viewer/releases/download/|https://gh-proxy.com/https://github.com/superMC5657/image-viewer/releases/download/|g' "$LATEST_JSON"
           # 以 latest-cn.json 名称上传为独立资产（不覆盖官方 latest.json）
-          mv latest.json latest-cn.json
+          cp "$LATEST_JSON" latest-cn.json
           gh release upload "${{ github.ref_name }}" latest-cn.json --clobber
           rm -f latest-cn.json
