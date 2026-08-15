@@ -1,0 +1,173 @@
+# CD:Tauri Windows 打包 → 签名 → 发布到公开产物仓库(供公网下载 + 更新)
+#
+# 方案(仿 YLink,2026-08-15 确认):
+#   - 代码仓库 image-viewer 为 private(不开源),产物发布到公开产物仓库
+#     superMC5657/image-viewer-release,保证匿名下载与 gh-proxy 加速可行
+#   - latest.json 的资产 url 统一加 gh-proxy.com 前缀加速国内更新;updater endpoints 见
+#     src-tauri/tauri.conf.json(gh-proxy 优先,直连兜底)
+#   - 目前只要求 Windows 打包:仅 windows-latest → NSIS 安装包;
+#     如需 macOS/Linux,再往 build job 恢复平台矩阵(见该 job 注释)
+#   - 前端/类型检查等 CI 质量门在 ci.yml,与本流水线并行触发
+#
+# 触发:push tag v* 或手动 workflow_dispatch
+# 需要配置的 repository secrets(在代码仓库 superMC5657/image-viewer 上配置):
+#   TAURI_SIGNING_PRIVATE_KEY = 私钥(tauri signer sign 支持,base64 字符串)。
+#     注意:本项目密钥**有密码**(见项目根 .env 的 TAURI_SIGNING_PRIVATE_KEY_PASSWORD),
+#     CI 必须同时配置 TAURI_SIGNING_PRIVATE_KEY_PASSWORD,否则 tauri build 无法解密私钥签名。
+#     .env 是本机文件(已 gitignore),CI 读不到,需把 key 与 password 配到 GitHub secrets。
+#   RELEASES_PAT = 对公开产物仓库 superMC5657/image-viewer-release 有 contents:write
+#     权限的 PAT(如 fine-grained token,仅授给该仓库的 Contents: Read/Write)
+name: Release Tauri
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag(如 v0.2.0),手动发布时必填'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  # 发布守卫:校验 tag 格式,不符合直接失败
+  guard:
+    name: Guard tag format
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tag format
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ "$TAG" != v* ]]; then
+            echo "::error::发布 tag 必须是 v* 格式(当前: $TAG)。请打 vX.Y.Z 格式的 tag 或手动发布时填写 Release tag 输入"
+            exit 1
+          fi
+          echo "tag 检查通过: $TAG"
+
+  build:
+    name: Build Windows (x86_64)
+    needs: [guard]
+    # 目前只打包 Windows(NSIS)。如需恢复 macOS/Linux,把这里改回平台矩阵,例如:
+    #   strategy:
+    #     fail-fast: false
+    #     matrix:
+    #       include:
+    #         - platform: ubuntu-24.04
+    #           target: linux-x86_64
+    #           bundles: deb
+    #           glob: 'src-tauri/target/release/bundle/deb/*.deb'
+    #         - platform: macos-15-intel
+    #           target: darwin-x86_64
+    #           bundles: app
+    #           glob: 'src-tauri/target/release/bundle/macos/*.app.tar.gz'
+    #   并补回对应平台的系统依赖安装步骤与 runs-on: ${{ matrix.platform }}。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # beforeBuildCommand(pnpm build)自动执行;提供 TAURI_SIGNING_PRIVATE_KEY(+PASSWORD)时
+      # tauri build 自动为每个 bundle 产物生成 .sig(createUpdaterArtifacts: true)
+      - name: Build Tauri bundle (signed)
+        run: pnpm tauri build --bundles nsis
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      # Windows runner 默认 pwsh,这里强制 bash(collect 步骤为 bash 语法)
+      # 注意:不用项目根 dist/(那是 Vite web 产物目录,会污染 release 资产),用独立 artifacts/
+      - name: Collect installer + signature
+        shell: bash
+        run: |
+          set -e
+          FILE=$(ls src-tauri/target/release/bundle/nsis/*.exe 2>/dev/null | head -1)
+          if [ -z "$FILE" ]; then
+            echo "::error::未找到 windows-x86_64 安装包: src-tauri/target/release/bundle/nsis/*.exe"
+            exit 1
+          fi
+          mkdir -p "artifacts/windows-x86_64"
+          cp "$FILE" "artifacts/windows-x86_64/"
+          if [ -f "$FILE.sig" ]; then cp "$FILE.sig" "artifacts/windows-x86_64/"; fi
+          echo "file=$(basename "$FILE")" >> "$GITHUB_OUTPUT"
+          echo "sig=$([ -f "$FILE.sig" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          # 不带尾斜杠,保留 <target>/ 子目录,供 publish 按平台合并
+          name: dist-windows-x86_64
+          path: artifacts
+          if-no-files-found: error
+
+  publish:
+    name: Publish to releases repo
+    needs: [guard, build]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # v8 起默认校验 artifact digest(不匹配即失败,官方安全默认;如需旧宽松行为可加 digest-mismatch: warn)
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # 合并各平台产物生成 latest.json(url 带 gh-proxy.com 加速前缀);
+      # file 传 basename(即 release 资产名),产物与 .sig 在 artifacts/<target>/ 下
+      # 目前只有 windows-x86_64;恢复多平台时把列表扩回,如 "windows-x86_64 darwin-x86_64 linux-x86_64"
+      # 产物统一命名 latest.json(不带 -cn 后缀)
+      # 注意:GitHub release 资产上传会把文件名中的空格替换为 '.',这里先在本地把
+      # 安装包与 .sig 重命名(空格→'.'),保证 本地文件名 / release 资产名 / latest.json url 三者一致
+      - name: Build latest.json
+        run: |
+          ASSETS='['
+          for T in windows-x86_64; do
+            FILE=$(ls artifacts/$T/* 2>/dev/null | grep -v '\.sig$' | head -1 || true)
+            if [ -z "$FILE" ]; then continue; fi
+            BASE=$(basename "$FILE")
+            SAFE="${BASE// /.}"
+            if [ "$BASE" != "$SAFE" ]; then
+              mv "artifacts/$T/$BASE" "artifacts/$T/$SAFE"
+              if [ -f "artifacts/$T/$BASE.sig" ]; then mv "artifacts/$T/$BASE.sig" "artifacts/$T/$SAFE.sig"; fi
+            fi
+            ASSETS="${ASSETS}{\"target\":\"$T\",\"file\":\"$SAFE\"},"
+          done
+          ASSETS="${ASSETS%,}]"
+          node scripts/build-latest-json.mjs --repo superMC5657/image-viewer-release --tag "$TAG" --assets "$ASSETS" --dir artifacts --output artifacts/latest.json
+
+      - name: Publish GitHub release (releases repo)
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_PAT }}
+        run: |
+          set -e
+          # 同名 tag 已存在则删除重建(产物仓库每次发版全量替换)
+          gh release delete "$TAG" --yes --cleanup-tag --repo superMC5657/image-viewer-release || true
+          cd artifacts
+          # 文件名可能含空格(Image Viewer_<ver>_x64-setup.exe),用数组展开避免 shell 分词
+          FILES=()
+          while IFS= read -r -d '' f; do FILES+=("$f"); done < <(find . -type f -print0)
+          gh release create "$TAG" "${FILES[@]}" \
+            --repo superMC5657/image-viewer-release \
+            --title "Image Viewer $TAG" \
+            --notes "Image Viewer $TAG 安装包与更新元数据。更新走 gh-proxy.com 镜像加速,客户端 updater 自动检查。" \
+            --latest

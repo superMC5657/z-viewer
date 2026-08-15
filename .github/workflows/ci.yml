@@ -1,0 +1,38 @@
+# CI:前端/类型检查
+# 触发:仅发布 tag(v*)(2026-08-15 调整:与 YLink 一致,日常开发检查在本地,
+# 打 tag 发布时才在 CI 全量检查)
+# 注:发布打包流水线见 release-tauri.yml
+name: CI
+
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-quality:
+    name: Frontend quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
