@@ -251,9 +251,9 @@ body.immersive #titlebar {
   color: #fff;
 }
 .tb-btn svg {
-  width: 12px;
-  height: 12px;
-  stroke-width: 1.4;
+  width: 14px;
+  height: 14px;
+  stroke-width: 1.5;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
