@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use browse::BrowseModel;
 use cache::{DecodeCache, FolderFirstCache};
 use commands::{AppSettings, AppState, SettingsState};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// 解析命令行传入的路径：相对路径优先按项目根解析
 /// （`pnpm tauri dev -- <path>` 时应用 cwd 为 src-tauri/，相对路径会失效）
@@ -78,8 +78,13 @@ fn main() {
                 .join(&store.license_file_name);
             let license = license::LicenseManager::load(license_path, store);
             {
+                let app_handle = app.handle().clone();
                 let license = license.clone();
-                tauri::async_runtime::spawn(async move { license.verify_online().await });
+                tauri::async_runtime::spawn(async move {
+                    if let Some(status) = license.verify_online().await {
+                        let _ = app_handle.emit(license::LICENSE_STATUS_CHANGED, status);
+                    }
+                });
             }
             app.manage(license.clone());
             let pro = license.is_pro();
@@ -124,6 +129,7 @@ fn main() {
             commands::get_settings,
             commands::get_context,
             license::activate_license,
+            license::deactivate_license,
             license::get_license_status,
             license::get_store_info,
         ])

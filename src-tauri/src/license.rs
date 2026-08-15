@@ -24,6 +24,9 @@ use tauri::State;
 /// 功能位：当前捆绑为一个 "pro"（跨文件夹浏览 + 预取缓存）
 pub const FEATURE_PRO: &str = "pro";
 
+/// 在线续验发现授权已失效时发往前端的事件（payload 为 LicenseInfo）
+pub const LICENSE_STATUS_CHANGED: &str = "license://status-changed";
+
 /// soft-candy 签发 JWT 时固定的 issuer。
 pub const LICENSE_ISSUER: &str = "soft-candy";
 
@@ -40,10 +43,11 @@ pub const LICENSE_ISSUER: &str = "soft-candy";
 ///     "licensePublicKeys": {
 ///       "pro": "<image-viewer/pro 的 Ed25519 公钥，raw/DER base64 或 PEM>"
 ///     },
-///     "licenseFileName": "license.json",
-///     "activatePath": "/api/v1/apps/image-viewer/activate",
-///     "verifyPath": "/api/v1/apps/image-viewer/verify",
-///     "analyticsPath": "/api/v1/apps/image-viewer/analytics"
+    ///     "licenseFileName": "license.json",
+    ///     "activatePath": "/api/v1/apps/image-viewer/activate",
+    ///     "verifyPath": "/api/v1/apps/image-viewer/verify",
+    ///     "deactivatePath": "/api/v1/apps/image-viewer/deactivate",
+    ///     "analyticsPath": "/api/v1/apps/image-viewer/analytics"
 ///   }
 /// }
 /// ```
@@ -68,6 +72,8 @@ pub struct StoreConfig {
     pub activate_path: String,
     /// 在线续验接口路径（拼在 api_base 后）
     pub verify_path: String,
+    /// 注销激活接口路径（拼在 api_base 后）
+    pub deactivate_path: String,
     /// 会话统计上报接口路径（拼在 api_base 后）；空 = 不上报
     pub analytics_path: String,
 }
@@ -108,6 +114,7 @@ impl StoreConfig {
             license_file_name: s("licenseFileName").unwrap_or_default().to_string(),
             activate_path: s("activatePath").unwrap_or_default().to_string(),
             verify_path: s("verifyPath").unwrap_or_default().to_string(),
+            deactivate_path: s("deactivatePath").unwrap_or_default().to_string(),
             analytics_path: s("analyticsPath").unwrap_or_default().to_string(),
         }
     }
@@ -129,15 +136,27 @@ pub struct Claims {
     pub level: String,
     pub level_label: String,
     pub device_id: String,
+    /// 购买邮箱；旧版本令牌可能没有该 claim，本地记录仍会保存邮箱。
+    #[serde(default)]
+    pub email: Option<String>,
     pub features: Vec<String>,
     pub iat: i64,
     pub exp: i64,
 }
 
-/// 许可证（soft-candy 返回的 JWT；本地只保存原始令牌，验签结果即时计算）
+/// 许可证本地记录（code + JWT + email）
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct License {
+    /// 激活码（大写；本地保存，注销激活时回传）
+    #[serde(default)]
+    pub code: String,
+    /// soft-candy 返回的 JWT；磁盘字段名为 `license`，兼容旧版 `token` 字段
+    #[serde(rename = "license", alias = "token")]
     pub token: String,
+    /// 购买邮箱（本地保存，激活/验证/注销激活时回传）
+    #[serde(default)]
+    pub email: String,
 }
 
 impl License {
@@ -147,6 +166,22 @@ impl License {
 
     pub fn device_id(&self) -> Option<String> {
         self.claims().map(|c| c.device_id)
+    }
+
+    /// 从磁盘读取并补全旧版许可证：旧文件只有 token，激活码可从 JWT claims 恢复。
+    fn from_persisted(s: &str) -> Option<License> {
+        let mut lic: License = serde_json::from_str(s).ok()?;
+        if let Some(claims) = lic.claims() {
+            if lic.code.is_empty() {
+                lic.code = claims.code.clone();
+            }
+            if lic.email.is_empty() {
+                if let Some(email) = claims.email.as_deref().filter(|e| !e.is_empty()) {
+                    lic.email = email.to_string();
+                }
+            }
+        }
+        Some(lic)
     }
 
     /// 完整校验：JWT 验签通过 + 产品/等级/设备/功能位/有效期均匹配。
@@ -160,7 +195,10 @@ impl License {
         let Ok(verified) = verify_jwt(&self.token, pubkey_b64) else {
             return false;
         };
-        verified == claims && claims_ok(&verified, dev, &store.product)
+        verified == claims
+            && claims_ok(&verified, dev, &store.product)
+            && (self.code.is_empty() || self.code.eq_ignore_ascii_case(&verified.code))
+            && email_matches_claims(&self.email, &verified)
     }
 }
 
@@ -176,6 +214,10 @@ pub struct LicenseInfo {
     pub level: Option<String>,
     /// 当前 JWT 的等级名称（如 专业版）
     pub level_label: Option<String>,
+    /// 本地保存的激活码（未激活/旧文件无法恢复时为 null）
+    pub code: Option<String>,
+    /// 本地保存的购买邮箱（未激活/旧文件无法恢复时为 null）
+    pub email: Option<String>,
 }
 
 /// 授权管理器（Tauri managed state；Clone 供后台任务移动）
@@ -191,7 +233,7 @@ impl LicenseManager {
     pub fn load(storage: PathBuf, store: StoreConfig) -> Self {
         let license = std::fs::read_to_string(&storage)
             .ok()
-            .and_then(|s| serde_json::from_str::<License>(&s).ok())
+            .and_then(|s| License::from_persisted(&s))
             .filter(|lic| lic.is_valid_with(&device_id(), &store));
         Self {
             license: Arc::new(Mutex::new(license)),
@@ -213,6 +255,13 @@ impl LicenseManager {
 
     fn clear(&self) {
         let _ = std::fs::remove_file(&self.storage);
+    }
+
+    fn clear_license(&self) {
+        if let Ok(mut g) = self.license.lock() {
+            *g = None;
+        }
+        self.clear();
     }
 
     /// 当前许可证（未验证；校验用 is_pro）
@@ -254,6 +303,7 @@ impl LicenseManager {
             license_file_name: String::new(),
             activate_path: String::new(),
             verify_path: String::new(),
+            deactivate_path: String::new(),
             analytics_path: String::new(),
         };
         lic.as_ref()
@@ -261,18 +311,21 @@ impl LicenseManager {
     }
 
     /// 激活：调 soft-candy 换取 JWT → 验签 → 校验设备/等级/功能位 → 落盘
-    pub async fn activate(&self, code: String) -> Result<License, String> {
+    pub async fn activate(&self, code: String, email: String) -> Result<License, String> {
         if self.store.api_base.is_empty() {
             return Err("授权服务器未配置（tauri.conf.json plugins.store.apiBase）".to_string());
         }
+        let code = code.trim().to_uppercase();
+        let email = email.trim().to_lowercase();
         let dev = device_id();
         let client = reqwest::Client::new();
         let url = format!("{}{}", self.store.api_base, self.store.activate_path);
         let resp = client
             .post(url)
             .json(&serde_json::json!({
-                "code": code,
+                "code": code.clone(),
                 "deviceId": dev,
+                "email": email.clone(),
                 "level": self.store.license_level,
             }))
             .send()
@@ -282,10 +335,10 @@ impl LicenseManager {
             .json()
             .await
             .map_err(|e| format!("授权服务器响应异常：{e}"))?;
-        if let Some(msg) = body.get("message").and_then(|v| v.as_str()) {
-            return Err(msg.to_string());
-        }
         if let Some(code) = body.get("error").and_then(|v| v.as_str()) {
+            if let Some(msg) = body.get("message").and_then(|v| v.as_str()) {
+                return Err(format!("{msg}（{code}）"));
+            }
             return Err(format!("激活失败（{code}）"));
         }
 
@@ -294,7 +347,9 @@ impl LicenseManager {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "授权服务器返回格式错误".to_string())?;
         let lic = License {
+            code,
             token: token.to_string(),
+            email,
         };
         if !lic.is_valid_with(&dev, &self.store) {
             return Err("激活码无效（JWT 验签失败）".to_string());
@@ -304,15 +359,21 @@ impl LicenseManager {
         Ok(lic)
     }
 
-    /// 在线续验（启动时后台调用）：soft-candy 会返回新 JWT 延长离线宽限期；网络失败静默。
-    pub async fn verify_online(&self) {
-        let Some(lic) = self.license() else { return };
+    /// 在线续验（启动时后台调用）：soft-candy 会返回新 JWT 延长离线宽限期；
+    /// 网络失败静默，只有明确吊销/失效时才清空本地授权并返回最新状态。
+    pub async fn verify_online(&self) -> Option<LicenseInfo> {
+        let Some(lic) = self.license() else { return None };
         let Some(lic_device_id) = lic.device_id() else {
-            return;
+            return None;
         };
-        if self.store.api_base.is_empty() {
-            return; // 未配置授权服务器：不联网验证
+        if lic.email.is_empty() {
+            return None; // 旧版许可证没有邮箱：等待用户在管理激活窗口重新激活后补全
         }
+        if self.store.api_base.is_empty() {
+            return None; // 未配置授权服务器：不联网验证
+        }
+        let email = lic.email.clone();
+        let code = lic.code.clone();
         let client = reqwest::Client::new();
         let url = format!("{}{}", self.store.api_base, self.store.verify_path);
         let resp = client
@@ -320,28 +381,45 @@ impl LicenseManager {
             .json(&serde_json::json!({
                 "deviceId": lic_device_id,
                 "license": lic.token,
+                "email": email.clone(),
             }))
             .send()
             .await;
         let Ok(resp) = resp else {
-            return; // 网络失败不阻止使用
+            return None; // 网络失败不阻止使用
+        };
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
+            let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
+            if status.as_u16() == 401
+                || matches!(error, "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE")
+            {
+                self.clear_license();
+                return Some(self.status());
+            }
+            return None; // 其他服务端错误保守视为有效，不误伤付费用户
         };
         let Ok(body) = resp.json::<serde_json::Value>().await else {
-            return; // 响应异常保守视为有效，不误伤付费用户
+            return None; // 响应异常保守视为有效，不误伤付费用户
         };
+        let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        if matches!(error, "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE") {
+            self.clear_license();
+            return Some(self.status());
+        }
         let valid = body.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
         if !valid {
-            if let Ok(mut g) = self.license.lock() {
-                *g = None;
-            }
-            self.clear();
-            return;
+            self.clear_license();
+            return Some(self.status());
         }
 
         // soft-candy 在线续验成功后会签发新 JWT；本地验签通过后立即换新。
         if let Some(token) = body.get("license").and_then(|v| v.as_str()) {
             let refreshed = License {
+                code,
                 token: token.to_string(),
+                email,
             };
             if refreshed.is_valid_with(&device_id(), &self.store) {
                 if let Ok(mut g) = self.license.lock() {
@@ -350,6 +428,55 @@ impl LicenseManager {
                 let _ = self.persist(&refreshed);
             }
         }
+        None
+    }
+
+    /// 注销激活：调 soft-candy 解绑 → 删除本地 license → 停用专业功能
+    pub async fn deactivate(&self) -> Result<(), String> {
+        let lic = self.license().ok_or_else(|| "当前设备未激活".to_string())?;
+        if lic.code.is_empty() || lic.email.is_empty() {
+            return Err("本地缺少完整激活信息，请重新激活后再注销".to_string());
+        }
+        if self.store.api_base.is_empty() {
+            return Err("授权服务器未配置（tauri.conf.json plugins.store.apiBase）".to_string());
+        }
+        if self.store.deactivate_path.is_empty() {
+            return Err(
+                "注销激活接口未配置（tauri.conf.json plugins.store.deactivatePath）".to_string(),
+            );
+        }
+
+        let client = reqwest::Client::new();
+        let url = format!("{}{}", self.store.api_base, self.store.deactivate_path);
+        let code = lic.code.clone();
+        let device_id = lic.device_id();
+        let email = lic.email.clone();
+        let resp = client
+            .post(url)
+            .json(&serde_json::json!({
+                "code": code,
+                "deviceId": device_id,
+                "email": email,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("无法连接授权服务器：{e}"))?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("授权服务器响应异常：{e}"))?;
+        if let Some(code) = body.get("error").and_then(|v| v.as_str()) {
+            if let Some(msg) = body.get("message").and_then(|v| v.as_str()) {
+                return Err(format!("{msg}（{code}）"));
+            }
+            return Err(format!("注销激活失败（{code}）"));
+        }
+        if body.get("unbound").and_then(|v| v.as_bool()) != Some(true) {
+            return Err("注销激活失败".to_string());
+        }
+
+        self.clear_license();
+        Ok(())
     }
 }
 
@@ -497,12 +624,24 @@ pub fn get_store_info(state: State<'_, LicenseManager>) -> StoreInfo {
 pub async fn activate_license(
     state: State<'_, LicenseManager>,
     code: String,
+    email: String,
 ) -> Result<LicenseInfo, String> {
     let code = code.trim().to_uppercase();
+    let email = email.trim().to_lowercase();
     if code.is_empty() {
         return Err("请输入激活码".to_string());
     }
-    state.activate(code).await?;
+    if !is_valid_email(&email) {
+        return Err("请输入正确的购买邮箱".to_string());
+    }
+    state.activate(code, email).await?;
+    Ok(state.status())
+}
+
+/// 注销激活（成功会删除本地 license）
+#[tauri::command]
+pub async fn deactivate_license(state: State<'_, LicenseManager>) -> Result<LicenseInfo, String> {
+    state.deactivate().await?;
     Ok(state.status())
 }
 
@@ -515,17 +654,50 @@ pub fn get_license_status(state: State<'_, LicenseManager>) -> LicenseInfo {
 impl LicenseManager {
     pub fn status(&self) -> LicenseInfo {
         let dev = device_id();
-        let claims = self
-            .license()
+        let lic = self.license();
+        let claims = lic
+            .as_ref()
             .and_then(|l| l.claims())
             .filter(|c| c.device_id == dev && c.app == self.store.product);
+        let code = lic
+            .as_ref()
+            .and_then(|l| (!l.code.is_empty()).then(|| l.code.clone()))
+            .or_else(|| claims.as_ref().map(|c| c.code.clone()));
+        let email = lic
+            .as_ref()
+            .and_then(|l| (!l.email.is_empty()).then(|| l.email.clone()))
+            .or_else(|| {
+                claims
+                    .as_ref()
+                    .and_then(|c| c.email.clone().filter(|e| !e.is_empty()))
+            });
         LicenseInfo {
             status: if self.is_pro() { "pro" } else { "free" }.to_string(),
             device_id: Some(dev),
             level: claims.as_ref().map(|c| c.level.clone()),
             level_label: claims.as_ref().map(|c| c.level_label.clone()),
+            code,
+            email,
         }
     }
+}
+
+fn email_matches_claims(email: &str, claims: &Claims) -> bool {
+    match claims.email.as_deref() {
+        Some(claims_email) if !claims_email.is_empty() => email.eq_ignore_ascii_case(claims_email),
+        _ => true,
+    }
+}
+
+fn is_valid_email(email: &str) -> bool {
+    let email = email.trim();
+    if email.is_empty() || email.contains(char::is_whitespace) || !email.contains('@') {
+        return false;
+    }
+    let mut parts = email.split('@');
+    let local = parts.next().unwrap_or_default();
+    let domain = parts.next().unwrap_or_default();
+    !local.is_empty() && !domain.is_empty() && parts.next().is_none()
 }
 
 // ---------- 测试 ----------
@@ -555,6 +727,7 @@ mod tests {
             license_file_name: "license.json".into(),
             activate_path: String::new(),
             verify_path: String::new(),
+            deactivate_path: String::new(),
             analytics_path: String::new(),
         }
     }
@@ -587,9 +760,18 @@ mod tests {
             level: level.into(),
             level_label: if level == "pro" { "专业版" } else { level }.into(),
             device_id: device_id.into(),
+            email: Some("buyer@example.com".into()),
             features: vec![FEATURE_PRO.into()],
             iat: now() - 60,
             exp: expires_at,
+        }
+    }
+
+    fn test_license(claims: &Claims, token: String) -> License {
+        License {
+            code: claims.code.clone(),
+            token,
+            email: claims.email.clone().unwrap_or_default(),
         }
     }
 
@@ -613,7 +795,7 @@ mod tests {
         let claims = claims("dev-1", "pro", now() + 3600);
         let token = sign_jwt(&claims, &signing);
         let store = test_store(&pubkey);
-        assert!(License { token }.is_valid_with("dev-1", &store));
+        assert!(test_license(&claims, token).is_valid_with("dev-1", &store));
     }
 
     #[test]
@@ -624,10 +806,7 @@ mod tests {
 
         for key in [spki_public_key(&pubkey), pem_public_key(&pubkey)] {
             let store = test_store(&key);
-            assert!(License {
-                token: token.clone(),
-            }
-            .is_valid_with("dev-1", &store));
+            assert!(test_license(&claims, token.clone()).is_valid_with("dev-1", &store));
         }
     }
 
@@ -655,7 +834,7 @@ mod tests {
         );
 
         let store = test_store(&pubkey);
-        assert!(!License { token: tampered }.is_valid_with("dev-1", &store));
+        assert!(!test_license(&claims, tampered).is_valid_with("dev-1", &store));
     }
 
     #[test]
@@ -666,11 +845,11 @@ mod tests {
         c.aud = "other-app".into();
         let token = sign_jwt(&c, &signing);
         let store = test_store(&pubkey);
-        assert!(!License { token }.is_valid_with("dev-1", &store));
+        assert!(!test_license(&c, token).is_valid_with("dev-1", &store));
 
         let c = claims("dev-2", "pro", now() + 3600);
         let token = sign_jwt(&c, &signing);
-        assert!(!License { token }.is_valid_with("dev-1", &store));
+        assert!(!test_license(&c, token).is_valid_with("dev-1", &store));
     }
 
     #[test]
@@ -679,7 +858,7 @@ mod tests {
         let claims = claims("dev-1", "pro", now() - 1);
         let token = sign_jwt(&claims, &signing);
         let store = test_store(&pubkey);
-        assert!(!License { token }.is_valid_with("dev-1", &store));
+        assert!(!test_license(&claims, token).is_valid_with("dev-1", &store));
     }
 
     #[test]
@@ -688,7 +867,32 @@ mod tests {
         let claims = claims("dev-1", "enterprise", now() + 3600);
         let token = sign_jwt(&claims, &signing);
         let store = test_store(&pubkey);
-        assert!(!License { token }.is_valid_with("dev-1", &store));
+        assert!(!test_license(&claims, token).is_valid_with("dev-1", &store));
+    }
+
+    #[test]
+    fn wrong_email_rejected() {
+        let (pubkey, signing) = test_keypair();
+        let claims = claims("dev-1", "pro", now() + 3600);
+        let token = sign_jwt(&claims, &signing);
+        let store = test_store(&pubkey);
+        let lic = License {
+            code: claims.code.clone(),
+            token,
+            email: "other@example.com".into(),
+        };
+        assert!(!lic.is_valid_with("dev-1", &store));
+    }
+
+    #[test]
+    fn email_validation_accepts_common_formats() {
+        assert!(is_valid_email("buyer@example.com"));
+        assert!(is_valid_email("buyer@example"));
+        assert!(is_valid_email("user@localhost"));
+        assert!(is_valid_email("zy19980711@gmail.com"));
+        assert!(!is_valid_email("user@"));
+        assert!(!is_valid_email("user@@example.com"));
+        assert!(!is_valid_email("user @example.com"));
     }
 
     /// 许可证持久化：storage 目录不存在（首次运行）时 persist 应自动创建目录并落盘，
@@ -703,7 +907,11 @@ mod tests {
 
         let store = test_store(&pubkey);
         let m = LicenseManager::load(storage.clone(), store.clone());
-        let lic = License { token };
+        let lic = test_license(&claims, token);
+        let persisted = serde_json::to_string(&lic).unwrap();
+        assert!(persisted.contains("\"code\""));
+        assert!(persisted.contains("\"license\""));
+        assert!(persisted.contains("\"email\""));
         *m.license.lock().unwrap() = Some(lic.clone());
         m.persist(&lic).expect("persist 应自动创建目录并成功落盘");
 
@@ -712,6 +920,30 @@ mod tests {
         assert!(
             LicenseManager::is_pro_with(&m2.license(), &store),
             "重启后仍应判为已解锁"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_token_file_loads_code_and_email_from_claims() {
+        let (pubkey, signing) = test_keypair();
+        let claims = claims(&device_id(), "pro", now() + 3600);
+        let token = sign_jwt(&claims, &signing);
+        let dir =
+            std::env::temp_dir().join(format!("iv-jwt-legacy-license-test-{}", std::process::id()));
+        let storage = dir.join("license.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&storage, serde_json::json!({ "token": token }).to_string()).unwrap();
+
+        let store = test_store(&pubkey);
+        let m = LicenseManager::load(storage, store);
+        let lic = m.license().expect("旧版 token 文件应可加载");
+        assert_eq!(lic.code, claims.code);
+        assert_eq!(lic.email, claims.email.unwrap());
+        assert!(
+            LicenseManager::is_pro_with(&m.license(), &test_store(&pubkey)),
+            "旧版 token 补全后仍应判为已解锁"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -726,7 +958,9 @@ mod gate_tests {
     fn free_branch_rejected() {
         assert!(!LicenseManager::is_pro_impl(&None), "无许可证应判免费版");
         let bad = License {
+            code: String::new(),
             token: "AAAA.BBBB.CCCC".into(),
+            email: String::new(),
         };
         assert!(
             !LicenseManager::is_pro_impl(&Some(bad)),

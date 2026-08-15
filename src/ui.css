@@ -415,7 +415,7 @@ body.immersive #info-bar {
 }
 
 /* ---- tooltip（含快捷键） ---- */
-.tb-btn-icon::after {
+.tb-btn-icon[data-tip]:not([data-tip=""])::after {
   content: attr(data-tip);
   position: absolute;
   bottom: calc(100% + 8px);
@@ -433,7 +433,7 @@ body.immersive #info-bar {
   transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
   z-index: 80;
 }
-.tb-btn-icon:hover::after {
+.tb-btn-icon[data-tip]:not([data-tip=""]):hover::after {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
@@ -627,6 +627,42 @@ body.immersive #info-bar {
   color: var(--accent);
   font-weight: 600;
 }
+.unlock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.unlock-form.hidden,
+.unlock-info.hidden,
+.unlock-buy-row.hidden {
+  display: none;
+}
+.unlock-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-btn);
+}
+.unlock-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+  font-size: 12.5px;
+}
+.unlock-info-row span {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+.unlock-info-row strong {
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: right;
+  word-break: break-all;
+}
 .unlock-input {
   width: 100%;
   box-sizing: border-box;
@@ -662,6 +698,16 @@ body.immersive #info-bar {
 }
 .btn-text-accent:hover {
   background: var(--btn-hover);
+}
+.btn-text-danger {
+  color: #ff453a;
+  padding: 0 12px;
+  width: auto;
+  font-size: 13px;
+  font-weight: 600;
+}
+.btn-text-danger:hover {
+  background: rgba(255, 69, 58, 0.14);
 }
 .unlock-error {
   font-size: 12px;

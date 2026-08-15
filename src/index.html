@@ -97,15 +97,29 @@
     <!-- ===== 专业版解锁对话框 ===== -->
     <div id="unlock-dialog" class="unlock-mask hidden" aria-hidden="true">
       <div class="unlock-card glass">
-        <div class="unlock-title">解锁专业版</div>
-        <div class="unlock-desc">解锁后可使用：<b>跨文件夹无缝浏览</b> 与 <b>预取缓存</b>（翻页更流畅）</div>
-        <input id="unlock-code" class="unlock-input" type="text" placeholder="输入激活码（ABCD-EFGH-JKMN-PQRS）"
-               autocomplete="off" spellcheck="false" />
+        <div id="unlock-title" class="unlock-title">解锁专业版</div>
+        <div id="unlock-desc" class="unlock-desc">解锁后可使用：<b>跨文件夹无缝浏览</b> 与 <b>预取缓存</b>（翻页更流畅）</div>
+        <div id="unlock-info" class="unlock-info hidden">
+          <div class="unlock-info-row">
+            <span>邮箱</span>
+            <strong id="unlock-email-text"></strong>
+          </div>
+          <div class="unlock-info-row">
+            <span>激活码</span>
+            <strong id="unlock-code-value"></strong>
+          </div>
+        </div>
+        <div id="unlock-form" class="unlock-form">
+          <input id="unlock-email" class="unlock-input" type="email" placeholder="购买邮箱（下单时填写的邮箱）"
+                 autocomplete="email" spellcheck="false" />
+          <input id="unlock-code" class="unlock-input" type="text" placeholder="输入激活码（ABCD-EFGH-JKMN-PQRS）"
+                 autocomplete="off" spellcheck="false" />
+        </div>
         <div class="unlock-actions">
           <button id="unlock-cancel" class="tb-btn-icon btn-text-plain">取消</button>
           <button id="unlock-confirm" class="tb-btn-icon btn-text-accent">激活</button>
         </div>
-        <div class="unlock-buy-row">
+        <div id="unlock-buy-row" class="unlock-buy-row">
           <button id="unlock-buy" class="unlock-buy" type="button">没有激活码？在线购买专业版 →</button>
         </div>
         <div id="unlock-error" class="unlock-error hidden"></div>

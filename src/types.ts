@@ -54,6 +54,10 @@ export interface LicenseInfo {
   level?: string | null;
   /** 当前 JWT 的等级名称，如 专业版 */
   levelLabel?: string | null;
+  /** 本地保存的激活码 */
+  code?: string | null;
+  /** 本地保存的购买邮箱 */
+  email?: string | null;
 }
 
 /** Rust 端 license::StoreInfo（购买入口） */

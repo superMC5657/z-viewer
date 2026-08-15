@@ -4,7 +4,7 @@
  */
 
 import { ICONS, TOOLBAR_GROUPS, type ToolbarButton } from "./icons";
-import type { BrowseState } from "./types";
+import type { BrowseState, LicenseInfo } from "./types";
 
 const IDLE_HIDE_MS = 2000; // 闲置 2s 浮层自动隐藏
 const TOAST_MS = 1500; // 边界 Toast 持续 1.5s
@@ -284,19 +284,53 @@ export class UI {
 
   // ---------- 专业版解锁对话框 ----------
 
-  /** 解锁对话框显隐 */
-  showUnlockDialog(): void {
+  /** 激活/管理对话框显隐 */
+  showLicenseDialog(info: LicenseInfo): void {
     const mask = document.getElementById("unlock-dialog")!;
     mask.classList.remove("hidden");
     mask.setAttribute("aria-hidden", "false");
+    const hasLocal = info.status === "pro" && Boolean(info.code && info.email);
+    mask.dataset.mode = hasLocal ? "active" : "inactive";
+    const title = document.getElementById("unlock-title")!;
+    const desc = document.getElementById("unlock-desc")!;
+    const infoBox = document.getElementById("unlock-info")!;
+    const form = document.getElementById("unlock-form")!;
+    const buyRow = document.getElementById("unlock-buy-row")!;
+    const confirm = document.getElementById("unlock-confirm")!;
+    const emailText = document.getElementById("unlock-email-text")!;
+    const codeText = document.getElementById("unlock-code-value")!;
     const input = document.getElementById("unlock-code") as HTMLInputElement;
+    const emailInput = document.getElementById("unlock-email") as HTMLInputElement;
     input.value = "";
+    emailInput.value = "";
     const err = document.getElementById("unlock-error")!;
     err.classList.add("hidden");
-    window.setTimeout(() => input.focus(), 50);
+    confirm.textContent = hasLocal ? "注销" : "激活";
+    confirm.classList.toggle("btn-text-danger", hasLocal);
+    confirm.classList.toggle("btn-text-accent", !hasLocal);
+
+    if (hasLocal) {
+      title.textContent = "管理激活";
+      desc.textContent = "当前设备已激活专业版，可查看激活信息或注销。";
+      emailText.textContent = info.email ?? "";
+      codeText.textContent = info.code ?? "";
+      infoBox.classList.remove("hidden");
+      form.classList.add("hidden");
+      buyRow.classList.add("hidden");
+    } else {
+      title.textContent = "解锁专业版";
+      desc.innerHTML = "解锁后可使用：<b>跨文件夹无缝浏览</b> 与 <b>预取缓存</b>（翻页更流畅）";
+      infoBox.classList.add("hidden");
+      form.classList.remove("hidden");
+      buyRow.classList.remove("hidden");
+    }
+    window.setTimeout(() => {
+      if (hasLocal) confirm.focus();
+      else emailInput.focus();
+    }, 50);
   }
 
-  hideUnlockDialog(): void {
+  hideLicenseDialog(): void {
     const mask = document.getElementById("unlock-dialog")!;
     mask.classList.add("hidden");
     mask.setAttribute("aria-hidden", "true");

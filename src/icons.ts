@@ -60,6 +60,9 @@ export const ICONS: Record<string, string> = {
   update: svgIcon(
     '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>'
   ),
+  key: svgIcon(
+    '<path d="m15.5 7.5 3 3L22 7l-3-3"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>'
+  ),
 
   // —— 标题栏 ——
   minus: svgIcon('<path d="M5 12h14" stroke-width="1.6"/>', 14),
@@ -130,6 +133,7 @@ export const TOOLBAR_GROUPS: ToolbarGroup[] = [
     items: [
       { id: "cache-toggle", icon: "cache", tip: "预取缓存（开启后跨文件夹/翻页更流畅）", enabled: true },
       { id: "update", icon: "update", tip: "检查更新", enabled: true },
+      { id: "license", icon: "key", tip: "管理激活", enabled: true },
     ],
   },
 ];

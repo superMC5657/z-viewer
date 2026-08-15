@@ -39,9 +39,13 @@ ui.buildToolbar({ onAction: handleToolbarAction });
 const windowState = new WindowState(getCurrentWindow(), viewer, ui);
 const slideshow = new Slideshow();
 const prefetch = new PrefetchPool();
+const LICENSE_STATUS_CHANGED = "license://status-changed";
 let cacheLevel = 1;
 /** 专业版是否已解锁（启动时查询；控制按钮锁定态与功能入口） */
 let pro = false;
+/** 注销按钮是否处于“再次点击确认”状态 */
+let deactivateConfirmArmed = false;
+let deactivateConfirmTimer: number | undefined;
 /** 缓存等级设置请求代次：并发切换时只应用最后一次（防幻灯片自动切换与手动切换竞态） */
 let cacheLevelGen = 0;
 /** 幻灯片播放前的缓存等级（退出模式时恢复） */
@@ -170,7 +174,7 @@ const BOUNDARY_TEXT: Record<string, string> = {
 function requirePro(): boolean {
   if (pro) return true;
   ui.showToast("专业版功能，解锁后可用");
-  ui.showUnlockDialog();
+  void openLicenseDialog();
   return false;
 }
 
@@ -186,7 +190,7 @@ async function nav(fn: () => Promise<NavResult>): Promise<void> {
     // 撞边界：图片未变化，只弹 Toast，不重载图片（避免闪烁与变换重置）
     ui.showToast(BOUNDARY_TEXT[result.boundary] ?? "已经到边界了");
     // 专业版功能被锁定（jump_folder 拦截）：引导解锁
-    if (result.boundary === "pro-required") ui.showUnlockDialog();
+    if (result.boundary === "pro-required") void openLicenseDialog();
     return;
   }
   if (result.state) {
@@ -267,6 +271,9 @@ function handleToolbarAction(id: string): void {
       break;
     case "update":
       void checkForUpdate();
+      break;
+    case "license":
+      void openLicenseDialog();
       break;
     case "slideshow":
       slideshow.toggle();
@@ -516,14 +523,14 @@ function syncCacheButton(): void {
 
 // ---------- 专业版解锁 ----------
 
-async function activateLicense(code: string): Promise<void> {
+async function activateLicense(code: string, email: string): Promise<void> {
   const errEl = document.getElementById("unlock-error")!;
   errEl.classList.add("hidden");
   try {
-    const info = await invoke<LicenseInfo>("activate_license", { code });
+    const info = await invoke<LicenseInfo>("activate_license", { code, email });
     if (info.status === "pro") {
       pro = true;
-      ui.hideUnlockDialog();
+      hideLicenseDialog();
       ui.setLocked(false);
       ui.showToast("专业版解锁成功");
       // 恢复持久化的缓存等级（Rust 侧已放行）
@@ -541,6 +548,67 @@ async function activateLicense(code: string): Promise<void> {
     errEl.textContent = String(err);
     errEl.classList.remove("hidden");
   }
+}
+
+/** 同步在线续验返回的授权状态；由 pro 降级时清理缓存 UI 并重建当前浏览模型 */
+function applyLicenseStatus(info: LicenseInfo): void {
+  const wasPro = pro;
+  pro = info.status === "pro";
+  ui.setLocked(!pro);
+  if (!wasPro || pro) return;
+  cacheLevel = 0;
+  syncCacheButton();
+  try {
+    localStorage.setItem("cache-level", "0");
+  } catch {
+    /* 忽略持久化失败 */
+  }
+  hideLicenseDialog();
+  ui.showToast("专业版授权已失效，请重新激活");
+  if (lastState) void openPath(lastState.path);
+}
+
+/** 打开激活/管理对话框（每次打开读取最新本地记录） */
+async function openLicenseDialog(): Promise<void> {
+  resetDeactivateConfirm();
+  try {
+    const info = await invoke<LicenseInfo>("get_license_status");
+    ui.showLicenseDialog(info);
+  } catch (err) {
+    ui.showToast(String(err));
+  }
+}
+
+/** 注销激活：先提示释放设备名额，成功后再删除本地记录并停用专业功能 */
+async function deactivateLicense(): Promise<void> {
+  const errEl = document.getElementById("unlock-error")!;
+  errEl.classList.add("hidden");
+  try {
+    const info = await invoke<LicenseInfo>("deactivate_license");
+    pro = info.status === "pro";
+    ui.setLocked(!pro);
+    hideLicenseDialog();
+    ui.showToast("已取消激活");
+    // 重开当前图片：以免费版模式重建浏览模型（关闭跨文件夹扫描）
+    if (lastState) void openPath(lastState.path);
+  } catch (err) {
+    resetDeactivateConfirm();
+    errEl.textContent = String(err);
+    errEl.classList.remove("hidden");
+  }
+}
+
+function hideLicenseDialog(): void {
+  resetDeactivateConfirm();
+  ui.hideLicenseDialog();
+}
+
+function resetDeactivateConfirm(): void {
+  deactivateConfirmArmed = false;
+  window.clearTimeout(deactivateConfirmTimer);
+  const dialog = document.getElementById("unlock-dialog") as HTMLElement | null;
+  const btn = document.getElementById("unlock-confirm") as HTMLButtonElement | null;
+  if (btn) btn.textContent = dialog?.dataset.mode === "active" ? "注销" : "激活";
 }
 
 /** 打开官网购买页（Rust 返回 buy_url，未配置时给出提示） */
@@ -561,18 +629,41 @@ async function openStorePage(): Promise<void> {
   }
 }
 
-/** 装配解锁对话框事件（取消 / 激活 / 在线购买 / Enter 提交） */
+/** 装配解锁对话框事件（取消 / 激活 / 注销 / 在线购买 / Enter 提交） */
 function bindUnlockDialog(): void {
-  document.getElementById("unlock-cancel")!.addEventListener("click", () => ui.hideUnlockDialog());
+  document.getElementById("unlock-cancel")!.addEventListener("click", () => hideLicenseDialog());
   document.getElementById("unlock-confirm")!.addEventListener("click", () => {
+    const dialog = document.getElementById("unlock-dialog") as HTMLElement;
+    const btn = document.getElementById("unlock-confirm") as HTMLButtonElement;
+    if (dialog.dataset.mode === "active") {
+      if (!deactivateConfirmArmed) {
+        deactivateConfirmArmed = true;
+        btn.textContent = "确认注销";
+        ui.showToast("再次点击确认注销");
+        window.clearTimeout(deactivateConfirmTimer);
+        deactivateConfirmTimer = window.setTimeout(resetDeactivateConfirm, 3000);
+        return;
+      }
+      void deactivateLicense();
+      return;
+    }
     const code = (document.getElementById("unlock-code") as HTMLInputElement).value;
-    void activateLicense(code);
+    const email = (document.getElementById("unlock-email") as HTMLInputElement).value;
+    void activateLicense(code, email);
   });
   document.getElementById("unlock-buy")!.addEventListener("click", () => void openStorePage());
   document.getElementById("unlock-code")!.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const code = (e.target as HTMLInputElement).value;
-      void activateLicense(code);
+      const email = (document.getElementById("unlock-email") as HTMLInputElement).value;
+      void activateLicense(code, email);
+    }
+  });
+  document.getElementById("unlock-email")!.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const code = (document.getElementById("unlock-code") as HTMLInputElement).value;
+      const email = (e.target as HTMLInputElement).value;
+      void activateLicense(code, email);
     }
   });
 }
@@ -665,12 +756,14 @@ async function init(): Promise<void> {
     // 兄弟文件夹枚举完成：重新按强度预取（此前跨文件夹路径取不到）
     void refreshContext();
   });
+  await listen<LicenseInfo>(LICENSE_STATUS_CHANGED, (event) => {
+    applyLicenseStatus(event.payload);
+  });
 
   try {
     // 授权状态：免费版锁定付费功能按钮
     const info = await invoke<LicenseInfo>("get_license_status");
-    pro = info.status === "pro";
-    ui.setLocked(!pro);
+    applyLicenseStatus(info);
   } catch (err) {
     console.error(err);
   }

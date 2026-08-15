@@ -71,7 +71,7 @@
     },
     "store": {
       "apiBase": "http://127.0.0.1:8080",
-      "buyUrl": "https://www.bilibili.com/",
+      "buyUrl": "http://localhost:5173/p/image-viewer",
       "product": "image-viewer",
       "licenseLevel": "pro",
       "licensePublicKeys": {
@@ -80,6 +80,7 @@
       "licenseFileName": "license.json",
       "activatePath": "/api/v1/apps/image-viewer/activate",
       "verifyPath": "/api/v1/apps/image-viewer/verify",
+      "deactivatePath": "/api/v1/apps/image-viewer/deactivate",
       "analyticsPath": "/api/v1/apps/image-viewer/analytics"
     }
   }
