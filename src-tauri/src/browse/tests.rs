@@ -156,6 +156,20 @@ fn open_case_insensitive() {
     cleanup(&base);
 }
 
+#[cfg(windows)]
+#[test]
+fn open_free_mode_wrong_case_folder_name() {
+    let base = build_tree();
+    // 免费版（cross_folder=false）：文件夹名大小写与磁盘不一致（磁盘上是 A）也应能打开。
+    // 回归：曾用大小写敏感 OsStr == 比较文件夹名，导致 open_gated 返回 None（误报"不是支持的图片格式"）
+    let typed = base.join("a").join("a1.png");
+    assert!(typed.exists(), "Windows 大小写不敏感，路径应存在");
+    let m = BrowseModel::open_gated(&typed, None, false)
+        .expect("免费版：文件夹名大小写不一致也应能打开");
+    assert_eq!(m.state().file_name, "a1.png");
+    cleanup(&base);
+}
+
 #[test]
 fn open_is_fast_on_current_folder() {
     // open() 应立即可用（不等待后台枚举）：state 可读且指向正确文件

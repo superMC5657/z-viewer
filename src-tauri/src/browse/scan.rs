@@ -76,27 +76,31 @@ impl BrowseModel {
         })?;
 
         // 构建 folders：当前文件夹已填充，其余 None（后台填充）
-        // 优化：用文件夹名定位当前文件夹（同级目录名唯一），
-        // 免去对每个兄弟目录做 std::fs::canonicalize 系统调用（N 目录 = N 次 fs 访问）
+        // 定位当前文件夹：先按名字比较（大小写不敏感，与 Windows 文件系统语义
+        // 及下方图片定位一致）；全不匹配再退回 canonicalize 比较 —— 免费版的
+        // dirs 名来自用户传入路径（大小写可能任意），经 junction/符号链接打开时
+        // canonicalize 会解析到目标路径，名字可能与 read_dir 条目完全不同。
+        // 快路径零额外系统调用；canonicalize 兜底仅在名字全不匹配时触发（罕见）。
         let current_folder_name = current_folder_canon
             .file_name()
             .unwrap_or_default()
-            .to_os_string();
-        let mut folder_index = None;
+            .to_string_lossy()
+            .to_string();
+        let folder_index = dirs
+            .iter()
+            .position(|d| {
+                d.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(&current_folder_name)
+            })
+            .or_else(|| dirs.iter().position(|d| canonical(d) == current_folder_canon));
         let mut folders = Vec::with_capacity(dirs.len());
         for (i, d) in dirs.iter().enumerate() {
-            if d.file_name().unwrap_or_default() == current_folder_name.as_os_str() {
-                folder_index = Some(i);
-                folders.push(Folder {
-                    path: d.clone(),
-                    images: Some(current_images.clone()),
-                });
-            } else {
-                folders.push(Folder {
-                    path: d.clone(),
-                    images: None,
-                });
-            }
+            folders.push(Folder {
+                path: d.clone(),
+                images: (folder_index == Some(i)).then(|| current_images.clone()),
+            });
         }
         let folder_index = folder_index?;
         let pending_total = folders.len();
@@ -133,12 +137,6 @@ impl BrowseModel {
     pub fn open_first_in_dir_gated(dir: &Path, on_ready: Option<OnReady>, cross_folder: bool) -> Option<Self> {
         let first = Self::list_images(dir).into_iter().next()?;
         Self::open_gated(&first, on_ready, cross_folder)
-    }
-
-    /// 打开目录（完整功能，等价 cross_folder=true；仅测试使用）
-    #[cfg(test)]
-    pub fn open_first_in_dir(dir: &Path, on_ready: Option<OnReady>) -> Option<Self> {
-        Self::open_first_in_dir_gated(dir, on_ready, true)
     }
 
     pub(super) fn list_images(dir: &Path) -> Vec<PathBuf> {
