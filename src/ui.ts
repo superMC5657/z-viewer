@@ -9,6 +9,7 @@ import type { BrowseState, LicenseInfo } from "./types";
 const IDLE_HIDE_MS = 2000; // 闲置 2s 浮层自动隐藏
 const TOAST_MS = 1500; // 边界 Toast 持续 1.5s
 const FILENAME_MAX = 26; // 文件名中间截断长度（近似）
+const DECODE_SHOW_DELAY_MS = 300; // 解码指示防抖：短于此时长的解码不显示（防闪烁）
 
 export interface ToolbarHandlers {
   onAction: (id: string) => void;
@@ -25,11 +26,18 @@ export class UI {
   private emptyState: HTMLElement;
   /** 正常模式位置计数（#info-pos），幻灯片启动时复用 */
   private infoPos: HTMLElement;
+  /** 缩放百分比读数（#info-zoom） */
+  private infoZoom: HTMLElement;
+  /** RAW/动画解码中指示（#decoding） */
+  private decodingEl: HTMLElement;
   /** 幻灯片位置计数（#ss-progress） */
   private ssProgress: HTMLElement;
 
   private idleTimer: number | undefined;
   private toastTimer: number | undefined;
+  /** 解码指示：进行中的 IPC 加载计数（并发加载各自 begin/end） */
+  private decodingCount = 0;
+  private decodingTimer: number | undefined;
   /** 鼠标是否悬停在某个可见浮层上（悬停期间浮层永不闲置隐藏） */
   private hoveringOverlay = false;
 
@@ -43,6 +51,8 @@ export class UI {
     this.tbFile = document.getElementById("tb-file")!;
     this.emptyState = document.getElementById("empty-state")!;
     this.infoPos = document.getElementById("info-pos")!;
+    this.infoZoom = document.getElementById("info-zoom")!;
+    this.decodingEl = document.getElementById("decoding")!;
     this.ssProgress = document.getElementById("ss-progress")!;
     this.bindOverlayHover();
   }
@@ -129,6 +139,11 @@ export class UI {
     this.tbFile.textContent = truncateMiddle(name, 40);
   }
 
+  /** 缩放百分比读数（null = 无图片/未加载 → —）。随 onStateChange 同步 */
+  setZoom(scale: number | null): void {
+    this.infoZoom.textContent = scale == null ? "—" : `${Math.round(scale * 100)}%`;
+  }
+
   /** 空状态显隐 */
   setEmpty(empty: boolean): void {
     this.emptyState.classList.toggle("hidden", !empty);
@@ -197,6 +212,26 @@ export class UI {
       this.slideshowBar.setAttribute("aria-hidden", "true");
       this.wake();
     }
+  }
+
+  // ---------- 解码中指示（RAW/动画 IPC 通道） ----------
+
+  /** IPC 解码开始：计数 +1。首个开始时启动防抖计时（>300ms 才显示，快速解码不闪） */
+  beginDecoding(): void {
+    this.decodingCount++;
+    if (this.decodingCount > 1) return;
+    window.clearTimeout(this.decodingTimer);
+    this.decodingTimer = window.setTimeout(() => {
+      if (this.decodingCount > 0) this.decodingEl.classList.add("show");
+    }, DECODE_SHOW_DELAY_MS);
+  }
+
+  /** IPC 解码结束：计数 -1，归零立即隐藏（取消未触发的防抖计时） */
+  endDecoding(): void {
+    this.decodingCount = Math.max(0, this.decodingCount - 1);
+    if (this.decodingCount > 0) return;
+    window.clearTimeout(this.decodingTimer);
+    this.decodingEl.classList.remove("show");
   }
 
   // ---------- 边界 Toast（草图 3.4） ----------

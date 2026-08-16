@@ -10,10 +10,12 @@
     <main id="stage">
       <img id="image" alt="" draggable="false" decoding="async" />
       <canvas id="frame-canvas" draggable="false"></canvas>
+      <!-- 切图 crossfade 快照层：新图就绪前冻结旧画面（viewer.ts captureGhost） -->
+      <canvas id="ghost-canvas" draggable="false"></canvas>
       <div id="empty-state">
         <div class="empty-icon">🖼️</div>
         <div class="empty-title">拖入图片或文件夹开始浏览</div>
-        <div class="empty-hint">← / → 翻页 · PgUp / PgDn 切换文件夹 · 滚轮缩放</div>
+        <div class="empty-hint">← / → 翻页 · PgUp / PgDn 切换文件夹 · 滚轮缩放 · B 背景</div>
       </div>
       <div id="drop-overlay"><div class="drop-frame">松开以打开</div></div>
     </main>
@@ -38,7 +40,9 @@
       <span class="info-sep">·</span>
       <span id="info-dims" class="info-dims">—</span>
       <span class="info-sep">·</span>
-      <span id="info-size">—</span>
+      <span id="info-size" class="info-size">—</span>
+      <span class="info-sep">·</span>
+      <span id="info-zoom" class="info-zoom">—</span>
       <span class="info-sep">·</span>
       <span id="info-pos" class="info-pos">0/0</span>
       <span class="info-sep">·</span>
@@ -82,6 +86,12 @@
         <button id="ss-fullscreen" class="tb-btn-icon" data-id="fullscreen" data-tip="沉浸模式 · F"></button>
         <button id="ss-exit" class="tb-btn-icon" data-tip="返回图片浏览"></button>
       </div>
+    </div>
+
+    <!-- ===== RAW/动画解码中指示（IPC 通道 >300ms 时显示） ===== -->
+    <div id="decoding" class="glass" role="status">
+      <span class="decoding-spinner"></span>
+      <span>解码中…</span>
     </div>
 
     <!-- ===== 边界提醒 Toast ===== -->

@@ -65,6 +65,35 @@ body {
   overflow: hidden;
 }
 
+/* ---- 看图背景（B 键循环：黑 → 白 → 灰 → 棋盘格）----
+   默认纯黑（无样式类）；浅色/棋盘用于透明素材（深色 logo 在黑底上不可见）。
+   切换逻辑见 background.ts，选择持久化到 localStorage */
+#stage.bg-white {
+  background: #ffffff;
+}
+#stage.bg-gray {
+  background: #808080;
+}
+#stage.bg-checker {
+  background-color: #7f7f7f;
+  background-image:
+    linear-gradient(45deg, #9c9c9c 25%, transparent 25%, transparent 75%, #9c9c9c 75%),
+    linear-gradient(45deg, #9c9c9c 25%, transparent 25%, transparent 75%, #9c9c9c 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+}
+/* 浅色/花色背景下空状态文字改深色（保持可读） */
+#stage.bg-white .empty-title,
+#stage.bg-gray .empty-title,
+#stage.bg-checker .empty-title {
+  color: rgba(0, 0, 0, 0.78);
+}
+#stage.bg-white .empty-hint,
+#stage.bg-gray .empty-hint,
+#stage.bg-checker .empty-hint {
+  color: rgba(0, 0, 0, 0.5);
+}
+
 #image,
 #frame-canvas {
   position: absolute;
@@ -85,6 +114,23 @@ body {
 #image.animating,
 #frame-canvas.animating {
   transition: transform var(--t-rotate) ease-in-out;
+}
+
+/* ---- 切图 crossfade 快照层：位于 image/frame-canvas 之上（DOM 顺序靠后），
+       位图尺寸 = 视口 × DPR（设备像素 1:1）。新图淡入时快照同步淡出 →
+       交叉淡化；淡出完成由 viewer.ts 置零尺寸释放内存 ---- */
+#ghost-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity var(--t-image) ease-out;
+  pointer-events: none;
+}
+#ghost-canvas.visible {
+  opacity: 1;
 }
 
 /* ---- 拖拽光标：仅按下拖动时显示抓取（悬停保持默认箭头，
@@ -296,6 +342,7 @@ body.immersive #info-bar {
 }
 .info-dims,
 .info-size,
+.info-zoom,
 .info-pos {
   font-variant-numeric: tabular-nums;
   color: var(--text-secondary);
@@ -549,6 +596,48 @@ body.immersive #info-bar {
 }
 #ss-play.active {
   color: var(--accent);
+}
+
+/* ============================================================
+   RAW/动画解码中指示（IPC 通道耗时 >300ms 时显示，防抖见 ui.ts）
+   ============================================================ */
+#decoding {
+  position: fixed;
+  top: calc(var(--titlebar-h) + var(--floating-margin));
+  right: var(--floating-margin);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  font-size: 12px;
+  color: var(--text-primary);
+  z-index: 45;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+}
+/* 沉浸模式无标题栏：贴顶 16px */
+body.immersive #decoding {
+  top: var(--floating-margin);
+}
+#decoding.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.decoding-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: decoding-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes decoding-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ============================================================

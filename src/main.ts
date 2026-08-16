@@ -23,6 +23,7 @@ import { WindowState } from "./window-state";
 import { Slideshow } from "./slideshow";
 import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
+import { cycleBackground, restoreBackground } from "./background";
 import { ICONS } from "./icons";
 import type { AppSettings, BrowseState, LicenseInfo, LoadResult, NavResult, StoreInfo } from "./types";
 import { needsIpc, setRawExts } from "./types";
@@ -31,9 +32,10 @@ import "./ui.css";
 const stage = document.getElementById("stage")!;
 const img = document.getElementById("image") as HTMLImageElement;
 const frameCanvas = document.getElementById("frame-canvas") as HTMLCanvasElement;
+const ghostCanvas = document.getElementById("ghost-canvas") as HTMLCanvasElement;
 const dropOverlay = document.getElementById("drop-overlay")!;
 
-const viewer = new Viewer(stage, img, frameCanvas);
+const viewer = new Viewer(stage, img, frameCanvas, ghostCanvas);
 const ui = new UI();
 ui.buildToolbar({ onAction: handleToolbarAction });
 const windowState = new WindowState(getCurrentWindow(), viewer, ui);
@@ -102,55 +104,61 @@ async function showImage(state: BrowseState): Promise<void> {
     return;
   }
 
-  let result: LoadResult;
+  // 方案一：IPC 通道 —— RAW/动画由 Rust 解码（RAW 可达数秒，期间显示解码指示）
+  ui.beginDecoding();
   try {
-    result = await invoke<LoadResult>("load_image", { path: state.path });
-  } catch (err) {
-    if (seq === showSeq) ui.showToast(`无法加载图片：${String(err)}`);
-    return;
-  }
-  if (seq !== showSeq) return; // 已被更新的加载抢占
-
-  try {
-    if (result.mode === "animated" && result.frames?.length) {
-      // 动画：canvas 逐帧
-      ui.setFrameBarVisible(true);
-      await viewer.loadAnimation(result.frames);
-    } else if (result.mode === "raw" && result.data) {
-      // RAW：解码 JPEG Blob
-      const url = URL.createObjectURL(base64ToBlob(result.data, "image/jpeg"));
-      try {
-        await viewer.loadStatic(url);
-      } catch (err) {
-        URL.revokeObjectURL(url); // 加载失败也要释放，防止 Blob 泄漏
-        throw err; // 交给外层统一 Toast
-      }
-      if (seq !== showSeq) {
-        // 已被抢占：立即释放本函数创建的 Blob
-        URL.revokeObjectURL(url);
-        return;
-      }
-      currentBlobUrl = url;
-    } else {
-      // 动画格式但单帧：asset 协议直读
-      await viewer.loadStatic(convertFileSrc(state.path));
+    let result: LoadResult;
+    try {
+      result = await invoke<LoadResult>("load_image", { path: state.path });
+    } catch (err) {
+      if (seq === showSeq) ui.showToast(`无法加载图片：${String(err)}`);
+      return;
     }
-  } catch (err) {
-    if (seq === showSeq) {
-      ui.showToast(`无法显示图片：${String(err)}`);
-      ui.setFrameBarVisible(false);
-    }
-    return;
-  }
-  if (seq !== showSeq) return;
+    if (seq !== showSeq) return; // 已被更新的加载抢占
 
-  currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
-  ui.updateInfo(state, currentDims);
-  ui.setFramePlaying(viewer.isPlaying);
-  // 幻灯片进度计数（播放中实时更新）
-  ui.setSlideshowProgress(state.global_index + 1, state.global_total);
-  // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身已不再计数）
-  void invoke("record_view", { path: state.path });
+    try {
+      if (result.mode === "animated" && result.frames?.length) {
+        // 动画：canvas 逐帧
+        ui.setFrameBarVisible(true);
+        await viewer.loadAnimation(result.frames);
+      } else if (result.mode === "raw" && result.data) {
+        // RAW：解码 JPEG Blob
+        const url = URL.createObjectURL(base64ToBlob(result.data, "image/jpeg"));
+        try {
+          await viewer.loadStatic(url);
+        } catch (err) {
+          URL.revokeObjectURL(url); // 加载失败也要释放，防止 Blob 泄漏
+          throw err; // 交给外层统一 Toast
+        }
+        if (seq !== showSeq) {
+          // 已被抢占：立即释放本函数创建的 Blob
+          URL.revokeObjectURL(url);
+          return;
+        }
+        currentBlobUrl = url;
+      } else {
+        // 动画格式但单帧：asset 协议直读
+        await viewer.loadStatic(convertFileSrc(state.path));
+      }
+    } catch (err) {
+      if (seq === showSeq) {
+        ui.showToast(`无法显示图片：${String(err)}`);
+        ui.setFrameBarVisible(false);
+      }
+      return;
+    }
+    if (seq !== showSeq) return;
+
+    currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
+    ui.updateInfo(state, currentDims);
+    ui.setFramePlaying(viewer.isPlaying);
+    // 幻灯片进度计数（播放中实时更新）
+    ui.setSlideshowProgress(state.global_index + 1, state.global_total);
+    // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身已不再计数）
+    void invoke("record_view", { path: state.path });
+  } finally {
+    ui.endDecoding();
+  }
 }
 
 /** 获取当前上下文路径并预热（方案三/四） */
@@ -218,9 +226,10 @@ async function openPath(path: string): Promise<void> {
 
 // ---------- 缩放模式（同步按钮激活态） ----------
 
-/** 同步缩放按钮状态：适应窗口仅纯 fit 时激活，手动缩放后置灰 */
+/** 同步缩放按钮状态与信息条缩放读数：适应窗口仅纯 fit 时激活，手动缩放后置灰 */
 function syncZoomButtons(): void {
   ui.setZoomButtons(viewer.isFit, viewer.mode === "actual");
+  ui.setZoom(viewer.hasImage ? viewer.currentScale : null);
 }
 
 function setFitMode(mode: FitMode): void {
@@ -699,6 +708,7 @@ function bindEvents(): void {
     onExitImmersive: () => void windowState.exitImmersive(),
     onTogglePin: () => void windowState.togglePin(),
     onToggleSlideshow: () => slideshow.toggle(),
+    onCycleBackground: () => ui.showToast(`看图背景：${cycleBackground()}`),
     onWake: () => ui.wake(),
   });
 
@@ -745,6 +755,8 @@ async function init(): Promise<void> {
   bindUnlockDialog();
   buildFrameBar();
   buildSlideshowBar();
+  // 恢复持久化的看图背景（黑/白/灰/棋盘格）
+  restoreBackground();
   // 应用持久化的幻灯片间隔（buildSlideshowBar 已同步下拉框显示）
   const savedInterval = loadSsInterval();
   if (savedInterval !== null) slideshow.setInterval(savedInterval);

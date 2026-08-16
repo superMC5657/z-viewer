@@ -10,6 +10,9 @@
  * 渲染通道：
  *   - 静态图 → <img>（asset 协议或 RAW 解码的 Blob URL）
  *   - 动画图 → <canvas> 逐帧绘制（ImageBitmap 预解码 + setTimeout 链按帧延迟播放）
+ *
+ * 切图 crossfade：加载新图前把旧画面（含变换）重绘到快照层 <canvas> 冻结，
+ * 新图解码完成后快照淡出、新图淡入（150ms 交叉淡化，无黑屏跳变）。
  */
 
 import type { FrameData } from "./types";
@@ -25,6 +28,10 @@ export class Viewer {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private stage: HTMLElement;
+  /** 切图 crossfade 快照层：新图就绪前冻结旧画面（淡出完成后置零尺寸释放） */
+  private ghost: HTMLCanvasElement;
+  private ghostCtx: CanvasRenderingContext2D;
+  private ghostTimer: number | undefined;
 
   private loaded = false;
   private naturalW = 0;
@@ -66,11 +73,13 @@ export class Viewer {
   /** 变换状态变化回调（缩放/模式/旋转/加载后触发，用于同步按钮状态） */
   onStateChange: (() => void) | null = null;
 
-  constructor(stage: HTMLElement, img: HTMLImageElement, canvas: HTMLCanvasElement) {
+  constructor(stage: HTMLElement, img: HTMLImageElement, canvas: HTMLCanvasElement, ghost: HTMLCanvasElement) {
     this.stage = stage;
     this.img = img;
     this.canvas = canvas;
+    this.ghost = ghost;
     this.ctx = canvas.getContext("2d")!;
+    this.ghostCtx = ghost.getContext("2d")!;
     this.img.addEventListener("load", () => this.handleLoad());
     this.img.addEventListener("error", () => this.handleError());
   }
@@ -111,6 +120,7 @@ export class Viewer {
 
   /** 加载静态图（asset 协议 URL 或 RAW 解码的 Blob URL） */
   loadStatic(url: string): Promise<void> {
+    this.captureGhost(); // 先冻结旧画面（需要当前变换状态，须在任何重置之前）
     this.stopAnimation();
     this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
     const seq = ++this.loadSeq;
@@ -154,6 +164,7 @@ export class Viewer {
 
   /** 加载动画图：预解码全部帧后显示第一帧并自动播放 */
   async loadAnimation(frames: FrameData[]): Promise<void> {
+    this.captureGhost();
     this.stopAnimation();
     this.settlePending(); // 作废进行中的静态加载
     const seq = ++this.loadSeq; // 先登记代次，防止 await 期间被抢占
@@ -163,7 +174,10 @@ export class Viewer {
     this.resetTransform();
     this.onFrameChange?.(0, frames.length); // 解码完成前先重置帧计数
 
-    if (frames.length === 0) return;
+    if (frames.length === 0) {
+      this.releaseGhost();
+      return;
+    }
     // allSettled：任一帧解码失败时仍能拿到已成功的帧并显式 close，
     // 避免 Promise.all 直接 reject 造成已创建的 ImageBitmap 全部泄漏
     const settled = await Promise.allSettled(frames.map((f) => base64ToBitmap(f.png)));
@@ -175,6 +189,7 @@ export class Viewer {
     }
     if (failed) {
       for (const b of bitmaps) b.close();
+      this.releaseGhost();
       throw new Error("动画帧解码失败");
     }
     if (seq !== this.loadSeq) {
@@ -194,6 +209,7 @@ export class Viewer {
     this.drawFrame();
     this.fit();
     this.canvas.classList.add("visible");
+    this.releaseGhost(); // 新图开始淡入，快照同步淡出（交叉淡化）
     this.play();
     this.onStateChange?.();
   }
@@ -210,6 +226,8 @@ export class Viewer {
     if (!this.loaded) return;
     if (this.fitMode === "fit" && this.userScale === 1) {
       this.fit();
+      // 窗口尺寸变化 → fit 倍率变化 → 同步缩放读数/按钮态
+      this.onStateChange?.();
     } else {
       this.apply();
     }
@@ -241,6 +259,8 @@ export class Viewer {
       this.apply();
     }
     this.animateTransform();
+    // fit 态旋转会重算倍率（宽高互换），缩放百分比随之变化
+    this.onStateChange?.();
   }
 
   flip(axis: "h" | "v"): void {
@@ -381,6 +401,44 @@ export class Viewer {
     this.animIndex = 0;
   }
 
+  // ---------- 切图 crossfade（快照层） ----------
+
+  /** 冻结当前画面到快照层：把此刻 <img>/<canvas> 的显示效果（含变换）按设备像素
+   *  像素级重绘。之后旧元素被隐藏/换源也不可见跳变，新图解码完成再交叉淡化。
+   *  画 asset 协议图会污染画布（tainted），但仅作显示、绝不回读像素，无碍。 */
+  private captureGhost(): void {
+    if (!this.loaded) return;
+    window.clearTimeout(this.ghostTimer);
+    const dpr = window.devicePixelRatio || 1;
+    // 尺寸赋值本身会清空画布内容
+    this.ghost.width = Math.max(1, Math.round(this.stage.clientWidth * dpr));
+    this.ghost.height = Math.max(1, Math.round(this.stage.clientHeight * dpr));
+    const g = this.ghostCtx;
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = "high";
+    // 复刻 apply() 的变换链（translate → rotate → scale → 居中偏移）
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.translate(this.cx, this.cy);
+    g.rotate((this.rotation * Math.PI) / 180);
+    g.scale(
+      this.currentScale * (this.flipH ? -1 : 1),
+      this.currentScale * (this.flipV ? -1 : 1),
+    );
+    const src = this.active === "img" ? this.img : this.canvas;
+    g.drawImage(src, -this.naturalW / 2, -this.naturalH / 2, this.naturalW, this.naturalH);
+    this.ghost.classList.add("visible");
+  }
+
+  /** 新图已就绪：快照淡出（与新图淡入叠加为交叉淡化），淡出完成后置零尺寸释放内存 */
+  private releaseGhost(): void {
+    window.clearTimeout(this.ghostTimer);
+    this.ghost.classList.remove("visible");
+    this.ghostTimer = window.setTimeout(() => {
+      this.ghost.width = 0;
+      this.ghost.height = 0;
+    }, GHOST_FADE_MS);
+  }
+
   private resetTransform(): void {
     this.loaded = false;
     this.fitMode = "fit";
@@ -411,6 +469,7 @@ export class Viewer {
     this.loaded = true;
     this.fit();
     this.img.classList.add("visible");
+    this.releaseGhost(); // 新图开始淡入，快照同步淡出（交叉淡化）
     this.pending?.resolve();
     this.pending = null;
     this.onStateChange?.();
@@ -420,6 +479,7 @@ export class Viewer {
     if (!this.pending || this.pending.seq !== this.loadSeq) return;
     const p = this.pending;
     this.pending = null;
+    this.releaseGhost(); // 加载失败回到黑底 + Toast，不留冻结的旧画面
     p.reject(new Error("图片加载失败"));
   }
 
@@ -439,7 +499,9 @@ export class Viewer {
     const availH = this.stage.clientHeight - (this.immersive ? 0 : TITLEBAR_H);
     const ew = this.rotation % 180 === 0 ? this.naturalW : this.naturalH;
     const eh = this.rotation % 180 === 0 ? this.naturalH : this.naturalW;
-    this.baseScale = Math.min(availW / ew, availH / eh);
+    // 封顶 1×：小图保持原尺寸居中（低分辨率素材拉伸到全屏会糊化），
+    // 大图照常缩小适应；想看放大效果用滚轮/双击
+    this.baseScale = Math.min(availW / ew, availH / eh, 1);
     this.cx = availW / 2;
     this.cy = (this.immersive ? 0 : TITLEBAR_H) + availH / 2;
     this.apply();
@@ -456,6 +518,9 @@ export class Viewer {
       `rotate(${this.rotation}deg) ` +
       `scale(${s * fx}, ${s * fy}) ` +
       `translate(${-this.naturalW / 2}px, ${-this.naturalH / 2}px)`;
+    // 放大超过 100% 时最近邻渲染：像素级清晰（照片 100% 检视 / 像素画均受益）；
+    // ≤100% 恢复浏览器默认平滑（缩小用最近邻会严重失真）
+    el.style.imageRendering = s > 1 ? "pixelated" : "auto";
   }
 
   /** 平移范围约束：图片至少与视口保留 24px 重叠 */
@@ -495,6 +560,9 @@ export class Viewer {
 }
 
 const TITLEBAR_H = 32;
+
+/** 快照层淡出完成后的内存释放延迟（略大于 150ms 过渡） */
+const GHOST_FADE_MS = 320;
 
 /** 平移边距：图片边缘与视口保留的最小间距（isPannable/clampPan 共用） */
 const PAN_MARGIN = 24;

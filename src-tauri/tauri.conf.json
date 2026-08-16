@@ -71,7 +71,7 @@
     },
     "store": {
       "apiBase": "http://127.0.0.1:8080",
-      "buyUrl": "http://localhost:5173/p/image-viewer",
+      "buyUrl": "http://localhost:5173/buy/image-viewer",
       "product": "image-viewer",
       "licenseLevel": "pro",
       "licensePublicKeys": {
