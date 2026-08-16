@@ -42,3 +42,13 @@ fn raw_ext_detection() {
     assert!(!is_raw_ext("jpg"));
     assert!(!is_raw_ext("png"));
 }
+
+#[test]
+fn sub_millisecond_delay_clamped_to_1ms() {
+    // 5/10ms 整数除法截断为 0：应兜底为 1ms（否则前端 setTimeout(0) 全速疯转）
+    let buffer = image::RgbaImage::new(1, 1);
+    let delay = image::Delay::from_numer_denom_ms(5, 10);
+    let frame = image::Frame::from_parts(buffer, 0, 0, delay);
+    let fd = animation::encode_frame(frame).unwrap();
+    assert_eq!(fd.delay_ms, 1);
+}

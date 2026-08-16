@@ -60,9 +60,14 @@ fn collect_frames(iter: image::Frames<'_>) -> Result<Option<Vec<FrameData>>, Str
 }
 
 /// 单帧 → base64 PNG + 延迟（GIF 规范：0 延迟按 100ms；den 为 0 时兜底）
-fn encode_frame(frame: image::Frame) -> Result<FrameData, String> {
+pub(super) fn encode_frame(frame: image::Frame) -> Result<FrameData, String> {
     let (num, den) = frame.delay().numer_denom_ms();
-    let delay_ms = if den == 0 || num == 0 { 100 } else { num / den };
+    // 整数除法可截断为 0（如 5/10ms）：max(1) 兜底，避免前端 setTimeout(0) 全速疯转
+    let delay_ms = if den == 0 || num == 0 {
+        100
+    } else {
+        (num / den).max(1)
+    };
     let mut png: Vec<u8> = Vec::new();
     image::DynamicImage::ImageRgba8(frame.into_buffer())
         .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
