@@ -25,7 +25,7 @@ import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
 import { ICONS } from "./icons";
 import type { AppSettings, BrowseState, LicenseInfo, LoadResult, NavResult, StoreInfo } from "./types";
-import { needsIpc } from "./types";
+import { needsIpc, setRawExts } from "./types";
 import "./ui.css";
 
 const stage = document.getElementById("stage")!;
@@ -119,7 +119,12 @@ async function showImage(state: BrowseState): Promise<void> {
     } else if (result.mode === "raw" && result.data) {
       // RAW：解码 JPEG Blob
       const url = URL.createObjectURL(base64ToBlob(result.data, "image/jpeg"));
-      await viewer.loadStatic(url);
+      try {
+        await viewer.loadStatic(url);
+      } catch (err) {
+        URL.revokeObjectURL(url); // 加载失败也要释放，防止 Blob 泄漏
+        throw err; // 交给外层统一 Toast
+      }
       if (seq !== showSeq) {
         // 已被抢占：立即释放本函数创建的 Blob
         URL.revokeObjectURL(url);
@@ -462,7 +467,7 @@ function buildSlideshowBar(): void {
   };
 }
 
-/// 退出幻灯片模式，返回图片浏览（返回按钮 / 播放完 / 打开新图）
+/** 退出幻灯片模式，返回图片浏览（返回按钮 / 播放完 / 打开新图） */
 function exitSlideshow(): void {
   if (slideshowMode === false) return; // 幂等
   feLog("exitSlideshow: 退出幻灯片模式");
@@ -766,6 +771,13 @@ async function init(): Promise<void> {
     applyLicenseStatus(info);
   } catch (err) {
     console.error(err);
+  }
+
+  try {
+    // RAW 扩展名单一真源：后端 decode::RAW_EXTS（失败保留 types.ts 内置兜底集）
+    setRawExts(await invoke<string[]>("get_raw_extensions"));
+  } catch (err) {
+    console.error("拉取 RAW 扩展名失败，使用内置兜底集", err);
   }
 
   try {

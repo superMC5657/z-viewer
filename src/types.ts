@@ -68,15 +68,28 @@ export interface StoreInfo {
   buyUrl: string | null;
 }
 
-/** 需走 IPC 的扩展名（可能多帧动画或 RAW），其余浏览器原生解码直接 asset */
-const IPC_EXTS = new Set([
-  "gif", "png", "webp", // 可能动画，需 Rust 拆帧判断
+/** 动画候选扩展名（可能多帧，需 Rust 拆帧判定；格式集合稳定） */
+const ANIM_EXTS = new Set(["gif", "png", "webp"]);
+
+/**
+ * RAW 扩展名：以后端 decode::RAW_EXTS 为唯一真源 —— init 时通过
+ * get_raw_extensions 命令拉取并整表替换（见 setRawExts）。此处的内置
+ * 副本仅作命令就绪前/失败时的兜底，避免初始化早期误判通道；后端新增
+ * RAW 格式时无需同步改这里。
+ */
+const RAW_EXTS = new Set([
   "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
-  "3fr", "kdc", "dcr", "mrw", "mef", "mos", "iiq", "fff", "ari", // RAW
+  "3fr", "kdc", "dcr", "mrw", "mef", "mos", "iiq", "fff", "ari",
 ]);
+
+/** 用后端 RAW_EXTS 整表替换本地兜底集（init 时调用一次） */
+export function setRawExts(exts: string[]): void {
+  RAW_EXTS.clear();
+  for (const e of exts) RAW_EXTS.add(e.toLowerCase());
+}
 
 /** 判断图片是否需走 IPC 通道（动画/RAW），false 则浏览器原生解码直接 asset */
 export function needsIpc(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return IPC_EXTS.has(ext);
+  return ANIM_EXTS.has(ext) || RAW_EXTS.has(ext);
 }

@@ -295,6 +295,14 @@ pub fn get_settings(
     s
 }
 
+/// RAW 扩展名列表（前端 needsIpc 的唯一真源：启动时拉取替换前端内置兜底集，
+/// 避免后端 RAW_EXTS 与前端 IPC_EXTS 两份清单人肉同步 —— 漏同步的新格式会被
+/// 前端误判为 asset 通道而无法显示）
+#[tauri::command]
+pub fn get_raw_extensions() -> Vec<&'static str> {
+    crate::decode::RAW_EXTS.to_vec()
+}
+
 /// 查询当前图片上下文路径（按缓存强度），供前端预解码池（方案四）预热
 /// P3-1：相邻文件夹首图的目录枚举移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
 /// 专业版功能：免费版返回空（无预取）

@@ -164,8 +164,24 @@ export class Viewer {
     this.onFrameChange?.(0, frames.length); // 解码完成前先重置帧计数
 
     if (frames.length === 0) return;
-    const bitmaps = await Promise.all(frames.map((f) => base64ToBitmap(f.png)));
-    if (seq !== this.loadSeq) return; // 已被更新的加载抢占
+    // allSettled：任一帧解码失败时仍能拿到已成功的帧并显式 close，
+    // 避免 Promise.all 直接 reject 造成已创建的 ImageBitmap 全部泄漏
+    const settled = await Promise.allSettled(frames.map((f) => base64ToBitmap(f.png)));
+    const bitmaps: ImageBitmap[] = [];
+    let failed = false;
+    for (const s of settled) {
+      if (s.status === "fulfilled") bitmaps.push(s.value);
+      else failed = true;
+    }
+    if (failed) {
+      for (const b of bitmaps) b.close();
+      throw new Error("动画帧解码失败");
+    }
+    if (seq !== this.loadSeq) {
+      // 已被抢占：显式释放本批位图
+      for (const b of bitmaps) b.close();
+      return;
+    }
 
     this.animFrames = bitmaps;
     this.animDelays = frames.map((f) => f.delay_ms);
@@ -337,7 +353,8 @@ export class Viewer {
 
   private scheduleNext(): void {
     if (!this.animPlaying) return;
-    const delay = this.animDelays[this.animIndex] ?? 100;
+    // 兜底下限 1ms：异常 0 延迟帧（旧缓存/极端数据）不至于让 setTimeout(0) 全速疯转
+    const delay = Math.max(this.animDelays[this.animIndex] ?? 100, 1);
     this.animTimer = window.setTimeout(() => {
       if (!this.animPlaying) return;
       this.animIndex = (this.animIndex + 1) % this.animFrames.length;
@@ -357,6 +374,8 @@ export class Viewer {
   private stopAnimation(): void {
     this.animPlaying = false;
     window.clearTimeout(this.animTimer);
+    // 显式释放位图（ImageBitmap 持有解码内存，等 GC 不可控；长 GIF 可达数百帧）
+    for (const bmp of this.animFrames) bmp.close();
     this.animFrames = [];
     this.animDelays = [];
     this.animIndex = 0;

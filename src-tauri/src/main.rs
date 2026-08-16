@@ -25,6 +25,8 @@ fn resolve_path_arg(arg: &str) -> PathBuf {
         return p.to_path_buf();
     }
     // exe 位于 <项目根>/src-tauri/target/<profile>/，上溯 4 级到项目根
+    // （仅开发构建需要；release 安装后 cwd 语义不变，上溯反而可能误匹配无关同名文件）
+    #[cfg(debug_assertions)]
     if let Ok(exe) = std::env::current_exe() {
         let root = exe
             .parent()
@@ -127,6 +129,7 @@ fn main() {
             commands::record_view,
             commands::set_cache_level,
             commands::get_settings,
+            commands::get_raw_extensions,
             commands::get_context,
             license::activate_license,
             license::deactivate_license,
