@@ -228,6 +228,16 @@ pub struct LicenseManager {
     store: StoreConfig,
 }
 
+/// 授权接口 HTTP 客户端：10s 超时。
+/// 激活/续验/注销都不该让连接挂起无限等待（服务器不响应时激活对话框会永久卡死）；
+/// builder 失败（如 TLS 初始化异常）退回无配置默认客户端。
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl LicenseManager {
     /// 从磁盘加载许可证（不存在/格式旧/验签失败 = 免费版）；store 为编译期配置。
     pub fn load(storage: PathBuf, store: StoreConfig) -> Self {
@@ -318,7 +328,7 @@ impl LicenseManager {
         let code = code.trim().to_uppercase();
         let email = email.trim().to_lowercase();
         let dev = device_id();
-        let client = reqwest::Client::new();
+        let client = http_client();
         let url = format!("{}{}", self.store.api_base, self.store.activate_path);
         let resp = client
             .post(url)
@@ -374,7 +384,7 @@ impl LicenseManager {
         }
         let email = lic.email.clone();
         let code = lic.code.clone();
-        let client = reqwest::Client::new();
+        let client = http_client();
         let url = format!("{}{}", self.store.api_base, self.store.verify_path);
         let resp = client
             .post(url)
@@ -446,7 +456,7 @@ impl LicenseManager {
             );
         }
 
-        let client = reqwest::Client::new();
+        let client = http_client();
         let url = format!("{}{}", self.store.api_base, self.store.deactivate_path);
         let code = lic.code.clone();
         let device_id = lic.device_id();
