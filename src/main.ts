@@ -143,8 +143,8 @@ async function showImage(state: BrowseState): Promise<void> {
         ui.setFrameBarVisible(true);
         const blobs = splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
         await viewer.loadAnimation(blobs, header.frameDelays);
-      } else if (header.mode === "raw") {
-        // RAW：先显示内嵌预览（毫秒级），全量解码后台替换
+      } else if (header.mode === "raw" || header.mode === "static") {
+        // 单张 JPEG（RAW/TIFF）；RAW 预览毫秒级显示，全量解码后台替换
         const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
         try {
           await viewer.loadStatic(url);

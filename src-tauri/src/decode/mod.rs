@@ -17,6 +17,7 @@
 mod animation;
 mod preview;
 mod raw;
+mod tiff;
 #[cfg(test)]
 mod tests;
 
@@ -25,6 +26,9 @@ pub const RAW_EXTS: &[&str] = &[
     "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
     "3fr", "kdc", "dcr", "mrw", "mef", "mos", "iiq", "fff", "ari",
 ];
+
+/// TIFF 扩展名（image crate 解码的静态通道）
+pub const TIFF_EXTS: &[&str] = &["tif", "tiff"];
 
 /// 潜在动画格式（按帧数判定是否真的多帧）
 const ANIM_EXTS: &[&str] = &["gif", "png", "webp"];
@@ -110,6 +114,10 @@ pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
         return raw::decode_raw(path, full);
     }
 
+    if TIFF_EXTS.contains(&ext.as_str()) {
+        return tiff::decode_static(path);
+    }
+
     if ANIM_EXTS.contains(&ext.as_str()) {
         if let Some(frames) = animation::decode_animation(path)? {
             return Ok(frames);
@@ -130,7 +138,7 @@ pub fn is_asset_ext(path: &str) -> bool {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     matches!(
         ext.as_str(),
-        "jpg" | "jpeg" | "bmp" | "ico" | "svg" | "gif" | "png" | "webp"
+        "jpg" | "jpeg" | "bmp" | "ico" | "svg" | "avif" | "gif" | "png" | "webp"
     )
 }
 

@@ -27,8 +27,10 @@ mod tests;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
-/// M1 常见格式（RAW 由 decode::RAW_EXTS 单一来源维护）
-const COMMON_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "svg"];
+/// 常见格式（asset 通道浏览器原生解码；RAW 由 decode::RAW_EXTS 单一来源维护）
+const COMMON_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "svg", "avif", "tif", "tiff",
+];
 
 fn is_image_file(name: &str) -> bool {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();

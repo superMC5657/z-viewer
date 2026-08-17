@@ -60,6 +60,8 @@ fn raw_ext_detection() {
     assert!(is_raw_ext("DNG"));
     assert!(!is_raw_ext("jpg"));
     assert!(!is_raw_ext("png"));
+    assert!(TIFF_EXTS.contains(&"tif"));
+    assert!(TIFF_EXTS.contains(&"tiff"), "大小写不敏感判断由调用方负责");
 }
 
 #[test]
