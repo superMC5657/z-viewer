@@ -68,7 +68,7 @@ fn sub_millisecond_delay_clamped_to_1ms() {
     let buffer = image::RgbaImage::new(1, 1);
     let delay = image::Delay::from_numer_denom_ms(5, 10);
     let frame = image::Frame::from_parts(buffer, 0, 0, delay);
-    let (_, delay_ms) = animation::encode_frame(frame).unwrap();
+    let (_, delay_ms) = animation::encode_frame(frame, 1).unwrap();
     assert_eq!(delay_ms, 1);
 }
 
@@ -82,4 +82,44 @@ fn envelope_roundtrip() {
     assert_eq!(header["mode"], "animated");
     assert_eq!(header["frame_sizes"], serde_json::json!([3, 2]));
     assert_eq!(&buf[8 + hlen..], &result.bytes[..], "payload 原样透传");
+}
+
+#[test]
+fn jpeg_sof_dimensions_parse() {
+    // 构造最小合法 JPEG：SOI + SOF0(高2宽3) + EOI
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x02, 0x00, 0x03];
+    jpeg.extend_from_slice(&[0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+    jpeg.push(0xFF);
+    jpeg.push(0xD9);
+    let (w, h) = preview::jpeg_dimensions(&jpeg).expect("应解析出尺寸");
+    assert_eq!((w, h), (3, 2));
+}
+
+#[test]
+fn preview_tiff_walk_finds_embedded_jpeg() {
+    // 合成小 TIFF（little-endian）：IFD0 含 JpgFromRaw(0x002E) → 内嵌 JPEG
+    // 结构：header(8) + IFD0（1 条目 + next 指针）+ JPEG 数据
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x04, 0x00, 0x05];
+    jpeg.extend_from_slice(&[0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+    jpeg.push(0xFF);
+    jpeg.push(0xD9);
+    let ifd_off = 8u32;
+    let jpeg_off = ifd_off + 2 + 12 * 1 + 4;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"II*\x00");
+    bytes.extend_from_slice(&ifd_off.to_le_bytes());
+    // IFD0：1 条目（JpgFromRaw：tag=0x002E, type=LONG, count=len, value=offset）
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&0x002Eu16.to_le_bytes());
+    bytes.extend_from_slice(&4u16.to_le_bytes());
+    bytes.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&jpeg_off.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // next IFD = 0
+    bytes.extend_from_slice(&jpeg);
+    let dir = std::env::temp_dir().join("iv_preview_test.tif");
+    std::fs::write(&dir, &bytes).unwrap();
+    let p = preview::extract_preview(&dir.to_string_lossy()).expect("应提取到内嵌 JPEG");
+    assert_eq!((p.width, p.height), (5, 4));
+    assert!(p.jpeg.starts_with(&[0xFF, 0xD8]));
+    std::fs::remove_file(&dir).ok();
 }

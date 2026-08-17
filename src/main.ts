@@ -125,7 +125,7 @@ async function showImage(state: BrowseState): Promise<void> {
         const blobs = splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
         await viewer.loadAnimation(blobs, header.frameDelays);
       } else if (header.mode === "raw") {
-        // RAW：解码 JPEG Blob
+        // RAW：先显示内嵌预览（毫秒级），全量解码后台替换
         const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
         try {
           await viewer.loadStatic(url);
@@ -139,6 +139,14 @@ async function showImage(state: BrowseState): Promise<void> {
           return;
         }
         currentBlobUrl = url;
+        // 预览阶段立即显示预览尺寸（全量解码完成后 upgradeRawToFull 再更新）
+        if (header.width && header.height) {
+          currentDims = { w: header.width, h: header.height };
+          ui.updateInfo(state, currentDims);
+        }
+        if (header.isPreview) {
+          await upgradeRawToFull(state, seq);
+        }
       } else {
         // 单帧动画降级：asset 协议直读
         await viewer.loadStatic(convertFileSrc(state.path));
@@ -159,6 +167,39 @@ async function showImage(state: BrowseState): Promise<void> {
     ui.setSlideshowProgress(state.global_index + 1, state.global_total);
     // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身已不再计数）
     void invoke("record_view", { path: state.path });
+  } finally {
+    ui.endDecoding();
+  }
+}
+
+/** RAW 内嵌预览已显示：后台拉取全量解码结果并替换（seq 抢占安全；引用计数指示解码中）。
+ *  预览 URL 在全量加载成功后才撤销 —— 解码失败时画面保持预览，不破碎。 */
+async function upgradeRawToFull(state: BrowseState, seq: number): Promise<void> {
+  ui.beginDecoding();
+  const previewUrl = currentBlobUrl; // 保留预览引用（成功替换后才撤销）
+  try {
+    const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: true });
+    if (seq !== showSeq) return;
+    const { header, payload } = parseLoadEnvelope(buf);
+    if (header.isPreview) return; // 防御：仍返回预览（异常路径），保持现有显示
+    const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
+    try {
+      await viewer.loadStatic(url);
+    } catch (err) {
+      URL.revokeObjectURL(url);
+      // 全量 JPEG 异常：恢复预览显示（预览引用仍存活）
+      if (previewUrl) await viewer.loadStatic(previewUrl).catch(() => undefined);
+      throw err;
+    }
+    if (seq !== showSeq) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    currentBlobUrl = url;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    // 信息条尺寸更新为全量尺寸
+    currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
+    ui.updateInfo(state, currentDims);
   } finally {
     ui.endDecoding();
   }

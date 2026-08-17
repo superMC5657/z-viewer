@@ -15,6 +15,7 @@
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
 
 mod animation;
+mod preview;
 mod raw;
 #[cfg(test)]
 mod tests;
@@ -101,13 +102,12 @@ impl LoadResult {
 }
 
 /// 统一入口：按扩展名与内容分发到各通道
-/// `full` 参数预留 RAW 内嵌预览两拍（本期未启用，保持命令签名稳定）
+/// `full=false`：RAW 优先返回内嵌预览（快），全量由后续 full=true 请求完成
 pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
-    let _ = full;
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
 
     if is_raw_ext(&ext) {
-        return raw::decode_raw(path);
+        return raw::decode_raw(path, full);
     }
 
     if ANIM_EXTS.contains(&ext.as_str()) {
