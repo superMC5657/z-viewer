@@ -65,35 +65,6 @@ body {
   overflow: hidden;
 }
 
-/* ---- 看图背景（B 键循环：黑 → 白 → 灰 → 棋盘格）----
-   默认纯黑（无样式类）；浅色/棋盘用于透明素材（深色 logo 在黑底上不可见）。
-   切换逻辑见 background.ts，选择持久化到 localStorage */
-#stage.bg-white {
-  background: #ffffff;
-}
-#stage.bg-gray {
-  background: #808080;
-}
-#stage.bg-checker {
-  background-color: #7f7f7f;
-  background-image:
-    linear-gradient(45deg, #9c9c9c 25%, transparent 25%, transparent 75%, #9c9c9c 75%),
-    linear-gradient(45deg, #9c9c9c 25%, transparent 25%, transparent 75%, #9c9c9c 75%);
-  background-size: 16px 16px;
-  background-position: 0 0, 8px 8px;
-}
-/* 浅色/花色背景下空状态文字改深色（保持可读） */
-#stage.bg-white .empty-title,
-#stage.bg-gray .empty-title,
-#stage.bg-checker .empty-title {
-  color: rgba(0, 0, 0, 0.78);
-}
-#stage.bg-white .empty-hint,
-#stage.bg-gray .empty-hint,
-#stage.bg-checker .empty-hint {
-  color: rgba(0, 0, 0, 0.5);
-}
-
 #image,
 #frame-canvas {
   position: absolute;

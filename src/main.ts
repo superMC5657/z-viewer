@@ -23,7 +23,6 @@ import { WindowState } from "./window-state";
 import { Slideshow } from "./slideshow";
 import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
-import { cycleBackground, restoreBackground } from "./background";
 import { ICONS } from "./icons";
 import { needsIpc, setRawExts, parseLoadEnvelope } from "./types";
 import type { AppSettings, BrowseState, LicenseInfo, LoadEnvelope, NavResult, StoreInfo } from "./types";
@@ -822,7 +821,6 @@ function bindEvents(): void {
     onExitImmersive: () => void windowState.exitImmersive(),
     onTogglePin: () => void windowState.togglePin(),
     onToggleSlideshow: () => slideshow.toggle(),
-    onCycleBackground: () => ui.showToast(`看图背景：${cycleBackground()}`),
     onWake: () => ui.wake(),
   });
 
@@ -869,8 +867,6 @@ async function init(): Promise<void> {
   bindUnlockDialog();
   buildFrameBar();
   buildSlideshowBar();
-  // 恢复持久化的看图背景（黑/白/灰/棋盘格）
-  restoreBackground();
   // 应用持久化的幻灯片间隔（buildSlideshowBar 已同步下拉框显示）
   const savedInterval = loadSsInterval();
   if (savedInterval !== null) slideshow.setInterval(savedInterval);

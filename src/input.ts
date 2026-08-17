@@ -1,6 +1,6 @@
 /**
  * 交互层：快捷键映射（《需求报告与技术方案.md》2.5）与滚轮缩放
- * 方向键翻页 / PgUp PgDn 文件夹 / 空格-幻灯片(M4) / R H V B 1 0 / ↑↓ 缩放
+ * 方向键翻页 / PgUp PgDn 文件夹 / 空格-幻灯片(M4) / R H V 1 0 / ↑↓ 缩放
  *
  * 唤醒策略：键盘控制命令（翻页/文件夹跳转/缩放/旋转/翻转）**不触发浮层弹出**
  * —— 专注看图时不因操作打断；浮层只由鼠标移动（main.ts mousemove + 滚轮）与
@@ -20,7 +20,6 @@ export interface InputHandlers {
   onExitImmersive: () => void;
   onTogglePin: () => void;
   onToggleSlideshow: () => void;
-  onCycleBackground: () => void;
   onWake: () => void;
 }
 
@@ -72,11 +71,6 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
       case "v":
       case "V":
         viewer.flip("v");
-        break;
-      case "b":
-      case "B":
-        // 看图背景循环（黑/白/灰/棋盘格）：透明素材在纯黑底上不可见
-        handlers.onCycleBackground();
         break;
       case "F":
       case "f":
