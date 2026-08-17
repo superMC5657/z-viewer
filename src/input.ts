@@ -111,11 +111,30 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
     viewer.zoomAt(e.clientX, e.clientY, factor);
   };
 
+  // 鼠标侧键翻页（看图软件标配）：XBUTTON1=上一张，XBUTTON2=下一张
+  // preventDefault 抑制 WebView2 潜在的前进/后退导航（单页应用无历史，防御性处理）
+  const onMouseDown = (e: MouseEvent): void => {
+    if (e.button === 3) {
+      e.preventDefault();
+      handlers.onPrev();
+    } else if (e.button === 4) {
+      e.preventDefault();
+      handlers.onNext();
+    }
+  };
+  const onAuxClick = (e: MouseEvent): void => {
+    if (e.button === 3 || e.button === 4) e.preventDefault();
+  };
+
   document.addEventListener("keydown", onKeyDown);
   document.addEventListener("wheel", onWheel, { passive: false });
+  document.addEventListener("mousedown", onMouseDown);
+  document.addEventListener("auxclick", onAuxClick);
 
   return () => {
     document.removeEventListener("keydown", onKeyDown);
     document.removeEventListener("wheel", onWheel);
+    document.removeEventListener("mousedown", onMouseDown);
+    document.removeEventListener("auxclick", onAuxClick);
   };
 }
