@@ -1,16 +1,19 @@
-//! 解码服务：RAW 解码（rawler）+ 动画拆帧（image crate）
+//! 解码服务：RAW 解码（rawler）+ 静态解码（image crate，TIFF）+ 动画拆帧
 //!
 //! 图片加载通道（《需求报告与技术方案.md》8.3）：
-//! - 常见格式 → 前端 asset 协议直读（零拷贝）
-//! - RAW → Rust 解码 → 降采样 → JPEG 字节 → 前端 Blob URL
-//! - 动画（GIF/APNG/动态 WebP）→ Rust 拆帧 → 帧 PNG + 每帧延迟 → 前端 canvas 逐帧控制
+//! - 常见格式 → 前端 asset 协议直读（零拷贝，含浏览器原生播放的动画格式）
+//! - RAW → 内嵌预览快显（毫秒级）→（后台）demosaic 全量 → JPEG 字节 → 前端 Blob URL
+//! - TIFF → image crate 解码 → JPEG 字节 → 前端 Blob URL
+//! - 动画（GIF/APNG/动态 WebP）→ 默认原生 <img> 播放；帧控制按需拆帧 → 帧 PNG 字节
 //!
 //! 所有 Rust 解码通道经 IPC 返回**原始字节**（二进制信封 pack_envelope，
 //! 前端 parseLoadEnvelope 解析）—— 不再 base64，免 33% 体积膨胀与双端编解码。
 //!
 //! 文件组织（可维护性拆分）：
 //! - mod.rs：类型定义 + 统一入口 load_image + 信封打包 + 扩展名判断
-//! - raw.rs：RAW 解码通道（rawler）
+//! - raw.rs：RAW 解码通道（rawler + 内嵌预览快显 + 方向回正）
+//! - preview.rs：EXIF 辅助（内嵌预览提取 / 方向读取 / 方向回正）
+//! - tiff.rs：TIFF 静态解码通道（image crate）
 //! - animation.rs：动画拆帧通道（GIF/APNG/WebP）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
 
@@ -30,7 +33,7 @@ pub const RAW_EXTS: &[&str] = &[
 /// TIFF 扩展名（image crate 解码的静态通道）
 pub const TIFF_EXTS: &[&str] = &["tif", "tiff"];
 
-/// 潜在动画格式（按帧数判定是否真的多帧）
+/// 潜在动画格式（默认原生 <img> 播放；帧控制按需拆帧）
 const ANIM_EXTS: &[&str] = &["gif", "png", "webp"];
 
 /// IPC 二进制信封魔数（与前端 parseLoadEnvelope 对应）
@@ -39,20 +42,20 @@ pub const ENVELOPE_MAGIC: &[u8; 4] = b"IMGV";
 /// 解码结果：所有 Rust 通道的产物，payload 为原始字节
 #[derive(Clone)]
 pub struct LoadResult {
-    /// "asset"（前端 asset 协议直读）| "raw" | "animated"（帧序列）
+    /// "asset"（前端 asset 协议直读）| "raw" | "static"(TIFF) | "animated"（帧序列）
     pub mode: String,
-    /// payload 的 MIME（raw: image/jpeg；animated: image/png）
+    /// payload 的 MIME（raw/static: image/jpeg；animated: image/png）
     pub mime: Option<String>,
     /// raw 通道内嵌预览位：true 表示 bytes 是内嵌预览，全量仍在后台解码
     pub is_preview: bool,
-    /// 图像尺寸（raw 通道提供）
+    /// 图像尺寸（raw/static 通道提供）
     pub width: Option<u32>,
     pub height: Option<u32>,
     /// animated：每帧延迟（ms）
     pub frame_delays: Vec<u32>,
     /// animated：每帧 PNG 字节长（payload 按此切分）
     pub frame_sizes: Vec<u32>,
-    /// payload：raw = 单张 JPEG；animated = 帧 PNG 拼接
+    /// payload：raw/static = 单张 JPEG；animated = 帧 PNG 拼接
     pub bytes: Vec<u8>,
 }
 
@@ -71,7 +74,7 @@ impl LoadResult {
         }
     }
 
-    /// 单张 JPEG 通道（raw）
+    /// 单张 JPEG 通道（raw/static）
     pub fn jpeg(mode: &str, bytes: Vec<u8>, w: u32, h: u32, is_preview: bool) -> Self {
         Self {
             mode: mode.into(),
@@ -230,7 +233,7 @@ pub fn pack_envelope(result: &LoadResult) -> Vec<u8> {
     buf
 }
 
-/// 长边降采样上限（屏幕 2 倍尺寸足够，控制传输体积）
+/// 长边降采样上限（屏幕 2 倍尺寸足够，控制传输体积；raw/tiff 共用）
 pub(super) const MAX_DIM: u32 = 2560;
 
 /// 超限降采样：长边 > MAX_DIM 时按比例缩到上限（Triangle 滤波）
