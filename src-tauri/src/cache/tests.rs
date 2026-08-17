@@ -5,11 +5,13 @@ use super::*;
 use crate::decode::LoadResult;
 
 fn sample(path: &str) -> Arc<LoadResult> {
-    Arc::new(LoadResult {
-        mode: "raw".into(),
-        data: Some(format!("data-{path}")),
-        frames: None,
-    })
+    Arc::new(LoadResult::jpeg(
+        "raw",
+        format!("data-{path}").into_bytes(),
+        (path.len() * 10) as u32,
+        (path.len() * 7) as u32,
+        false,
+    ))
 }
 
 /// 构造 FolderFirst 条目（首图路径 + 解码结果）
@@ -41,7 +43,7 @@ fn put_updates_existing() {
     cache.put("a".into(), sample("a1"));
     cache.put("a".into(), sample("a2"));
     let hit = cache.get("a").expect("命中");
-    assert_eq!(hit.data.as_deref(), Some("data-a2"), "重复写入应更新");
+    assert_eq!(hit.bytes, b"data-a2", "重复写入应更新");
     // 容量 2：a(更新后) + b
     cache.put("b".into(), sample("b"));
     cache.put("c".into(), sample("c"));
@@ -93,7 +95,7 @@ fn prefetch_put_skips_if_already_cached() {
     let skip = cache.peek("a");
     assert!(skip, "实时已缓存 → 预取应跳过 put");
     let hit = cache.get("a").expect("命中实时数据");
-    assert_eq!(hit.data.as_deref(), Some("data-realtime"), "未被预取覆盖");
+    assert_eq!(hit.bytes, b"data-realtime", "未被预取覆盖");
 }
 
 #[test]

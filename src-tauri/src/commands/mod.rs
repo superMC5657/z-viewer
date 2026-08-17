@@ -209,39 +209,45 @@ pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
     state.0.lock().ok()?.as_ref().map(|m| m.state())
 }
 
-/// 图片加载通道分发：常见格式 → asset（前端直读）；RAW → 解码 JPEG；动画 → 帧序列
-/// 命中缓存直接返回（≤50ms 目标）；spawn_blocking 避免 CPU 密集解码占用 runtime 线程
-/// 缓存关闭（enabled=false / 免费版）时跳过缓存读写（不缓存）
+/// 图片加载通道分发：常见格式 → asset（前端直读）；RAW/静态 → JPEG 字节；
+/// 动画 → 帧序列（按需拆帧）。命中缓存直接返回（≤50ms 目标）；
+/// spawn_blocking 避免 CPU 密集解码占用 runtime 线程。
+/// 缓存关闭（enabled=false / 免费版）时跳过缓存读写（不缓存）。
+/// 返回值是二进制信封（pack_envelope）：前端 invoke 收到 ArrayBuffer 解析。
+/// `full=false`：RAW 优先返回内嵌预览（毫秒级）；预览**不写缓存**，仅全量写缓存。
 #[tauri::command]
 pub async fn load_image(
     path: String,
+    full: bool,
     cache: State<'_, DecodeCache>,
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
-) -> Result<crate::decode::LoadResult, String> {
+) -> Result<tauri::ipc::Response, String> {
     let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled()
         && license.is_pro();
     if caching {
         if let Some(hit) = cache.get(&path) {
-            return Ok((*hit).clone());
+            return Ok(tauri::ipc::Response::new(crate::decode::pack_envelope(&hit)));
         }
     }
     // 预取可能正在解码同一路径 —— 不等待：预取是低优先级后台优化，
     // 实时加载（翻页/幻灯片）永远优先，直接自己解码（代价是重复解码一次，
     // 但绝不让实时路径被预取拖住或排队死锁）。
     let path2 = path.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || crate::decode::load_image(&path2).map(Arc::new))
-        .await
-        .map_err(|e| format!("解码任务失败: {e}"))??;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        crate::decode::load_image(&path2, full).map(Arc::new)
+    })
+    .await
+    .map_err(|e| format!("解码任务失败: {e}"))??;
     if caching {
-        // asset 空结果（单帧 gif/png/webp）不占缓存槽位
-        if result.mode != "asset" {
+        // asset 空结果（单帧 gif/png/webp）与内嵌预览不占缓存槽位
+        if result.mode != "asset" && !result.is_preview {
             cache.put(path.clone(), Arc::clone(&result));
         }
         // 实时解码完成：清除该路径的预取登记（预取任务 put 前 peek 会跳过）
         cache.end_prefetch(&path);
     }
-    Ok((*result).clone())
+    Ok(tauri::ipc::Response::new(crate::decode::pack_envelope(&result)))
 }
 
 /// 会话统计计数点（埋点）：前端在图片**显示成功**后调用一次（唯一的"用户看到"事件）。

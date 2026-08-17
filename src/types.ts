@@ -20,22 +20,6 @@ export interface NavResult {
   state: BrowseState | null;
 }
 
-/** Rust 端 decode::FrameData */
-export interface FrameData {
-  /** base64 编码的 PNG 帧 */
-  png: string;
-  delay_ms: number;
-}
-
-/** Rust 端 decode::LoadResult */
-export interface LoadResult {
-  /** "asset" | "raw" | "animated" */
-  mode: string;
-  /** raw 模式：base64 JPEG */
-  data?: string | null;
-  frames?: FrameData[] | null;
-}
-
 /** Rust 端 AppSettings */
 export interface AppSettings {
   /** 0=关闭 1=开启（前后各1） 2=高等级（前1后3） */
@@ -66,6 +50,47 @@ export interface StoreInfo {
   product: string;
   /** 官网购买页 URL；null = 未配置 */
   buyUrl: string | null;
+}
+
+/** Rust 端二进制信封头（load_image 返回 ArrayBuffer，parseLoadEnvelope 解析） */
+export interface LoadEnvelope {
+  /** "asset" | "raw" | "static"(TIFF) | "animated" */
+  mode: string;
+  /** payload 的 MIME（raw/static: image/jpeg；animated: image/png） */
+  mime: string | null;
+  /** raw 通道内嵌预览位：true 表示 payload 是内嵌预览，全量仍在后台解码 */
+  isPreview: boolean;
+  /** 图像尺寸（raw/static 通道提供） */
+  width: number | null;
+  height: number | null;
+  /** animated：每帧延迟（ms） */
+  frameDelays: number[];
+  /** animated：每帧字节长（payload 按此切分） */
+  frameSizes: number[];
+}
+
+/** 解析 Rust 端二进制信封：[魔数 IMGV][header_len LE][header JSON][payload] */
+export function parseLoadEnvelope(buf: ArrayBuffer): { header: LoadEnvelope; payload: Uint8Array } {
+  if (buf.byteLength < 8) throw new Error("解码响应过短");
+  const magic = new TextDecoder().decode(new Uint8Array(buf, 0, 4));
+  if (magic !== "IMGV") throw new Error("非法解码响应");
+  const dv = new DataView(buf);
+  const headerLen = dv.getUint32(4, true);
+  if (8 + headerLen > buf.byteLength) throw new Error("解码响应头损坏");
+  const enc = new TextDecoder();
+  const h = JSON.parse(enc.decode(new Uint8Array(buf, 8, headerLen)));
+  return {
+    header: {
+      mode: h.mode,
+      mime: h.mime ?? null,
+      isPreview: !!h.is_preview,
+      width: h.width ?? null,
+      height: h.height ?? null,
+      frameDelays: h.frame_delays ?? [],
+      frameSizes: h.frame_sizes ?? [],
+    },
+    payload: new Uint8Array(buf, 8 + headerLen),
+  };
 }
 
 /** 动画候选扩展名（可能多帧，需 Rust 拆帧判定；格式集合稳定） */

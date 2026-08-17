@@ -26,7 +26,7 @@ pub(super) fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, setting
         }
         let cache = cache.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let result = crate::decode::load_image(&path).ok();
+            let result = crate::decode::load_image(&path, true).ok();
             if let Some(result) = result {
                 // 实时加载可能已填充缓存（end_prefetch 清登记后我们 put 会覆盖，内容相同无害）
                 // 仅缓存非 asset（asset 走 WebView 自带缓存）
@@ -66,7 +66,7 @@ pub(super) fn prefetch_folder_firsts(
             if crate::decode::is_asset_ext(&path) {
                 return; // asset 由前端池预热
             }
-            if let Ok(result) = crate::decode::load_image(&path) {
+            if let Ok(result) = crate::decode::load_image(&path, true) {
                 if result.mode != "asset" {
                     first_cache.put(
                         folder_str,

@@ -5,8 +5,11 @@
 //! - RAW → Rust 解码 → 降采样 → JPEG 字节 → 前端 Blob URL
 //! - 动画（GIF/APNG/动态 WebP）→ Rust 拆帧 → 帧 PNG + 每帧延迟 → 前端 canvas 逐帧控制
 //!
+//! 所有 Rust 解码通道经 IPC 返回**原始字节**（二进制信封 pack_envelope，
+//! 前端 parseLoadEnvelope 解析）—— 不再 base64，免 33% 体积膨胀与双端编解码。
+//!
 //! 文件组织（可维护性拆分）：
-//! - mod.rs：类型定义 + 统一入口 load_image + 扩展名判断
+//! - mod.rs：类型定义 + 统一入口 load_image + 信封打包 + 扩展名判断
 //! - raw.rs：RAW 解码通道（rawler）
 //! - animation.rs：动画拆帧通道（GIF/APNG/WebP）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
@@ -15,9 +18,6 @@ mod animation;
 mod raw;
 #[cfg(test)]
 mod tests;
-
-use base64::Engine;
-use serde::Serialize;
 
 /// 相机 RAW 扩展名（rawler 覆盖主流机型；供 browse.rs 浏览枚举复用）
 pub const RAW_EXTS: &[&str] = &[
@@ -28,25 +28,82 @@ pub const RAW_EXTS: &[&str] = &[
 /// 潜在动画格式（按帧数判定是否真的多帧）
 const ANIM_EXTS: &[&str] = &["gif", "png", "webp"];
 
-#[derive(Serialize, Clone)]
-pub struct FrameData {
-    /// base64 编码的 PNG 帧
-    pub png: String,
-    pub delay_ms: u32,
-}
+/// IPC 二进制信封魔数（与前端 parseLoadEnvelope 对应）
+pub const ENVELOPE_MAGIC: &[u8; 4] = b"IMGV";
 
-#[derive(Serialize, Clone)]
+/// 解码结果：所有 Rust 通道的产物，payload 为原始字节
+#[derive(Clone)]
 pub struct LoadResult {
-    /// "asset"（前端 asset 协议直读）| "raw"（解码 JPEG）| "animated"（帧序列）
+    /// "asset"（前端 asset 协议直读）| "raw" | "animated"（帧序列）
     pub mode: String,
-    /// raw 模式：base64 编码的 JPEG 字节
-    pub data: Option<String>,
-    /// animated 模式：帧序列
-    pub frames: Option<Vec<FrameData>>,
+    /// payload 的 MIME（raw: image/jpeg；animated: image/png）
+    pub mime: Option<String>,
+    /// raw 通道内嵌预览位：true 表示 bytes 是内嵌预览，全量仍在后台解码
+    pub is_preview: bool,
+    /// 图像尺寸（raw 通道提供）
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// animated：每帧延迟（ms）
+    pub frame_delays: Vec<u32>,
+    /// animated：每帧 PNG 字节长（payload 按此切分）
+    pub frame_sizes: Vec<u32>,
+    /// payload：raw = 单张 JPEG；animated = 帧 PNG 拼接
+    pub bytes: Vec<u8>,
 }
 
-/// 统一入口：按扩展名与内容分发到三条加载通道
-pub fn load_image(path: &str) -> Result<LoadResult, String> {
+impl LoadResult {
+    /// asset 通道占位（单帧动画降级 / 无 Rust 解码需求）
+    pub fn asset() -> Self {
+        Self {
+            mode: "asset".into(),
+            mime: None,
+            is_preview: false,
+            width: None,
+            height: None,
+            frame_delays: Vec::new(),
+            frame_sizes: Vec::new(),
+            bytes: Vec::new(),
+        }
+    }
+
+    /// 单张 JPEG 通道（raw）
+    pub fn jpeg(mode: &str, bytes: Vec<u8>, w: u32, h: u32, is_preview: bool) -> Self {
+        Self {
+            mode: mode.into(),
+            mime: Some("image/jpeg".into()),
+            is_preview,
+            width: Some(w),
+            height: Some(h),
+            frame_delays: Vec::new(),
+            frame_sizes: Vec::new(),
+            bytes,
+        }
+    }
+
+    /// 动画帧序列：帧 PNG 拼接为单段 payload，frame_sizes 供前端切分
+    pub fn animated(frames: Vec<Vec<u8>>, delays: Vec<u32>) -> Self {
+        let sizes = frames.iter().map(|f| f.len() as u32).collect();
+        let mut bytes = Vec::new();
+        for f in &frames {
+            bytes.extend_from_slice(f);
+        }
+        Self {
+            mode: "animated".into(),
+            mime: Some("image/png".into()),
+            is_preview: false,
+            width: None,
+            height: None,
+            frame_delays: delays,
+            frame_sizes: sizes,
+            bytes,
+        }
+    }
+}
+
+/// 统一入口：按扩展名与内容分发到各通道
+/// `full` 参数预留 RAW 内嵌预览两拍（本期未启用，保持命令签名稳定）
+pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
+    let _ = full;
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
 
     if is_raw_ext(&ext) {
@@ -55,20 +112,12 @@ pub fn load_image(path: &str) -> Result<LoadResult, String> {
 
     if ANIM_EXTS.contains(&ext.as_str()) {
         if let Some(frames) = animation::decode_animation(path)? {
-            return Ok(LoadResult {
-                mode: "animated".into(),
-                data: None,
-                frames: Some(frames),
-            });
+            return Ok(frames);
         }
         // 单帧：降级为静态，走 asset 协议直读
     }
 
-    Ok(LoadResult {
-        mode: "asset".into(),
-        data: None,
-        frames: None,
-    })
+    Ok(LoadResult::asset())
 }
 
 pub fn is_raw_ext(ext: &str) -> bool {
@@ -81,7 +130,40 @@ pub fn is_asset_ext(path: &str) -> bool {
     matches!(ext.as_str(), "jpg" | "jpeg" | "bmp" | "ico" | "svg")
 }
 
-/// base64 编码（raw/动画通道共用）
-pub(super) fn b64(data: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(data)
+/// 打包为 IPC 二进制信封：[魔数][header_len LE][header JSON][payload]
+/// 前端 parseLoadEnvelope 解析（src/types.ts）
+pub fn pack_envelope(result: &LoadResult) -> Vec<u8> {
+    let header = serde_json::to_vec(&serde_json::json!({
+        "mode": result.mode,
+        "mime": result.mime,
+        "is_preview": result.is_preview,
+        "width": result.width,
+        "height": result.height,
+        "frame_delays": result.frame_delays,
+        "frame_sizes": result.frame_sizes,
+    }))
+    .unwrap_or_default();
+    let mut buf = Vec::with_capacity(8 + header.len() + result.bytes.len());
+    buf.extend_from_slice(ENVELOPE_MAGIC);
+    buf.extend_from_slice(&(header.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&header);
+    buf.extend_from_slice(&result.bytes);
+    buf
+}
+
+/// 长边降采样上限（屏幕 2 倍尺寸足够，控制传输体积）
+pub(super) const MAX_DIM: u32 = 2560;
+
+/// 超限降采样：长边 > MAX_DIM 时按比例缩到上限（Triangle 滤波）
+pub(super) fn cap_dimensions(mut img: image::DynamicImage) -> image::DynamicImage {
+    let (w, h) = (img.width(), img.height());
+    if w.max(h) > MAX_DIM {
+        let scale = MAX_DIM as f32 / w.max(h) as f32;
+        img = img.resize(
+            (w as f32 * scale).round() as u32,
+            (h as f32 * scale).round() as u32,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    img
 }

@@ -25,8 +25,8 @@ import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
 import { cycleBackground, restoreBackground } from "./background";
 import { ICONS } from "./icons";
-import type { AppSettings, BrowseState, LicenseInfo, LoadResult, NavResult, StoreInfo } from "./types";
-import { needsIpc, setRawExts } from "./types";
+import { needsIpc, setRawExts, parseLoadEnvelope } from "./types";
+import type { AppSettings, BrowseState, LicenseInfo, LoadEnvelope, NavResult, StoreInfo } from "./types";
 import "./ui.css";
 
 const stage = document.getElementById("stage")!;
@@ -84,7 +84,7 @@ async function showImage(state: BrowseState): Promise<void> {
   // 预取下一批上下文（方案三/四：asset 预热 + Rust 缓存）
   void refreshContext();
 
-  // 方案二：asset 快速通道 —— 浏览器原生解码格式直接 convertFileSrc，跳过 IPC
+  // asset 快速通道：浏览器原生解码直接 convertFileSrc，跳过 IPC
   if (!needsIpc(state.path)) {
     try {
       await viewer.loadStatic(convertFileSrc(state.path));
@@ -99,31 +99,34 @@ async function showImage(state: BrowseState): Promise<void> {
     ui.updateInfo(state, currentDims);
     ui.setFramePlaying(viewer.isPlaying);
     ui.setSlideshowProgress(state.global_index + 1, state.global_total);
-    // 埋点：asset 通道显示成功（jpg 等浏览器原生解码不经 load_image，必须单独计数）
+    // 埋点：asset 通道显示成功（浏览器原生解码不经 load_image，必须单独计数）
     void invoke("record_view", { path: state.path });
     return;
   }
 
-  // 方案一：IPC 通道 —— RAW/动画由 Rust 解码（RAW 可达数秒，期间显示解码指示）
+  // IPC 通道：RAW/TIFF 由 Rust 解码（二进制信封，payload 为 JPEG 字节）
   ui.beginDecoding();
   try {
-    let result: LoadResult;
+    let header: LoadEnvelope;
+    let payload: Uint8Array;
     try {
-      result = await invoke<LoadResult>("load_image", { path: state.path });
+      const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
+      ({ header, payload } = parseLoadEnvelope(buf));
     } catch (err) {
       if (seq === showSeq) ui.showToast(`无法加载图片：${String(err)}`);
       return;
     }
-    if (seq !== showSeq) return; // 已被更新的加载抢占
+    if (seq !== showSeq) return;
 
     try {
-      if (result.mode === "animated" && result.frames?.length) {
-        // 动画：canvas 逐帧
+      if (header.mode === "animated" && header.frameSizes.length) {
+        // 逐帧模式（帧控制按需触发）
         ui.setFrameBarVisible(true);
-        await viewer.loadAnimation(result.frames);
-      } else if (result.mode === "raw" && result.data) {
+        const blobs = splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
+        await viewer.loadAnimation(blobs, header.frameDelays);
+      } else if (header.mode === "raw") {
         // RAW：解码 JPEG Blob
-        const url = URL.createObjectURL(base64ToBlob(result.data, "image/jpeg"));
+        const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
         try {
           await viewer.loadStatic(url);
         } catch (err) {
@@ -137,7 +140,7 @@ async function showImage(state: BrowseState): Promise<void> {
         }
         currentBlobUrl = url;
       } else {
-        // 动画格式但单帧：asset 协议直读
+        // 单帧动画降级：asset 协议直读
         await viewer.loadStatic(convertFileSrc(state.path));
       }
     } catch (err) {
@@ -161,13 +164,24 @@ async function showImage(state: BrowseState): Promise<void> {
   }
 }
 
+/** 按 payload 切分帧 PNG 字节为独立 Blob（frame_sizes 由 Rust 端给出） */
+function splitFrames(payload: Uint8Array, sizes: number[], mime: string): Blob[] {
+  const blobs: Blob[] = [];
+  let off = 0;
+  for (const s of sizes) {
+    blobs.push(new Blob([payload.subarray(off, off + s)], { type: mime }));
+    off += s;
+  }
+  return blobs;
+}
+
 /** 获取当前上下文路径并预热（方案三/四） */
 async function refreshContext(): Promise<void> {
   try {
     const paths = await invoke<string[]>("get_context");
-    // asset 图：WebView2 预解码池
+    // asset 图（含动画）：WebView2 预解码池
     prefetch.warm(paths, needsIpc);
-    // needsIpc（RAW/动画）邻居已由 Rust prefetch_context（导航后自动触发）
+    // needsIpc（RAW/TIFF）邻居已由 Rust prefetch_context（导航后自动触发）
     // 预取进 DecodeCache —— 前端不再重复 load_image，避免并发冗余解码
   } catch (err) {
     console.error("预取上下文失败", err);
@@ -829,14 +843,6 @@ function loadSsInterval(): number | null {
   } catch {
     return null;
   }
-}
-
-/** base64 字符串 → Blob（RAW JPEG / 动画帧反序列化） */
-function base64ToBlob(b64: string, mime: string): Blob {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new Blob([bytes], { type: mime });
 }
 
 void init();

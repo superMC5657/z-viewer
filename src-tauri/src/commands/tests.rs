@@ -27,7 +27,7 @@ fn cache_hit_is_faster_than_miss() {
         .to_string();
 
     // 首次：解码 + 入缓存（模拟 load_image 主路径）
-    let r1 = crate::decode::load_image(&path).unwrap();
+    let r1 = crate::decode::load_image(&path, false).unwrap();
     assert_eq!(r1.mode, "animated");
     cache.put(path.clone(), Arc::new(r1.clone()));
 
@@ -51,7 +51,7 @@ fn asset_mode_not_cached() {
         .join("test-images/A/1.png")
         .to_string_lossy()
         .to_string();
-    let r = crate::decode::load_image(&path).unwrap();
+    let r = crate::decode::load_image(&path, false).unwrap();
     assert_eq!(r.mode, "asset");
     // 模拟 load_image 的「asset 不 put」分支
     let arc = Arc::new(r);
@@ -65,7 +65,7 @@ fn asset_mode_not_cached() {
         .join("test-images/B/img_2.gif")
         .to_string_lossy()
         .to_string();
-    let r2 = crate::decode::load_image(&raw_path).unwrap();
+    let r2 = crate::decode::load_image(&raw_path, false).unwrap();
     cache.put(raw_path.clone(), Arc::new(r2.clone()));
     cache.put("x".into(), sample("x"));
     // 容量 2：raw + x 在，asset 未占槽
@@ -74,11 +74,13 @@ fn asset_mode_not_cached() {
 }
 
 fn sample(path: &str) -> Arc<crate::decode::LoadResult> {
-    Arc::new(crate::decode::LoadResult {
-        mode: "raw".into(),
-        data: Some(format!("data-{path}")),
-        frames: None,
-    })
+    Arc::new(crate::decode::LoadResult::jpeg(
+        "raw",
+        format!("data-{path}").into_bytes(),
+        (path.len() * 10) as u32,
+        (path.len() * 7) as u32,
+        false,
+    ))
 }
 
 #[test]
@@ -124,7 +126,7 @@ fn load_image_does_not_block_on_prefetch() {
     assert!(cache.begin_prefetch(&path), "模拟预取在飞（登记后不释放）");
 
     let start = std::time::Instant::now();
-    let result = crate::decode::load_image(&path).unwrap();
+    let result = crate::decode::load_image(&path, false).unwrap();
     assert_eq!(result.mode, "animated", "应正常解码");
     let elapsed = start.elapsed();
     assert!(

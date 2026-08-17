@@ -15,8 +15,6 @@
  * 新图解码完成后快照淡出、新图淡入（150ms 交叉淡化，无黑屏跳变）。
  */
 
-import type { FrameData } from "./types";
-
 const MIN_SCALE = 0.04;
 const MAX_SCALE = 20;
 const ROTATE_MS = 220; // 略大于 200ms 过渡，结束后移除 animating class
@@ -162,8 +160,8 @@ export class Viewer {
     });
   }
 
-  /** 加载动画图：预解码全部帧后显示第一帧并自动播放 */
-  async loadAnimation(frames: FrameData[]): Promise<void> {
+  /** 加载动画图：预解码全部帧后显示第一帧并自动播放（帧 PNG 字节按 frame_sizes 切分） */
+  async loadAnimation(frameBlobs: Blob[], delays: number[]): Promise<void> {
     this.captureGhost();
     this.stopAnimation();
     this.settlePending(); // 作废进行中的静态加载
@@ -172,15 +170,15 @@ export class Viewer {
     this.img.classList.remove("visible");
     this.img.removeAttribute("src");
     this.resetTransform();
-    this.onFrameChange?.(0, frames.length); // 解码完成前先重置帧计数
+    this.onFrameChange?.(0, frameBlobs.length); // 解码完成前先重置帧计数
 
-    if (frames.length === 0) {
+    if (frameBlobs.length === 0) {
       this.releaseGhost();
       return;
     }
     // allSettled：任一帧解码失败时仍能拿到已成功的帧并显式 close，
     // 避免 Promise.all 直接 reject 造成已创建的 ImageBitmap 全部泄漏
-    const settled = await Promise.allSettled(frames.map((f) => base64ToBitmap(f.png)));
+    const settled = await Promise.allSettled(frameBlobs.map((b) => createImageBitmap(b)));
     const bitmaps: ImageBitmap[] = [];
     let failed = false;
     for (const s of settled) {
@@ -199,7 +197,7 @@ export class Viewer {
     }
 
     this.animFrames = bitmaps;
-    this.animDelays = frames.map((f) => f.delay_ms);
+    this.animDelays = delays;
     this.animIndex = 0;
     this.naturalW = bitmaps[0].width;
     this.naturalH = bitmaps[0].height;
@@ -566,15 +564,6 @@ const GHOST_FADE_MS = 320;
 
 /** 平移边距：图片边缘与视口保留的最小间距（isPannable/clampPan 共用） */
 const PAN_MARGIN = 24;
-
-/** base64 PNG → ImageBitmap（动画帧预解码） */
-async function base64ToBitmap(b64: string): Promise<ImageBitmap> {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const blob = new Blob([bytes], { type: "image/png" });
-  return createImageBitmap(blob);
-}
 
 function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
