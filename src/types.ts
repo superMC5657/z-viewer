@@ -93,8 +93,15 @@ export function parseLoadEnvelope(buf: ArrayBuffer): { header: LoadEnvelope; pay
   };
 }
 
-/** 动画候选扩展名（可能多帧，需 Rust 拆帧判定；格式集合稳定） */
-const ANIM_EXTS = new Set(["gif", "png", "webp"]);
+/**
+ * 需走 Rust IPC 解码通道的扩展名：RAW。
+ * 动画（GIF/APNG/WebP）由浏览器原生 <img> 播放（首帧即时、零 IPC），
+ * 帧控制（暂停/步进）按需拆帧时再走 load_image。
+ */
+const RUST_EXTS = new Set([
+  "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
+  "3fr", "kdc", "dcr", "mrw", "mef", "mos", "iiq", "fff", "ari",
+]);
 
 /**
  * RAW 扩展名：以后端 decode::RAW_EXTS 为唯一真源 —— init 时通过
@@ -109,12 +116,16 @@ const RAW_EXTS = new Set([
 
 /** 用后端 RAW_EXTS 整表替换本地兜底集（init 时调用一次） */
 export function setRawExts(exts: string[]): void {
+  for (const e of [...RUST_EXTS]) RUST_EXTS.delete(e);
   RAW_EXTS.clear();
-  for (const e of exts) RAW_EXTS.add(e.toLowerCase());
+  for (const e of exts) {
+    RAW_EXTS.add(e.toLowerCase());
+    RUST_EXTS.add(e.toLowerCase());
+  }
 }
 
-/** 判断图片是否需走 IPC 通道（动画/RAW），false 则浏览器原生解码直接 asset */
+/** 判断图片是否需走 IPC 通道（RAW），false 则浏览器原生解码直接 asset */
 export function needsIpc(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
-  return ANIM_EXTS.has(ext) || RAW_EXTS.has(ext);
+  return RUST_EXTS.has(ext);
 }

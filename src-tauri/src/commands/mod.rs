@@ -250,6 +250,13 @@ pub async fn load_image(
     Ok(tauri::ipc::Response::new(crate::decode::pack_envelope(&result)))
 }
 
+/// 轻量判定文件是否多帧动画（不拆帧）：WebP 扫 RIFF ANMF 块、PNG 扫 acTL 块、
+/// GIF 看魔数即视为动画。前端在 asset 通道显示后据此决定是否亮出帧控制浮条。
+#[tauri::command]
+pub fn check_animation(path: String) -> bool {
+    crate::decode::is_animated(&path)
+}
+
 /// 会话统计计数点（埋点）：前端在图片**显示成功**后调用一次（唯一的"用户看到"事件）。
 /// asset 快速通道（jpg/bmp 等浏览器原生解码，不经 load_image）与 IPC 通道
 /// （RAW/动画）都在 `showImage` 显示成功后各调一次；解码失败/被抢占的显示不调。

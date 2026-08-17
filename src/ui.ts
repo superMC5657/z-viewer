@@ -177,6 +177,17 @@ export class UI {
     document.getElementById("frame-count")!.textContent = `帧 ${index}/${total}`;
   }
 
+  /** 帧计数未知态：原生 <img> 播放中，帧未按需拆帧（"帧 …"） */
+  setFrameCountUnknown(): void {
+    document.getElementById("frame-count")!.textContent = "帧 …";
+  }
+
+  /** 帧条加载态：按需拆帧中显示"正在加载帧…"，完成后恢复未知态 */
+  setFrameLoading(loading: boolean): void {
+    const el = document.getElementById("frame-count")!;
+    el.textContent = loading ? "正在加载帧…" : "帧 …";
+  }
+
   // ---------- 幻灯片（草图 3.6） ----------
 
   /** 播放/暂停按钮图标与激活态（幻灯片控制条） */

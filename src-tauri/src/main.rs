@@ -126,6 +126,7 @@ fn main() {
             commands::jump_folder,
             commands::get_initial_state,
             commands::load_image,
+            commands::check_animation,
             commands::record_view,
             commands::set_cache_level,
             commands::get_settings,

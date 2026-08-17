@@ -63,6 +63,11 @@ let lastState: BrowseState | null = null;
 let currentBlobUrl: string | null = null;
 /** showImage 代次：播放中手动翻页等并发加载时，丢弃过期响应 */
 let showSeq = 0;
+/** 当前图片是否为原生 <img> 播放中的动画（帧未加载，帧条交互时按需拆帧） */
+let currentAnimCandidate = false;
+
+/** 潜在动画格式（原生 <img> 播放；仅这些格式需要 check_animation 判定） */
+const ANIM_EXTS = new Set(["gif", "png", "webp"]);
 
 // ---------- 图片显示 ----------
 
@@ -74,7 +79,9 @@ async function showImage(state: BrowseState): Promise<void> {
   ui.updateTitleFile(state.file_name);
   ui.updateInfo(state, null);
   currentDims = null;
+  currentAnimCandidate = false;
   ui.setFrameBarVisible(false);
+  ui.setFramePlaying(false);
   // 旧 RAW Blob 不再需要（新图将覆盖显示）
   if (currentBlobUrl) {
     URL.revokeObjectURL(currentBlobUrl);
@@ -85,7 +92,12 @@ async function showImage(state: BrowseState): Promise<void> {
   void refreshContext();
 
   // asset 快速通道：浏览器原生解码直接 convertFileSrc，跳过 IPC
+  // （GIF/APNG/WebP 原生 <img> 播放；仅动画候选格式额外判定是否多帧）
   if (!needsIpc(state.path)) {
+    const ext = state.path.split(".").pop()?.toLowerCase() ?? "";
+    const animCheck = ANIM_EXTS.has(ext)
+      ? invoke<boolean>("check_animation", { path: state.path }).catch(() => false)
+      : Promise.resolve(false);
     try {
       await viewer.loadStatic(convertFileSrc(state.path));
     } catch (err) {
@@ -97,7 +109,14 @@ async function showImage(state: BrowseState): Promise<void> {
     if (seq !== showSeq) return;
     currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
     ui.updateInfo(state, currentDims);
-    ui.setFramePlaying(viewer.isPlaying);
+    // 动画文件：原生播放中，亮出帧条（计数未知，交互时按需拆帧）
+    if (await animCheck) {
+      if (seq !== showSeq) return; // await 期间被抢占
+      currentAnimCandidate = true;
+      ui.setFrameBarVisible(true);
+      ui.setFrameCountUnknown();
+      ui.setFramePlaying(true);
+    }
     ui.setSlideshowProgress(state.global_index + 1, state.global_total);
     // 埋点：asset 通道显示成功（浏览器原生解码不经 load_image，必须单独计数）
     void invoke("record_view", { path: state.path });
@@ -415,6 +434,49 @@ async function checkForUpdate(): Promise<void> {
 
 // ---------- 帧控制浮条（草图 3.7） ----------
 
+/** 帧条按钮统一入口：帧已就绪（canvas 模式）直接控制；
+ *  原生 <img> 播放中先按需拆帧，完成后执行动作（拆帧后 loadAnimation 自动播放，
+ *  动作如 togglePlay 即暂停、stepFrame 即暂停并步进，语义自然） */
+function frameControl(action: () => void): void {
+  if (viewer.isAnimation) {
+    action();
+    ui.setFramePlaying(viewer.isPlaying);
+    return;
+  }
+  if (!currentAnimCandidate) return;
+  void loadAnimationOnDemand()
+    .then(() => {
+      if (viewer.isAnimation) {
+        action();
+        ui.setFramePlaying(viewer.isPlaying);
+      }
+    })
+    .catch((err) => ui.showToast(String(err)));
+}
+
+/** 按需拆帧：用户第一次点帧条时把原生播放切换为 canvas 逐帧模式（命中 DecodeCache 秒出） */
+async function loadAnimationOnDemand(): Promise<void> {
+  const state = lastState;
+  if (!state) return;
+  ui.setFrameLoading(true);
+  try {
+    const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
+    const { header, payload } = parseLoadEnvelope(buf);
+    if (header.mode !== "animated" || header.frameSizes.length === 0) {
+      // 单帧文件（如单帧 GIF / 静态 PNG）：收起帧条并提示
+      ui.setFrameBarVisible(false);
+      currentAnimCandidate = false;
+      ui.showToast("该文件不是多帧动画");
+      return;
+    }
+    ui.setFrameBarVisible(true);
+    const blobs = splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
+    await viewer.loadAnimation(blobs, header.frameDelays);
+  } finally {
+    ui.setFrameLoading(false);
+  }
+}
+
 function buildFrameBar(): void {
   const iconMap: Record<string, string> = {
     "frame-first": ICONS["skip-back"],
@@ -427,14 +489,11 @@ function buildFrameBar(): void {
   }
   ui.setFramePlaying(false);
 
-  document.getElementById("frame-first")!.addEventListener("click", () => viewer.seekFrame(0));
-  document.getElementById("frame-prev")!.addEventListener("click", () => viewer.stepFrame(-1));
-  document.getElementById("frame-play")!.addEventListener("click", () => {
-    viewer.togglePlay();
-    ui.setFramePlaying(viewer.isPlaying);
-  });
-  document.getElementById("frame-next")!.addEventListener("click", () => viewer.stepFrame(1));
-  document.getElementById("frame-last")!.addEventListener("click", () => viewer.seekFrame(Number.MAX_SAFE_INTEGER));
+  document.getElementById("frame-first")!.addEventListener("click", () => frameControl(() => viewer.seekFrame(0)));
+  document.getElementById("frame-prev")!.addEventListener("click", () => frameControl(() => viewer.stepFrame(-1)));
+  document.getElementById("frame-play")!.addEventListener("click", () => frameControl(() => viewer.togglePlay()));
+  document.getElementById("frame-next")!.addEventListener("click", () => frameControl(() => viewer.stepFrame(1)));
+  document.getElementById("frame-last")!.addEventListener("click", () => frameControl(() => viewer.seekFrame(Number.MAX_SAFE_INTEGER)));
 
   viewer.onFrameChange = (index, total) => ui.updateFrameCount(index, total);
 }
