@@ -68,6 +68,11 @@ let currentAnimCandidate = false;
 /** 潜在动画格式（原生 <img> 播放；仅这些格式需要 check_animation 判定） */
 const ANIM_EXTS = new Set(["gif", "png", "webp"]);
 
+/** check_animation 结果缓存：同路径重复显示（翻回上一张/重看）免重复 IPC + 文件扫描；
+ *  会话内至多保留 1000 条（超出整体清空，防浏览大文件夹时无界增长） */
+const ANIM_CHECK_CACHE = new Map<string, boolean>();
+const ANIM_CHECK_CACHE_MAX = 1000;
+
 // ---------- 图片显示 ----------
 
 async function showImage(state: BrowseState): Promise<void> {
@@ -94,9 +99,19 @@ async function showImage(state: BrowseState): Promise<void> {
   // （GIF/APNG/WebP 原生 <img> 播放；仅动画候选格式额外判定是否多帧）
   if (!needsIpc(state.path)) {
     const ext = state.path.split(".").pop()?.toLowerCase() ?? "";
-    const animCheck = ANIM_EXTS.has(ext)
-      ? invoke<boolean>("check_animation", { path: state.path }).catch(() => false)
-      : Promise.resolve(false);
+    // check_animation 按路径缓存：翻回同一张图时免重复 IPC + 后端文件扫描
+    const cached = ANIM_EXTS.has(ext) ? ANIM_CHECK_CACHE.get(state.path) : undefined;
+    const animCheck = cached !== undefined
+      ? Promise.resolve(cached)
+      : ANIM_EXTS.has(ext)
+        ? invoke<boolean>("check_animation", { path: state.path })
+            .then((v) => {
+              if (ANIM_CHECK_CACHE.size >= ANIM_CHECK_CACHE_MAX) ANIM_CHECK_CACHE.clear();
+              ANIM_CHECK_CACHE.set(state.path, v);
+              return v;
+            })
+            .catch(() => false)
+        : Promise.resolve(false);
     try {
       await viewer.loadStatic(convertFileSrc(state.path));
     } catch (err) {

@@ -68,11 +68,19 @@ impl BrowseModel {
 
         // 同步枚举当前文件夹（定位当前图片必需）
         let current_images = Self::list_images(parent);
-        let file_name = path.file_name()?.to_string_lossy().to_string();
+        let file_name_os = path.file_name()?;
+        // 定位当前图片：快路径 OsStr 直接相等（零分配——Windows 下 read_dir 返回的
+        // 名字与双击/命令行传入路径通常字节一致）；不中再大小写不敏感兜底
+        // （to_string_lossy 对 UTF-8 名返回借用零分配，语义与原实现一致）。
+        let file_name_lossy = file_name_os.to_string_lossy();
         let image_index = current_images.iter().position(|img| {
-            img.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .is_some_and(|n| n.eq_ignore_ascii_case(&file_name))
+            match img.file_name() {
+                Some(n) if n == file_name_os => true,
+                Some(n) => n
+                    .to_string_lossy()
+                    .eq_ignore_ascii_case(file_name_lossy.as_ref()),
+                None => false,
+            }
         })?;
 
         // 构建 folders：当前文件夹已填充，其余 None（后台填充）
@@ -145,12 +153,20 @@ impl BrowseModel {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for entry in rd.flatten() {
                 let p = entry.path();
-                if p.is_file() {
-                    if let Some(name) = p.file_name() {
-                        let name = name.to_string_lossy().to_string();
-                        if is_image_file(&name) {
-                            imgs.push((name, p));
-                        }
+                // 快路径：DirEntry::file_type 直接来自目录枚举元数据（Windows 零额外
+                // 系统调用）；常规文件短路通过，符号链接/未知类型回退 Path::is_file()
+                // （stat 语义，跟随链接），与原行为一致。
+                let is_file = match entry.file_type() {
+                    Ok(ft) => ft.is_file() || p.is_file(),
+                    Err(_) => p.is_file(),
+                };
+                if !is_file {
+                    continue;
+                }
+                if let Some(name) = p.file_name() {
+                    let name = name.to_string_lossy().to_string();
+                    if is_image_file(&name) {
+                        imgs.push((name, p));
                     }
                 }
             }
@@ -180,17 +196,23 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         }
         let path = scan_inner.m.lock().unwrap().folders[idx].path.clone();
         let imgs = BrowseModel::list_images(&path);
-        let mut d = scan_inner.m.lock().unwrap();
-        if d.cancelled {
-            return;
+        {
+            let mut d = scan_inner.m.lock().unwrap();
+            if d.cancelled {
+                return;
+            }
+            // 增量维护全局计数：总数 +len；当前文件夹之前的新填充 → 全局位置前移 +len
+            let filled = imgs.len();
+            d.folders[idx].images = Some(imgs);
+            d.global_total += filled;
+            if idx < d.folder_index {
+                d.global_index += filled;
+            }
         }
-        // 增量维护全局计数：总数 +len；当前文件夹之前的新填充 → 全局位置前移 +len
-        let filled = imgs.len();
-        d.folders[idx].images = Some(imgs);
-        d.global_total += filled;
-        if idx < d.folder_index {
-            d.global_index += filled;
-        }
+        // 每填完一个文件夹即唤醒（先释放锁再 notify）：导航线程在 wait_folder_len /
+        // find_nonempty_folder 等待时，目标文件夹一填完就能继续，不必等所有兄弟文件夹
+        // 全部枚举完（兄弟多的场景避免 PgDn/跨文件夹导航长时间阻塞）。
+        scan_inner.cv.notify_all();
     }
 
     // 全部填充完成：压缩空文件夹（open 时无法预知哪些兄弟为空）。
