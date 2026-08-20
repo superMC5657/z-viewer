@@ -40,7 +40,10 @@ export class Viewer {
   private fitMode: FitMode = "fit";
   private baseScale = 1;
   private userScale = 1;
-  private rotation = 0; // 0 / 90 / 180 / 270
+  private rotation = 0; // 0 / 90 / 180 / 270（归一化，用于宽高交换/布局）
+  /** 累计旋转角（可超 ±360，单调步进）：驱动 CSS transition 走最短 90° 路径。
+   *  旋转归一化角度会导致 0→270 的过渡绕 270° 长路径且方向相反（CSS rotate 插值不取最短路径） */
+  private rotTotal = 0;
   private flipH = false;
   private flipV = false;
   private cx = 0; // 图片中心（屏幕坐标）
@@ -250,6 +253,7 @@ export class Viewer {
 
   rotate(delta: number): void {
     this.rotation = ((this.rotation + delta) % 360 + 360) % 360;
+    this.rotTotal += delta; // 累计角度保持单调：过渡沿真实方向转 90°，而非绕 270°
     if (this.fitMode === "fit" && this.userScale === 1) {
       // 旋转 90/270 后交换宽高重新适应
       this.fit();
@@ -443,6 +447,7 @@ export class Viewer {
     this.baseScale = 1;
     this.userScale = 1;
     this.rotation = 0;
+    this.rotTotal = 0;
     this.flipH = false;
     this.flipV = false;
     this.stage.classList.remove("pannable", "dragging", "animating");
@@ -513,7 +518,7 @@ export class Viewer {
     const fy = this.flipV ? -1 : 1;
     el.style.transform =
       `translate(${this.cx}px, ${this.cy}px) ` +
-      `rotate(${this.rotation}deg) ` +
+      `rotate(${this.rotTotal}deg) ` +
       `scale(${s * fx}, ${s * fy}) ` +
       `translate(${-this.naturalW / 2}px, ${-this.naturalH / 2}px)`;
     // 放大超过 100% 时最近邻渲染：像素级清晰（照片 100% 检视 / 像素画均受益）；
