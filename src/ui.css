@@ -431,6 +431,13 @@ body.immersive #info-bar {
   font-weight: 600;
   letter-spacing: 0;
 }
+/* 键盘焦点指示：accent 细轮廓替代浏览器默认 focus ring。
+   鼠标点击不触发 :focus-visible，因此不会出现默认的黑白轮廓框 */
+.tb-btn-icon:focus-visible,
+.tb-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 
 /* ---- tooltip（含快捷键） ---- */
 .tb-btn-icon[data-tip]:not([data-tip=""])::after {
