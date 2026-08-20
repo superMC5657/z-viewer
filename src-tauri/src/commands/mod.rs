@@ -109,7 +109,7 @@ fn navigate(
                 promote_folder_first(m, cache, first_cache);
                 let s = settings.0.lock().map_err(|e| e.to_string())?;
                 prefetch_context(m, cache, &s);
-                prefetch_folder_firsts(m, first_cache, &s);
+                prefetch_folder_firsts(m, cache, first_cache, &s);
             }
             Ok(r)
         }
@@ -142,7 +142,7 @@ pub fn open_path(
     {
         let s = settings.0.lock().map_err(|e| e.to_string())?;
         prefetch_context(&model, cache.inner(), &s);
-        prefetch_folder_firsts(&model, first_cache.inner(), &s);
+        prefetch_folder_firsts(&model, cache.inner(), first_cache.inner(), &s);
     }
     *state.0.lock().map_err(|e| e.to_string())? = Some(model);
     Ok(NavResult::ok(st))

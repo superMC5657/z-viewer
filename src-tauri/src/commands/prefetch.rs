@@ -44,6 +44,7 @@ pub(super) fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, setting
 /// P3-1：目录枚举（first_image_of）移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
 pub(super) fn prefetch_folder_firsts(
     model: &BrowseModel,
+    cache: &DecodeCache,
     first_cache: &FolderFirstCache,
     settings: &AppSettings,
 ) {
@@ -58,18 +59,27 @@ pub(super) fn prefetch_folder_firsts(
         if first_cache.peek(&folder_str) {
             continue;
         }
+        // 并发门控 + 去重登记（key 用文件夹路径；与图片路径的登记互不冲突）
+        if !cache.begin_prefetch(&folder_str) {
+            continue;
+        }
+        let cache = cache.clone();
         let first_cache = first_cache.clone();
         tauri::async_runtime::spawn_blocking(move || {
             // 取该文件夹第一张图并解码入队（后台线程，不阻塞导航命令）
-            let Some(first) = BrowseModel::first_image_of(&folder) else { return };
+            let Some(first) = BrowseModel::first_image_of(&folder) else {
+                cache.end_prefetch(&folder_str);
+                return;
+            };
             let path = first.to_string_lossy().to_string();
             if crate::decode::is_asset_ext(&path) {
+                cache.end_prefetch(&folder_str);
                 return; // asset 由前端池预热
             }
             if let Ok(result) = crate::decode::load_image(&path, true) {
                 if result.mode != "asset" {
                     first_cache.put(
-                        folder_str,
+                        folder_str.clone(),
                         Arc::new(FolderFirst {
                             path,
                             result: Arc::new(result),
@@ -77,6 +87,7 @@ pub(super) fn prefetch_folder_firsts(
                     );
                 }
             }
+            cache.end_prefetch(&folder_str);
         });
     }
 }

@@ -137,10 +137,19 @@ impl BrowseModel {
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
+                // 文件大小：按路径缓存（命中零系统调用；翻回上一张/幻灯片循环同一图
+                // 不再 stat）。未命中才 fs::metadata 一次并写入缓存。
                 let file_size = img
                     .as_ref()
-                    .and_then(|p| std::fs::metadata(p).ok())
-                    .map(|m| m.len())
+                    .map(|p| {
+                        if let Some(sz) = d.file_sizes.get(p) {
+                            *sz
+                        } else {
+                            let sz = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                            d.file_sizes.insert(p.clone(), sz);
+                            sz
+                        }
+                    })
                     .unwrap_or(0);
 
                 return BrowseState {

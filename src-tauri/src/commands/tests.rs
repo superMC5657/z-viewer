@@ -94,11 +94,12 @@ fn folder_first_cache_promote_to_neighbor() {
     model.wait_ready();
 
     let first_cache = FolderFirstCache::new(4);
+    let cache = DecodeCache::new(4);
     let settings = AppSettings::default();
 
     // 预取相邻文件夹首图（队列 A）：B 的邻居 A 首图 1.png（单帧 png→asset，跳过）、C 首图 c01.png（asset，跳过）
     // 首图非 asset 的邻居文件夹在此测试树中不存在 → 队列 A 为空是正确行为
-    prefetch_folder_firsts(&model, &first_cache, &settings);
+    prefetch_folder_firsts(&model, &cache, &first_cache, &settings);
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     // 关键验证：get_context 必须包含相邻文件夹首图路径（asset 供前端池预热）

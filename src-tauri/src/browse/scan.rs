@@ -1,6 +1,7 @@
 //! 模型构建与后台扫描：open 同步枚举当前文件夹定位首图，
 //! 兄弟文件夹由后台线程逐个填充；扫描完成回调 + 压缩空文件夹。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -125,6 +126,7 @@ impl BrowseModel {
                 global_index: image_index,
                 loading,
                 cancelled: false,
+                file_sizes: HashMap::new(),
             }),
             cv: std::sync::Condvar::new(),
         });

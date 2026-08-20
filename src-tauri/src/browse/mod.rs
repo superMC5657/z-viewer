@@ -24,6 +24,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -80,6 +81,10 @@ struct InnerData {
     loading: bool,
     /// Drop 后置位：扫描线程尽快退出
     cancelled: bool,
+    /// 已查过的图片大小缓存（key=图片路径）：state() 读取免重复 fs::metadata
+    /// 系统调用 —— 翻回上一张/幻灯片循环同一张图时零 syscall。
+    /// 每张图最多 8 字节 + PathBuf，仅含本次会话访问过的图，内存有界。
+    file_sizes: HashMap<PathBuf, u64>,
 }
 
 /// 扫描完成回调（携带最新状态，供前端刷新计数）
