@@ -9,6 +9,10 @@
 //! 上报地址：`plugins.store.apiBase` + `analyticsPath`（tauri.conf.json 编译期配置，
 //! 与激活/在线验证同源）。
 //!
+//! 上报鉴权：`plugins.store.analyticsToken` 非空时携带 `Authorization: Bearer <token>`
+//! （soft-candy 埋点鉴权，见服务端 tracking-design.md §6.1）；为空时不携带，
+//! 服务端对该产品不校验（兼容未配置 token 的部署）。
+//!
 //! 隐私边界：**只上报聚合统计，绝不上报文件路径/文件名/文件夹名**。
 //! 路径仅存内存用于去重计数，序列化时只输出数量。
 
@@ -129,8 +133,25 @@ pub fn report_exit(app: &tauri::AppHandle) {
         Err(_) => return,
     };
     let _ = tauri::async_runtime::block_on(async move {
-        let _ = client.post(&url).json(&payload).send().await;
+        if let Some(req) = build_request(&client, &url, &payload, &store.analytics_token) {
+            let _ = client.execute(req).await;
+        }
     });
+}
+
+/// 组装上报请求：token 非空时携带 `Authorization: Bearer <token>`（soft-candy 埋点鉴权）
+/// 构造失败（非法 URL 等）返回 None，调用方静默跳过（埋点不打扰用户）
+fn build_request(
+    client: &reqwest::Client,
+    url: &str,
+    payload: &serde_json::Value,
+    token: &str,
+) -> Option<reqwest::Request> {
+    let mut req = client.post(url).json(payload);
+    if !token.is_empty() {
+        req = req.bearer_auth(token);
+    }
+    req.build().ok()
 }
 
 /// 去重键规范化：统一分隔符为 `/`；Windows 路径大小写不敏感，统一转小写，
@@ -254,5 +275,30 @@ mod tests {
         assert_eq!(g.folders.len(), 2); // photos + raw（各含大小写/分隔符变体）
         assert_eq!(*g.formats.get("jpg").unwrap(), 2);
         assert_eq!(*g.formats.get("cr2").unwrap(), 2);
+    }
+
+    // ---------- 上报鉴权头 ----------
+
+    fn request_headers(token: &str) -> reqwest::header::HeaderMap {
+        let client = reqwest::Client::new();
+        let req = build_request(&client, "http://127.0.0.1:8080/x", &serde_json::json!({}), token)
+            .expect("合法 URL 构造必成功");
+        req.headers().clone()
+    }
+
+    #[test]
+    fn empty_token_omits_auth_header() {
+        // token 为空 = 未配置埋点鉴权，不携带 Authorization（服务端不校验，兼容旧部署）
+        assert!(!request_headers("").contains_key(reqwest::header::AUTHORIZATION));
+    }
+
+    #[test]
+    fn nonempty_token_sends_bearer() {
+        // soft-candy 校验 `Bearer <token>` 精确前缀（tracking-design.md §6.1）
+        let h = request_headers("deadbeef");
+        assert_eq!(
+            h.get(reqwest::header::AUTHORIZATION).unwrap(),
+            "Bearer deadbeef"
+        );
     }
 }

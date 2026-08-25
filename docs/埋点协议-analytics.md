@@ -1,7 +1,7 @@
 # Image Viewer 埋点协议（会话统计）
 
-> 版本：v0.3.2+
-> 状态：客户端已落地（2026-08-11），mock 后端已支持
+> 版本：v0.5.0+
+> 状态：客户端已落地（2026-08-11），支持 soft-candy 埋点鉴权 token（2026-08-25 起）
 > 相关代码：`src-tauri/src/analytics.rs`、`src-tauri/src/main.rs`（退出上报）、
 > `src-tauri/src/commands/mod.rs`（`record_view` 计数命令）、`src/main.ts`（显示成功计数）、
 > `backend-mock/server.mjs`（接收端点）
@@ -40,6 +40,14 @@ POST {apiBase}{analyticsPath}
   ```
 - `apiBase` 与授权体系（激活/在线验证）共用同一地址，域名一致，便于服务端统一鉴权。
 - `analyticsPath` 为空或 `apiBase` 为空 = 不启用埋点（老配置无此字段时自动关闭，安全）。
+- **埋点鉴权**：`analyticsToken` 非空时上报携带 `Authorization: Bearer <token>`，
+  为空则不携带（服务端对该产品不校验，兼容未配置 token 的部署）。
+  ```json
+  "analyticsPath": "/api/v1/apps/image-viewer/analytics",
+  "analyticsToken": "<soft-candy 管理后台产品「埋点 Token」生成，空 = 不携带>"
+  ```
+  token 由服务端 `tracking-design.md` §6.1 定义：32 字节随机 hex，生成后旧 token 立即失效；
+  配置了 token 的产品缺失/错误 token 上报返回 `401 UNAUTHORIZED`。
 
 ## 4. 上报字段
 
@@ -99,15 +107,16 @@ node server.mjs          # 启动 http://127.0.0.1:8787
 # 客户端退出后，控制台打印收到的负载
 ```
 
-### 生产端（Go 售卖网站）
+### 生产端（Go 售卖网站 / soft-candy）
 
-需新增 `POST /api/analytics` 处理：
+soft-candy 已实现接收与鉴权（`POST /api/v1/apps/image-viewer/analytics`，
+见其 `docs/tracking-design.md`）：
 
-1. 接收 JSON（字段见第 4 节），建议落库为 `analytics_sessions` 表
-   （deviceId、licenseStatus、version、os、arch、session_start、session_end、
-   images_viewed、unique_images、formats、folders_viewed、cache_level）。
-2. 与 `/api/verify` 同一服务域名即可，无需额外密钥（可复用站点鉴权/限流策略）。
-3. 响应 `{ "ok": true }` 即可；客户端不校验响应，失败静默。
+1. 接收 JSON（字段见第 4 节），canonical event 落库 `tracking_events`（payload JSONB 保留原始负载）。
+2. 鉴权：管理后台产品配置「埋点 Token」后，缺失/错误 token 返回 `401 UNAUTHORIZED`；
+   token 为空不校验（兼容已接入客户端）。客户端在 `analyticsToken` 非空时自动携带 Bearer 头。
+3. 限流：单产品单 IP 每分钟 60 次，超出 `429 RATE_LIMITED`。
+4. 响应 `{ "ok": true }` 即可；客户端不校验响应，失败静默。
 
 ## 7. 客户端计数语义（供后续维护参考）
 

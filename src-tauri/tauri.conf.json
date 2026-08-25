@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Image Viewer",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "identifier": "com.imageviewer.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -81,7 +81,8 @@
       "activatePath": "/api/v1/apps/image-viewer/activate",
       "verifyPath": "/api/v1/apps/image-viewer/verify",
       "deactivatePath": "/api/v1/apps/image-viewer/deactivate",
-      "analyticsPath": "/api/v1/apps/image-viewer/analytics"
+      "analyticsPath": "/api/v1/apps/image-viewer/analytics",
+      "analyticsToken": "98f6e02b882c679273d9974859bcc6d0222c6589b7eb4de3bc0546fec1a4c50f"
     }
   }
 }

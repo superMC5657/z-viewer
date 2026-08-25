@@ -47,13 +47,16 @@ pub const LICENSE_ISSUER: &str = "soft-candy";
     ///     "activatePath": "/api/v1/apps/image-viewer/activate",
     ///     "verifyPath": "/api/v1/apps/image-viewer/verify",
     ///     "deactivatePath": "/api/v1/apps/image-viewer/deactivate",
-    ///     "analyticsPath": "/api/v1/apps/image-viewer/analytics"
+    ///     "analyticsPath": "/api/v1/apps/image-viewer/analytics",
+    ///     "analyticsToken": "<soft-candy 管理后台生成的埋点 Bearer token，空 = 不携带>"
 ///   }
 /// }
 /// ```
 ///
 /// 字段缺失/为空即视为未配置：apiBase 未配置时激活报错、不联网验证；
 /// 对应等级公钥未配置时验签必失败（无法激活）。无任何内置默认值。
+/// analyticsToken 为空时不携带 Authorization 头（服务端对该产品不校验，
+/// 兼容未配置 token 的部署）；配置后每次埋点上报携带 `Bearer <token>`。
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
     /// 授权服务 API base（激活/在线验证）；空 = 未配置
@@ -76,6 +79,8 @@ pub struct StoreConfig {
     pub deactivate_path: String,
     /// 会话统计上报接口路径（拼在 api_base 后）；空 = 不上报
     pub analytics_path: String,
+    /// 埋点上报 Bearer token（soft-candy 管理后台生成）；空 = 不携带 Authorization 头
+    pub analytics_token: String,
 }
 
 impl StoreConfig {
@@ -116,6 +121,7 @@ impl StoreConfig {
             verify_path: s("verifyPath").unwrap_or_default().to_string(),
             deactivate_path: s("deactivatePath").unwrap_or_default().to_string(),
             analytics_path: s("analyticsPath").unwrap_or_default().to_string(),
+            analytics_token: s("analyticsToken").unwrap_or_default().to_string(),
         }
     }
 
@@ -315,6 +321,7 @@ impl LicenseManager {
             verify_path: String::new(),
             deactivate_path: String::new(),
             analytics_path: String::new(),
+            analytics_token: String::new(),
         };
         lic.as_ref()
             .is_some_and(|lic| lic.is_valid_with(&device_id(), &store))
@@ -739,6 +746,7 @@ mod tests {
             verify_path: String::new(),
             deactivate_path: String::new(),
             analytics_path: String::new(),
+            analytics_token: String::new(),
         }
     }
 
