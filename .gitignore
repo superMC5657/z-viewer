@@ -29,3 +29,4 @@ backend-mock/data.json
 
 # 开发会话日志（P3-4：避免误提交进公开仓库）
 .reasonix/
+.zcode

@@ -84,7 +84,7 @@
       "verifyPath": "/api/v1/apps/image-viewer/verify",
       "deactivatePath": "/api/v1/apps/image-viewer/deactivate",
       "analyticsPath": "/api/v1/apps/image-viewer/analytics",
-      "analyticsToken": "98f6e02b882c679273d9974859bcc6d0222c6589b7eb4de3bc0546fec1a4c50f"
+      "analyticsToken": "ec3fa3e1c069d80b541438b66583f21d6c82007d3b8fabebdfafef1deada69a5"
     }
   }
 }
