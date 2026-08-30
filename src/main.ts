@@ -37,7 +37,8 @@ const dropOverlay = document.getElementById("drop-overlay")!;
 const viewer = new Viewer(stage, img, frameCanvas, ghostCanvas);
 const ui = new UI();
 ui.buildToolbar({ onAction: handleToolbarAction });
-const windowState = new WindowState(getCurrentWindow(), viewer, ui);
+const appWindow = getCurrentWindow();
+const windowState = new WindowState(appWindow, viewer, ui);
 const slideshow = new Slideshow();
 const prefetch = new PrefetchPool();
 const LICENSE_STATUS_CHANGED = "license://status-changed";
@@ -69,7 +70,7 @@ let currentAnimCandidate = false;
 const ANIM_EXTS = new Set(["gif", "png", "webp"]);
 
 /** check_animation 结果缓存：同路径重复显示（翻回上一张/重看）免重复 IPC + 文件扫描；
- *  会话内至多保留 1000 条（超出整体清空，防浏览大文件夹时无界增长） */
+ *  会话内至多保留 1000 条（满时删最旧一条近似 LRU，防浏览大文件夹时无界增长） */
 const ANIM_CHECK_CACHE = new Map<string, boolean>();
 const ANIM_CHECK_CACHE_MAX = 1000;
 
@@ -92,8 +93,8 @@ async function showImage(state: BrowseState): Promise<void> {
     currentBlobUrl = null;
   }
 
-  // 预取下一批上下文（方案三/四：asset 预热 + Rust 缓存）
-  void refreshContext();
+  // 预取下一批上下文（方案三/四：asset 预热 + Rust 缓存）；防抖合并快速翻页
+  scheduleRefreshContext();
 
   // asset 快速通道：浏览器原生解码直接 convertFileSrc，跳过 IPC
   // （GIF/APNG/WebP 原生 <img> 播放；仅动画候选格式额外判定是否多帧）
@@ -106,7 +107,10 @@ async function showImage(state: BrowseState): Promise<void> {
       : ANIM_EXTS.has(ext)
         ? invoke<boolean>("check_animation", { path: state.path })
             .then((v) => {
-              if (ANIM_CHECK_CACHE.size >= ANIM_CHECK_CACHE_MAX) ANIM_CHECK_CACHE.clear();
+              if (ANIM_CHECK_CACHE.size >= ANIM_CHECK_CACHE_MAX) {
+                const oldest = ANIM_CHECK_CACHE.keys().next().value;
+                if (oldest !== undefined) ANIM_CHECK_CACHE.delete(oldest);
+              }
               ANIM_CHECK_CACHE.set(state.path, v);
               return v;
             })
@@ -133,7 +137,7 @@ async function showImage(state: BrowseState): Promise<void> {
     }
     ui.setSlideshowProgress(state.global_index + 1, state.global_total);
     // 埋点：asset 通道显示成功（浏览器原生解码不经 load_image，必须单独计数）
-    void invoke("record_view", { path: state.path });
+    void invoke("record_view", { path: state.path }).catch(() => undefined);
     return;
   }
 
@@ -199,7 +203,7 @@ async function showImage(state: BrowseState): Promise<void> {
     // 幻灯片进度计数（播放中实时更新）
     ui.setSlideshowProgress(state.global_index + 1, state.global_total);
     // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身已不再计数）
-    void invoke("record_view", { path: state.path });
+    void invoke("record_view", { path: state.path }).catch(() => undefined);
   } finally {
     ui.endDecoding();
   }
@@ -262,6 +266,13 @@ async function refreshContext(): Promise<void> {
   }
 }
 
+/** refreshContext 防抖：快速翻页时每张图都触发，100ms 内合并为一次 get_context */
+let refreshContextTimer: number | undefined;
+function scheduleRefreshContext(delay = 100): void {
+  window.clearTimeout(refreshContextTimer);
+  refreshContextTimer = window.setTimeout(() => void refreshContext(), delay);
+}
+
 /** 边界 Toast 文案（图片级 / 文件夹级，见《UI设计草图.md》第 6 节） */
 const BOUNDARY_TEXT: Record<string, string> = {
   "first-image": "已经是第一张了",
@@ -279,7 +290,31 @@ function requirePro(): boolean {
   return false;
 }
 
+/** 导航在飞合并：方向键连按/连点时不并发轰炸 IPC —— 导航进行中只记 pending，
+ *  当前完成后补执行**最新**一次（中间态无意义）；结果乱序由 showSeq 兜底 */
+let navInFlight = false;
+let navPending: (() => Promise<NavResult>) | null = null;
+
 async function nav(fn: () => Promise<NavResult>): Promise<void> {
+  if (navInFlight) {
+    navPending = fn;
+    return;
+  }
+  navInFlight = true;
+  try {
+    await navApply(fn);
+    while (navPending) {
+      const next = navPending;
+      navPending = null;
+      await navApply(next);
+    }
+  } finally {
+    navInFlight = false;
+  }
+}
+
+/** 单次导航：IPC → 边界 Toast / showImage */
+async function navApply(fn: () => Promise<NavResult>): Promise<void> {
   let result: NavResult;
   try {
     result = await fn();
@@ -472,10 +507,13 @@ function frameControl(action: () => void): void {
 async function loadAnimationOnDemand(): Promise<void> {
   const state = lastState;
   if (!state) return;
+  const seq = showSeq; // 代次快照：await 期间切图则丢弃，防旧动画覆盖新图显示
   ui.setFrameLoading(true);
   try {
     const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
+    if (seq !== showSeq) return;
     const { header, payload } = parseLoadEnvelope(buf);
+    if (seq !== showSeq) return;
     if (header.mode !== "animated" || header.frameSizes.length === 0) {
       // 单帧文件（如单帧 GIF / 静态 PNG）：收起帧条并提示
       ui.setFrameBarVisible(false);
@@ -485,6 +523,7 @@ async function loadAnimationOnDemand(): Promise<void> {
     }
     ui.setFrameBarVisible(true);
     const blobs = splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
+    if (seq !== showSeq) return; // await 期间被抢占：不覆盖新图
     await viewer.loadAnimation(blobs, header.frameDelays);
   } finally {
     ui.setFrameLoading(false);
@@ -513,6 +552,16 @@ function buildFrameBar(): void {
 }
 
 // ---------- 幻灯片（草图 3.6） ----------
+
+/** Promise 竞速 + 兜底定时器清理：主 Promise 先完成时 clearTimeout
+ *  （否则兜底定时器每拍空转到点才释放，幻灯片播放中持续累积） */
+function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: number | undefined;
+  const timeout = new Promise<null>((res) => {
+    timer = window.setTimeout(() => res(null), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => window.clearTimeout(timer));
+}
 
 function buildSlideshowBar(): void {
   ui.setSlideshowPlaying(false);
@@ -544,10 +593,7 @@ function buildSlideshowBar(): void {
     // IPC 超时兜底：next_image 3s 无响应按失败处理（避免 await 永久挂起杀死幻灯片）
     let result: NavResult | null = null;
     try {
-      result = await Promise.race([
-        invoke<NavResult>("next_image"),
-        new Promise<null>((res) => setTimeout(() => res(null), 3000)),
-      ]);
+      result = await raceWithTimeout(invoke<NavResult>("next_image"), 3000);
     } catch (err) {
       feLog(`幻灯片跳转 IPC 失败: ${String(err)}`);
       console.error("幻灯片 next_image 失败:", err);
@@ -573,10 +619,7 @@ function buildSlideshowBar(): void {
       return false;
     }
     // showImage 超时兜底：5s 未完成按成功处理（避免挂起杀死幻灯片）
-    await Promise.race([
-      showImage(result.state),
-      new Promise<void>((res) => setTimeout(res, 5000)),
-    ]);
+    await raceWithTimeout(showImage(result.state), 5000);
     return true;
   };
 
@@ -816,8 +859,7 @@ function bindEvents(): void {
   // 变换状态变化时同步缩放按钮（滚轮/键盘缩放、模式切换、图片加载后）
   viewer.onStateChange = syncZoomButtons;
 
-  // 标题栏窗口控制
-  const appWindow = getCurrentWindow();
+  // 标题栏窗口控制（appWindow 为模块级单例，见文件顶部）
   // 注入窗口控制图标（HTML 中按钮为空，图标在此填充）
   document.getElementById("btn-minimize")!.innerHTML = ICONS.minus;
   document.getElementById("btn-maximize")!.innerHTML = ICONS.square;
@@ -839,8 +881,12 @@ function bindEvents(): void {
     onWake: () => ui.wake(),
   });
 
-  // 浮层唤醒：鼠标移动 / 快捷键
-  window.addEventListener("mousemove", () => ui.wake());
+  // 浮层唤醒 + 图片平移拖拽：合并为单个 mousemove 监听（panTo 无拖拽时零开销）
+  window.addEventListener("mousemove", (e) => {
+    ui.wake();
+    viewer.panTo(e.clientX, e.clientY);
+  });
+  window.addEventListener("mouseup", () => viewer.endPan());
 
   // 拖拽打开（草图 5.5：拖入时虚线框提示）
   const webview = getCurrentWebview();
@@ -857,13 +903,11 @@ function bindEvents(): void {
     }
   });
 
-  // 图片平移拖拽
+  // 图片平移拖拽（mousemove/mouseup 已在上方合并监听中装配）
   stage.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return;
     viewer.startPan(e.clientX, e.clientY);
   });
-  window.addEventListener("mousemove", (e) => viewer.panTo(e.clientX, e.clientY));
-  window.addEventListener("mouseup", () => viewer.endPan());
 
   // 双击：实际大小 ↔ 适应窗口（草图 5.4）
   stage.addEventListener("dblclick", () => {
@@ -871,8 +915,12 @@ function bindEvents(): void {
     setFitMode(viewer.mode === "fit" ? "actual" : "fit");
   });
 
-  // 窗口尺寸变化
-  window.addEventListener("resize", () => viewer.onResize());
+  // 窗口尺寸变化：rAF 合并（拖动窗口边缘时 resize 连发，只每帧重算一次 fit/apply）
+  let resizeRaf = 0;
+  window.addEventListener("resize", () => {
+    cancelAnimationFrame(resizeRaf);
+    resizeRaf = requestAnimationFrame(() => viewer.onResize());
+  });
 }
 
 // ---------- 启动 ----------
@@ -895,8 +943,8 @@ async function init(): Promise<void> {
     const st = event.payload;
     ui.updateInfo(st, currentDims);
     ui.setSlideshowProgress(st.global_index + 1, st.global_total);
-    // 兄弟文件夹枚举完成：重新按强度预取（此前跨文件夹路径取不到）
-    void refreshContext();
+    // 兄弟文件夹枚举完成：重新按强度预取（此前跨文件夹路径取不到）；防抖合并
+    scheduleRefreshContext();
   });
   await listen<LicenseInfo>(LICENSE_STATUS_CHANGED, (event) => {
     applyLicenseStatus(event.payload);

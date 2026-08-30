@@ -24,6 +24,8 @@ mod tiff;
 #[cfg(test)]
 mod tests;
 
+use std::path::Path;
+
 /// 相机 RAW 扩展名（rawler 覆盖主流机型；供 browse.rs 浏览枚举复用）
 pub const RAW_EXTS: &[&str] = &[
     "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
@@ -108,10 +110,19 @@ impl LoadResult {
     }
 }
 
+/// 小写扩展名（Path::extension 语义：无扩展名文件返回空串，
+/// 不像 `rsplit('.')` 会把整个文件名当扩展名）
+pub(crate) fn ext_of(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
 /// 统一入口：按扩展名与内容分发到各通道
 /// `full=false`：RAW 优先返回内嵌预览（快），全量由后续 full=true 请求完成
 pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = ext_of(path);
 
     if is_raw_ext(&ext) {
         return raw::decode_raw(path, full);
@@ -138,7 +149,7 @@ pub fn is_raw_ext(ext: &str) -> bool {
 /// 浏览器原生解码的 asset 扩展名（前端 PrefetchPool 预热，Rust 预取跳过）。
 /// 含动画格式：默认由 <img> 原生播放，帧控制按需拆帧（不进 Rust 预取）。
 pub fn is_asset_ext(path: &str) -> bool {
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = ext_of(path);
     matches!(
         ext.as_str(),
         "jpg" | "jpeg" | "bmp" | "ico" | "svg" | "avif" | "gif" | "png" | "webp"
@@ -149,7 +160,7 @@ pub fn is_asset_ext(path: &str) -> bool {
 /// GIF 按魔数、WebP 扫 RIFF ANMF 块、PNG 扫 acTL 块；非动画格式/读取失败返回 false
 pub fn is_animated(path: &str) -> bool {
     use std::io::{Read, Seek};
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = ext_of(path);
     let mut f = match std::fs::File::open(path) {
         Ok(f) => f,
         Err(_) => return false,

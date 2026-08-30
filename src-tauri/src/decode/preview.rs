@@ -108,11 +108,11 @@ pub(super) fn extract_preview(path: &str) -> Option<Preview> {
     None
 }
 
-/// 读取 EXIF Orientation（1-8）；无 EXIF/解析失败返回 None
-pub(super) fn read_orientation(path: &str) -> Option<u8> {
-    let file = File::open(path).ok()?;
+/// 读取 EXIF Orientation（1-8）；无 EXIF/解析失败返回 None。
+/// 接收已打开的文件句柄：调用方（TIFF/动画解码）复用同一句柄，省一次 open。
+pub(super) fn read_orientation(file: &std::fs::File) -> Option<u8> {
     let exif = exif::Reader::new()
-        .read_from_container(&mut BufReader::new(&file))
+        .read_from_container(&mut BufReader::new(file))
         .ok()?;
     let field = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY)?;
     match field.value {

@@ -62,6 +62,8 @@ export class Viewer {
   private loadSeq = 0;
   /** 进行中的静态加载（img 通道） */
   private pending: { resolve: () => void; reject: (e: Error) => void; seq: number } | null = null;
+  /** 静态加载 2.5s 超时兜底定时器（完成/失败/作废时清理，不留空转定时器） */
+  private staticLoadTimer: number | undefined;
 
   // 动画状态
   private animFrames: ImageBitmap[] = [];
@@ -134,7 +136,8 @@ export class Viewer {
       // 超时兜底：2.5s 未完成先 resolve 防挂死（P2-1：**不清 pending**——
       // 迟到的 load 事件到达时 handleLoad 仍会走 handleDecoded 完成显示，
       // 否则慢图会以 opacity:0 永久黑屏）
-      const timeout = window.setTimeout(() => {
+      window.clearTimeout(this.staticLoadTimer);
+      this.staticLoadTimer = window.setTimeout(() => {
         if (this.pending?.seq === seq) {
           this.pending.resolve();
         }
@@ -148,7 +151,7 @@ export class Viewer {
         this.img
           .decode()
           .then(() => {
-            window.clearTimeout(timeout);
+            window.clearTimeout(this.staticLoadTimer);
             if (this.pending?.seq === seq) {
               this.pending = null;
               this.handleDecoded(seq);
@@ -467,6 +470,7 @@ export class Viewer {
   /** 解码完成公共处理：记录尺寸、fit、显示、resolve */
   private handleDecoded(seq: number): void {
     if (seq !== this.loadSeq) return;
+    window.clearTimeout(this.staticLoadTimer);
     this.naturalW = this.img.naturalWidth;
     this.naturalH = this.img.naturalHeight;
     this.loaded = true;
@@ -482,6 +486,7 @@ export class Viewer {
     if (!this.pending || this.pending.seq !== this.loadSeq) return;
     const p = this.pending;
     this.pending = null;
+    window.clearTimeout(this.staticLoadTimer);
     this.releaseGhost(); // 加载失败回到黑底 + Toast，不留冻结的旧画面
     p.reject(new Error("图片加载失败"));
   }
@@ -491,6 +496,7 @@ export class Viewer {
     if (this.pending) {
       const p = this.pending;
       this.pending = null;
+      window.clearTimeout(this.staticLoadTimer);
       p.resolve();
     }
   }

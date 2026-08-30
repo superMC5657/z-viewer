@@ -7,8 +7,9 @@ use super::{Boundary, BrowseModel, FolderTarget, InnerData, ModelInner, Nav};
 
 impl BrowseModel {
     /// 下一张：跨文件夹无缝衔接；全局最后一张返回 Boundary(LastImage)
-    pub fn next(&mut self) -> Nav {
-        let d = self.inner.m.lock().unwrap();
+    /// &self：仅经内部锁改状态，AppState 快照出 Arc 后即可导航（不阻塞其他命令）
+    pub fn next(&self) -> Nav {
+        let d = self.inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let fi = d.folder_index;
         let (cur_len, mut d) = Self::wait_folder_len(&self.inner, d, fi);
         if d.image_index + 1 < cur_len {
@@ -26,8 +27,8 @@ impl BrowseModel {
     }
 
     /// 上一张：反向无缝衔接；全局第一张返回 Boundary(FirstImage)
-    pub fn prev(&mut self) -> Nav {
-        let d = self.inner.m.lock().unwrap();
+    pub fn prev(&self) -> Nav {
+        let d = self.inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let fi = d.folder_index;
         if d.image_index > 0 {
             let mut d = d;
@@ -50,8 +51,8 @@ impl BrowseModel {
 
     /// 文件夹级跳转（PgUp/PgDn / 首末按钮），目标显示该文件夹第一张
     /// 跳过空文件夹：跳转到实际含图的首/末/相邻文件夹（P2-2）
-    pub fn jump_folder(&mut self, target: FolderTarget) -> Nav {
-        let d = self.inner.m.lock().unwrap();
+    pub fn jump_folder(&self, target: FolderTarget) -> Nav {
+        let d = self.inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match target {
             FolderTarget::First => {
                 if let Some((f0, _len, mut d)) = Self::find_nonempty_folder(&self.inner, d, 0, true)
@@ -150,7 +151,7 @@ impl BrowseModel {
             if guard.cancelled {
                 return (0, guard);
             }
-            guard = inner.cv.wait(guard).unwrap();
+            guard = inner.cv.wait(guard).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 

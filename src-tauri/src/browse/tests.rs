@@ -63,7 +63,7 @@ fn natural_order_and_folders() {
 #[test]
 fn cross_folder_next_and_boundary() {
     let base = build_tree();
-    let mut m = open_sync(&base.join("A/a10.png"));
+    let m = open_sync(&base.join("A/a10.png"));
     assert!(matches!(m.next(), Nav::Ok));
     assert_eq!(m.state().folder_name, "B", "A 末尾无缝进入 B 开头");
     assert_eq!(m.state().file_name, "b1.jpg");
@@ -82,7 +82,7 @@ fn cross_folder_next_and_boundary() {
 #[test]
 fn prev_and_first_boundary() {
     let base = build_tree();
-    let mut m = open_sync(&base.join("C/c1.png"));
+    let m = open_sync(&base.join("C/c1.png"));
     assert!(matches!(m.prev(), Nav::Ok));
     assert_eq!(m.state().folder_name, "B");
     assert_eq!(
@@ -100,7 +100,7 @@ fn prev_and_first_boundary() {
 #[test]
 fn jump_folder_and_folder_boundary() {
     let base = build_tree();
-    let mut m = open_sync(&base.join("A/a2.png"));
+    let m = open_sync(&base.join("A/a2.png"));
     assert!(
         matches!(
             m.jump_folder(FolderTarget::Prev),
@@ -127,7 +127,7 @@ fn jump_folder_and_folder_boundary() {
 #[test]
 fn global_index_accumulates() {
     let base = build_tree();
-    let mut m = open_sync(&base.join("A/a1.png"));
+    let m = open_sync(&base.join("A/a1.png"));
     assert_eq!(m.state().global_index, 0);
     assert_eq!(m.state().global_total, 6, "A(3)+B(2)+C(1)");
     m.next();
@@ -247,7 +247,7 @@ fn async_open_large_library_is_immediate() {
 fn nav_waits_for_unscanned_folder() {
     // 打开后立即跨文件夹导航：应等待目标文件夹枚举完成（Condvar）
     let base = build_tree();
-    let mut m = BrowseModel::open(&base.join("A/a10.png"), None).unwrap();
+    let m = BrowseModel::open(&base.join("A/a10.png"), None).unwrap();
     assert!(
         matches!(m.next(), Nav::Ok),
         "A 末尾 next 应进入 B（等待枚举）"
@@ -315,7 +315,7 @@ fn nav_skips_empty_sibling_folder() {
     }
     assert_eq!(m.state().file_name, "a2.png");
     // next 从 A 末尾无缝进入 B
-    let mut m = m;
+    let m = m;
     assert!(matches!(m.next(), Nav::Ok), "跨文件夹跳过空 A0");
     assert_eq!(m.state().folder_name, "B");
     assert_eq!(m.state().file_name, "b1.jpg");
@@ -334,7 +334,7 @@ fn nav_during_scan_never_panics() {
     }
     // 夹一个空目录（扫描后会被压缩移除）
     fs::create_dir_all(base.join("D05b")).unwrap();
-    let mut m = BrowseModel::open(&base.join("D00/0.png"), None).unwrap();
+    let m = BrowseModel::open(&base.join("D00/0.png"), None).unwrap();
     // 不等扫描完成立即连续导航（撞边界或扫描完成后停止）
     for _ in 0..60 {
         if !m.state().loading {
@@ -365,7 +365,7 @@ fn free_mode_single_folder_no_cross() {
         assert_eq!(d.global_total, 3, "全局总数 = 当前文件夹图片数（不累计兄弟）");
     }
     // next 到文件夹末尾即停（不跨到 B）
-    let mut m = m;
+    let m = m;
     assert_eq!(m.state().file_name, "a1.png");
     for _ in 0..2 {
         assert_eq!(m.next(), Nav::Ok, "文件夹内翻页正常");
@@ -396,7 +396,7 @@ fn pro_mode_cross_folder_still_works() {
         let d = m.inner.m.lock().unwrap();
         assert_eq!(d.folders.len(), 3, "后台压缩后无图文件夹被排除");
     }
-    let mut m = m;
+    let m = m;
     // A 末张 a10.png → next 跨到 B/b1.jpg
     let nav = m.next();
     assert_eq!(nav, Nav::Ok);

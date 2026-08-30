@@ -28,8 +28,11 @@ use prefetch::{prefetch_context, prefetch_folder_firsts, promote_folder_first};
 /// 后台扫描完成事件（携带最新 BrowseState，前端刷新位置计数）
 pub const BROWSE_SCAN_READY: &str = "browse://scan-ready";
 
-/// 全局浏览模型（Mutex：Tauri 命令在独立线程执行）
-pub struct AppState(pub Mutex<Option<BrowseModel>>);
+/// 全局浏览模型（Mutex：Tauri 命令在独立线程执行）。
+/// 存 Arc：命令先快照出模型再释放本锁 —— 导航可能在 Condvar 上等待慢盘文件夹
+/// 填充，若持本锁等待会阻塞 load_image/get_context 等所有命令（模型内部自有锁
+/// 串行化并发导航，前端 showSeq 兜底乱序响应）。
+pub struct AppState(pub Mutex<Option<Arc<BrowseModel>>>);
 
 /// 用户设置（缓存开关/深度）
 pub struct SettingsState(pub Mutex<AppSettings>);
@@ -76,7 +79,7 @@ impl NavResult {
     }
 }
 
-fn nav_ok_or_none(model: &mut BrowseModel, nav: Nav) -> NavResult {
+fn nav_ok_or_none(model: &BrowseModel, nav: Nav) -> NavResult {
     match nav {
         Nav::Ok => NavResult::ok(model.state()),
         Nav::Boundary(b) => NavResult::boundary(b, model.state()),
@@ -91,30 +94,32 @@ pub fn on_ready_callback(app: tauri::AppHandle) -> crate::browse::OnReady {
     })
 }
 
-/// 执行导航并处理后置动作（首图 promote + 邻居预取）；三个导航命令共用
+/// 执行导航并处理后置动作（首图 promote + 邻居预取）；三个导航命令共用。
+/// 先快照模型（Arc clone）再释放 AppState 锁：导航的等待填充只占模型内部锁
 fn navigate(
     state: &AppState,
     cache: &DecodeCache,
     first_cache: &FolderFirstCache,
     settings: &SettingsState,
-    nav: impl FnOnce(&mut BrowseModel) -> Nav,
+    nav: impl FnOnce(&BrowseModel) -> Nav,
 ) -> Result<NavResult, String> {
-    let mut guard = state.0.lock().map_err(|e| e.to_string())?;
-    match guard.as_mut() {
-        Some(m) => {
-            let nav = nav(m);
-            let r = nav_ok_or_none(m, nav);
-            if r.state.is_some() {
-                // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
-                promote_folder_first(m, cache, first_cache);
-                let s = settings.0.lock().map_err(|e| e.to_string())?;
-                prefetch_context(m, cache, &s);
-                prefetch_folder_firsts(m, cache, first_cache, &s);
-            }
-            Ok(r)
+    let model = {
+        let guard = state.0.lock().map_err(|e| e.to_string())?;
+        match guard.as_ref() {
+            Some(m) => Arc::clone(m),
+            None => return Ok(NavResult::none()),
         }
-        None => Ok(NavResult::none()),
+    };
+    let nav = nav(&model);
+    let r = nav_ok_or_none(&model, nav);
+    if r.state.is_some() {
+        // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
+        promote_folder_first(&model, cache, first_cache);
+        let s = settings.0.lock().map_err(|e| e.to_string())?;
+        prefetch_context(&model, cache, &s);
+        prefetch_folder_firsts(&model, cache, first_cache, &s);
     }
+    Ok(r)
 }
 
 /// 打开指定路径（拖拽/命令行）：文件定位到浏览模型，目录取其首张图片
@@ -144,7 +149,7 @@ pub fn open_path(
         prefetch_context(&model, cache.inner(), &s);
         prefetch_folder_firsts(&model, cache.inner(), first_cache.inner(), &s);
     }
-    *state.0.lock().map_err(|e| e.to_string())? = Some(model);
+    *state.0.lock().map_err(|e| e.to_string())? = Some(Arc::new(model));
     Ok(NavResult::ok(st))
 }
 
@@ -204,9 +209,11 @@ pub fn jump_folder(
 }
 
 /// 启动时查询初始状态（命令行参数已由 main.rs 注入模型）
+/// 快照 Arc 后释放锁再读状态（state 可能等待后台填充，不能占着 AppState 锁等）
 #[tauri::command]
 pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
-    state.0.lock().ok()?.as_ref().map(|m| m.state())
+    let model = state.0.lock().ok()?.as_ref().cloned()?;
+    Some(model.state())
 }
 
 /// 图片加载通道分发：常见格式 → asset（前端直读）；RAW/静态 → JPEG 字节；
@@ -226,8 +233,10 @@ pub async fn load_image(
     let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled()
         && license.is_pro();
     if caching {
-        if let Some(hit) = cache.get(&path) {
-            return Ok(tauri::ipc::Response::new(crate::decode::pack_envelope(&hit)));
+        // 命中：信封已打包一次缓存于条目内，这里只做一次缓冲拷贝进 IPC 响应
+        if let Some(hit) = cache.get_entry(&path) {
+            let envelope = hit.envelope();
+            return Ok(tauri::ipc::Response::new((*envelope).clone()));
         }
     }
     // 预取可能正在解码同一路径 —— 不等待：预取是低优先级后台优化，
@@ -328,31 +337,31 @@ pub async fn get_context(
     if !license.is_pro() {
         return Ok(Vec::new());
     }
-    // 锁内仅收集路径（快速）；目录枚举在释放锁后由后台线程完成
-    let (mut paths, neighbors) = {
+    // 快照模型后释放 AppState 锁（context_paths/neighbor_folders 走模型内部锁，均快速）
+    let model = {
         let guard = state.0.lock().map_err(|e| e.to_string())?;
-        let Some(model) = guard.as_ref() else {
-            return Ok(Vec::new());
-        };
-        // 单次锁读取设置（预取窗口 + 首图队列深度）
-        let (prev_n, next_n, folder_depth, enabled) = {
-            let s = settings.0.lock().map_err(|e| e.to_string())?;
-            let (p, n) = s.neighbor_window();
-            (p, n, s.folder_first_depth, s.is_enabled())
-        };
-        let paths: Vec<String> = model
-            .context_paths(prev_n, next_n)
-            .into_iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect();
-        // P3-2：缓存关闭（cache_level=0）时不返回任何首图路径，
-        // 前端不得继续预热（与「0=关闭不缓存不预取」语义一致）
-        let neighbors = if folder_depth > 0 && enabled {
-            model.neighbor_folders(1)
-        } else {
-            Vec::new()
-        };
-        (paths, neighbors)
+        guard.as_ref().cloned()
+    };
+    let Some(model) = model else {
+        return Ok(Vec::new());
+    };
+    // 单次锁读取设置（预取窗口 + 首图队列深度）
+    let (prev_n, next_n, folder_depth, enabled) = {
+        let s = settings.0.lock().map_err(|e| e.to_string())?;
+        let (p, n) = s.neighbor_window();
+        (p, n, s.folder_first_depth, s.is_enabled())
+    };
+    let mut paths: Vec<String> = model
+        .context_paths(prev_n, next_n)
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    // P3-2：缓存关闭（cache_level=0）时不返回任何首图路径，
+    // 前端不得继续预热（与「0=关闭不缓存不预取」语义一致）
+    let neighbors = if folder_depth > 0 && enabled {
+        model.neighbor_folders(1)
+    } else {
+        Vec::new()
     };
     // 锁外：后台枚举相邻文件夹首图（asset 供前端池预热，非 asset 由 Rust 队列 A 处理）
     if !neighbors.is_empty() {

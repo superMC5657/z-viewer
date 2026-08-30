@@ -1,6 +1,6 @@
 [package]
 name = "image-viewer"
-version = "0.5.2"
+version = "0.6.0"
 description = "精美快速的看图软件"
 edition = "2021"
 

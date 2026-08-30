@@ -32,6 +32,9 @@ export class UI {
   private decodingEl: HTMLElement;
   /** 幻灯片位置计数（#ss-progress） */
   private ssProgress: HTMLElement;
+  /** 帧条元素（构造时缓存：updateFrameCount 每帧播放回调都访问，不走 DOM 查询） */
+  private framePlayBtn: HTMLElement;
+  private frameCountEl: HTMLElement;
 
   private idleTimer: number | undefined;
   private toastTimer: number | undefined;
@@ -54,6 +57,8 @@ export class UI {
     this.infoZoom = document.getElementById("info-zoom")!;
     this.decodingEl = document.getElementById("decoding")!;
     this.ssProgress = document.getElementById("ss-progress")!;
+    this.framePlayBtn = document.getElementById("frame-play")!;
+    this.frameCountEl = document.getElementById("frame-count")!;
     this.bindOverlayHover();
   }
 
@@ -167,25 +172,23 @@ export class UI {
 
   /** 播放/暂停按钮图标与激活态 */
   setFramePlaying(playing: boolean): void {
-    const btn = document.getElementById("frame-play")!;
-    btn.innerHTML = playing ? ICONS.pause : ICONS.play;
-    btn.classList.toggle("active", playing);
+    this.framePlayBtn.innerHTML = playing ? ICONS.pause : ICONS.play;
+    this.framePlayBtn.classList.toggle("active", playing);
   }
 
   /** 帧计数：帧 12/48 */
   updateFrameCount(index: number, total: number): void {
-    document.getElementById("frame-count")!.textContent = `帧 ${index}/${total}`;
+    this.frameCountEl.textContent = `帧 ${index}/${total}`;
   }
 
   /** 帧计数未知态：原生 <img> 播放中，帧未按需拆帧（"帧 …"） */
   setFrameCountUnknown(): void {
-    document.getElementById("frame-count")!.textContent = "帧 …";
+    this.frameCountEl.textContent = "帧 …";
   }
 
   /** 帧条加载态：按需拆帧中显示"正在加载帧…"，完成后恢复未知态 */
   setFrameLoading(loading: boolean): void {
-    const el = document.getElementById("frame-count")!;
-    el.textContent = loading ? "正在加载帧…" : "帧 …";
+    this.frameCountEl.textContent = loading ? "正在加载帧…" : "帧 …";
   }
 
   // ---------- 幻灯片（草图 3.6） ----------
@@ -286,21 +289,26 @@ export class UI {
 
   /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1）
    *  帧条与普通工具栏同步；幻灯片模式下只唤醒控制浮条。
-   *  鼠标悬停在浮层上（hoveringOverlay）时不设隐藏计时 —— 主动使用工具栏时不被隐藏 */
+   *  鼠标悬停在浮层上（hoveringOverlay）时不设隐藏计时 —— 主动使用工具栏时不被隐藏。
+   *  幂等短路：浮层已可见时跳过 class 写入（mousemove 高频触发，只重置闲置计时） */
   wake(): void {
     if (this.slideshowMode) {
       // 播放中：仅控制浮条随鼠标唤醒，信息条/工具栏保持隐藏
-      this.slideshowBar.classList.remove("hidden");
-      this.slideshowBar.setAttribute("aria-hidden", "false");
+      if (this.slideshowBar.classList.contains("hidden")) {
+        this.slideshowBar.classList.remove("hidden");
+        this.slideshowBar.setAttribute("aria-hidden", "false");
+      }
       this.scheduleIdleHide(this.slideshowBar);
       return;
     }
-    this.infoBar.classList.remove("hidden");
-    this.toolbar.classList.remove("hidden");
-    if (this.frameBarVisible) this.frameBar.classList.remove("hidden");
-    this.infoBar.setAttribute("aria-hidden", "false");
-    this.toolbar.setAttribute("aria-hidden", "false");
-    if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "false");
+    if (this.infoBar.classList.contains("hidden")) {
+      this.infoBar.classList.remove("hidden");
+      this.toolbar.classList.remove("hidden");
+      if (this.frameBarVisible) this.frameBar.classList.remove("hidden");
+      this.infoBar.setAttribute("aria-hidden", "false");
+      this.toolbar.setAttribute("aria-hidden", "false");
+      if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "false");
+    }
     this.scheduleIdleHide(null);
   }
 

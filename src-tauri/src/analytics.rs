@@ -126,7 +126,8 @@ pub fn report_exit(app: &tauri::AppHandle) {
     let payload = stats.snapshot(app);
     let url = format!("{}{}", store.api_base, store.analytics_path);
     let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
+        // 1s：ExitRequested 阶段同步阻塞退出，断网时不能拖慢关窗（埋点是尽力而为）
+        .timeout(std::time::Duration::from_secs(1))
         .build()
     {
         Ok(c) => c,

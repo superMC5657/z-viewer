@@ -24,6 +24,17 @@ export interface InputHandlers {
 }
 
 export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void {
+  /** 按住方向键的 repeat 限流：keydown 连发只放行每 NAV_REPEAT_MIN_MS 一次，
+   *  减少冗余导航 IPC 与 RAW 冗余解码（正确性由 main.ts nav 在飞合并兜底） */
+  const NAV_REPEAT_MIN_MS = 120;
+  let lastNavAt = -Infinity;
+  const navAllowed = (e: KeyboardEvent): boolean => {
+    const now = performance.now();
+    if (e.repeat && now - lastNavAt < NAV_REPEAT_MIN_MS) return false;
+    lastNavAt = now;
+    return true;
+  };
+
   const onKeyDown = (e: KeyboardEvent): void => {
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
@@ -31,11 +42,11 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
     switch (e.key) {
       case "ArrowLeft":
         e.preventDefault();
-        handlers.onPrev();
+        if (navAllowed(e)) handlers.onPrev();
         break;
       case "ArrowRight":
         e.preventDefault();
-        handlers.onNext();
+        if (navAllowed(e)) handlers.onNext();
         break;
       case "PageUp":
         e.preventDefault();

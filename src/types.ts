@@ -69,16 +69,18 @@ export interface LoadEnvelope {
   frameSizes: number[];
 }
 
+/** 模块级单例：parseLoadEnvelope 每次调用复用（TextDecoder 实例可重复 decode） */
+const envelopeDecoder = new TextDecoder();
+
 /** 解析 Rust 端二进制信封：[魔数 IMGV][header_len LE][header JSON][payload] */
 export function parseLoadEnvelope(buf: ArrayBuffer): { header: LoadEnvelope; payload: Uint8Array } {
   if (buf.byteLength < 8) throw new Error("解码响应过短");
-  const magic = new TextDecoder().decode(new Uint8Array(buf, 0, 4));
+  const magic = envelopeDecoder.decode(new Uint8Array(buf, 0, 4));
   if (magic !== "IMGV") throw new Error("非法解码响应");
   const dv = new DataView(buf);
   const headerLen = dv.getUint32(4, true);
   if (8 + headerLen > buf.byteLength) throw new Error("解码响应头损坏");
-  const enc = new TextDecoder();
-  const h = JSON.parse(enc.decode(new Uint8Array(buf, 8, headerLen)));
+  const h = JSON.parse(envelopeDecoder.decode(new Uint8Array(buf, 8, headerLen)));
   return {
     header: {
       mode: h.mode,

@@ -113,7 +113,7 @@ fn main() {
                 if let Some(model) = model {
                     let state = app.state::<AppState>();
                     if let Ok(mut guard) = state.0.lock() {
-                        *guard = Some(model);
+                        *guard = Some(std::sync::Arc::new(model));
                     };
                 }
             }

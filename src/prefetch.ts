@@ -47,7 +47,7 @@ export class PrefetchPool {
       const img = this.imgs.shift()!;
       const path = img.dataset.path;
       if (path) this.loading.delete(path);
-      img.src = "";
+      // 只 removeAttribute：置 src="" 会把空串解析为当前文档 URL，触发一次对页面本身的冗余请求
       img.removeAttribute("src");
     }
   }
@@ -55,7 +55,6 @@ export class PrefetchPool {
   /** 清空池（打开新文件夹/切图时可选调用，释放解码缓存） */
   clear(): void {
     for (const img of this.imgs) {
-      img.src = "";
       img.removeAttribute("src");
     }
     this.imgs = [];

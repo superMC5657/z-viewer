@@ -6,7 +6,7 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::decode::LoadResult;
 
@@ -15,9 +15,36 @@ use super::LruQueue;
 /// 后台预取最大并发数（实时解码不受限，优先级永远更高）
 const PREFETCH_MAX: usize = 2;
 
+/// 缓存条目：解码结果 + 打包好的 IPC 信封（惰性）。
+/// 信封只在首次发送时打包一次（serde 序列化 header + 拼 payload），
+/// 后续缓存命中直接 Arc 复用，免重复序列化与双重分配。
+#[derive(Clone)]
+pub(crate) struct CachedEntry {
+    pub result: Arc<LoadResult>,
+    envelope: OnceLock<Arc<Vec<u8>>>,
+}
+
+impl CachedEntry {
+    pub(crate) fn new(result: Arc<LoadResult>) -> Self {
+        Self {
+            result,
+            envelope: OnceLock::new(),
+        }
+    }
+
+    pub(crate) fn envelope(&self) -> Arc<Vec<u8>> {
+        self.envelope
+            .get_or_init(|| Arc::new(crate::decode::pack_envelope(&self.result)))
+            .clone()
+    }
+}
+
 #[derive(Clone)]
 pub struct DecodeCache {
-    lru: LruQueue<Arc<LoadResult>>,
+    lru: LruQueue<CachedEntry>,
+    /// 动画拆帧结果独立槽位（只保留最近 1 条）：一段长 GIF 的帧序列可达几十上百
+    /// MB，混入主流 LRU 会一张就挤掉全部 RAW/静态条目（容量 4-8）
+    animated: Arc<Mutex<Option<(String, CachedEntry)>>>,
     /// 正在后台解码的路径（预取去重，防止快速翻页重复解码 RAW）
     in_flight: Arc<Mutex<HashSet<String>>>,
     /// 当前进行中的预取任务数（配合 in_flight 锁做并发门控，见 begin_prefetch）
@@ -28,19 +55,42 @@ impl DecodeCache {
     pub fn new(capacity: usize) -> Self {
         Self {
             lru: LruQueue::new(capacity),
+            animated: Arc::new(Mutex::new(None)),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             prefetch_active: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    /// 命中返回缓存值并移到末尾；未命中返回 None
+    /// 命中返回缓存值并移到末尾；未命中返回 None（生产路径走 get_entry 复用信封）
+    #[allow(dead_code)] // 测试与诊断使用
     pub fn get(&self, path: &str) -> Option<Arc<LoadResult>> {
-        self.lru.get(path)
+        self.get_entry(path).map(|e| e.result)
+    }
+
+    /// 命中返回完整条目（含惰性信封，供 load_image 复用打包结果）并移到末尾
+    pub fn get_entry(&self, path: &str) -> Option<CachedEntry> {
+        if let Some(e) = self.lru.get(path) {
+            return Some(e);
+        }
+        if let Ok(guard) = self.animated.lock() {
+            if let Some((k, e)) = guard.as_ref() {
+                if k == path {
+                    return Some(e.clone());
+                }
+            }
+        }
+        None
     }
 
     /// 存在性检查（不移位，供预取判断用）
     pub fn peek(&self, path: &str) -> bool {
-        self.lru.peek(path)
+        if self.lru.peek(path) {
+            return true;
+        }
+        self.animated
+            .lock()
+            .map(|g| g.as_ref().is_some_and(|(k, _)| k == path))
+            .unwrap_or(false)
     }
 
     /// 预取去重 + 并发门控：路径不在解码中且并发未达上限则登记并返回 true；
@@ -77,13 +127,26 @@ impl DecodeCache {
         }
     }
 
-    /// 写入缓存；已存在则更新并移到末尾，超出容量淘汰队首
+    /// 写入缓存；动画结果进独立单槽（互相替换），其余进 LRU（已存在则更新并
+    /// 移到末尾，超出容量淘汰队首）
     pub fn put(&self, path: String, result: Arc<LoadResult>) {
-        self.lru.put(path, result)
+        if result.mode == "animated" {
+            if let Ok(mut g) = self.animated.lock() {
+                *g = Some((path, CachedEntry::new(result)));
+            }
+        } else {
+            self.lru.put(path, CachedEntry::new(result));
+        }
     }
 
-    /// 调整容量（缓存强度变化时调用）；超出新容量的条目淘汰
+    /// 调整容量（缓存强度变化时调用）；超出新容量的条目淘汰；
+    /// 容量 0（缓存关闭）同时清空动画槽位
     pub fn set_capacity(&self, capacity: usize) {
-        self.lru.set_capacity(capacity)
+        self.lru.set_capacity(capacity);
+        if capacity == 0 {
+            if let Ok(mut g) = self.animated.lock() {
+                *g = None;
+            }
+        }
     }
 }

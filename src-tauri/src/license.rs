@@ -259,14 +259,24 @@ impl LicenseManager {
     }
 
     /// 许可证落盘：先确保存储目录存在，再写入 JWT。
+    /// 原子替换（临时文件 + rename）：写盘中途断电/崩溃不会留下半截
+    /// license.json（那会让已激活用户掉回免费版，需重新激活）。
     fn persist(&self, lic: &License) -> Result<(), String> {
         let s = serde_json::to_string_pretty(lic).map_err(|e| e.to_string())?;
         if let Some(dir) = self.storage.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|e| format!("无法创建许可证目录 {}: {e}", dir.display()))?;
         }
-        std::fs::write(&self.storage, s)
-            .map_err(|e| format!("无法保存许可证到 {}: {e}", self.storage.display()))
+        let tmp = self.storage.with_extension("json.tmp");
+        std::fs::write(&tmp, s)
+            .map_err(|e| format!("无法保存许可证到 {}: {e}", tmp.display()))?;
+        match std::fs::rename(&tmp, &self.storage) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(&tmp);
+                Err(format!("无法保存许可证到 {}: {e}", self.storage.display()))
+            }
+        }
     }
 
     fn clear(&self) {
@@ -295,8 +305,7 @@ impl LicenseManager {
         }
         #[cfg(not(debug_assertions))]
         {
-            let store = self.store.clone();
-            Self::is_pro_with(&self.license.lock().ok().and_then(|g| g.clone()), &store)
+            Self::is_pro_with(&self.license.lock().ok().and_then(|g| g.clone()), &self.store)
         }
     }
 
@@ -599,20 +608,27 @@ fn now() -> i64 {
 
 /// 设备指纹：Windows MachineGuid（注册表读取），激活/验证/存储共用。
 /// 机器 GUID 系统级唯一且重装系统才变化；直接用作设备标识。
+/// 进程内缓存（OnceLock）：is_pro 在每个 Tauri 命令里都调用，注册表
+/// 打开+读值不该重复发生（GUID 运行期不变）。
 pub fn device_id() -> String {
-    use winreg::enums::HKEY_LOCAL_MACHINE;
-    use winreg::RegKey;
-    RegKey::predef(HKEY_LOCAL_MACHINE)
-        .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
-        .and_then(|k| k.get_value::<String, _>("MachineGuid"))
-        .unwrap_or_else(|_| {
-            // 兜底：注册表读取失败时用主机名+用户名组合，避免所有机器共用同一 id（跨机复制许可证）
-            format!(
-                "fallback-{}-{}",
-                std::env::var("COMPUTERNAME").unwrap_or_else(|_| "host".into()),
-                std::env::var("USERNAME").unwrap_or_else(|_| "user".into())
-            )
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            use winreg::enums::HKEY_LOCAL_MACHINE;
+            use winreg::RegKey;
+            RegKey::predef(HKEY_LOCAL_MACHINE)
+                .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
+                .and_then(|k| k.get_value::<String, _>("MachineGuid"))
+                .unwrap_or_else(|_| {
+                    // 兜底：注册表读取失败时用主机名+用户名组合，避免所有机器共用同一 id（跨机复制许可证）
+                    format!(
+                        "fallback-{}-{}",
+                        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "host".into()),
+                        std::env::var("USERNAME").unwrap_or_else(|_| "user".into())
+                    )
+                })
         })
+        .clone()
 }
 
 // ---------- Tauri 命令 ----------

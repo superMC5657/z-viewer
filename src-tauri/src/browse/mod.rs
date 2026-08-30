@@ -34,7 +34,11 @@ const COMMON_EXTS: &[&str] = &[
 ];
 
 fn is_image_file(name: &str) -> bool {
-    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    // Path::extension 语义：无扩展名文件返回 None（不再把整个文件名当扩展名）
+    let ext = std::path::Path::new(name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
     COMMON_EXTS.contains(&ext.as_str()) || crate::decode::is_raw_ext(&ext)
 }
 
@@ -67,6 +71,12 @@ struct Folder {
 struct ModelInner {
     m: Mutex<InnerData>,
     cv: Condvar,
+    /// 已查过的图片大小缓存（key=图片路径）：state() 读取免重复 fs::metadata
+    /// 系统调用 —— 翻回上一张/幻灯片循环同一张图时零 syscall。
+    /// 每张图最多 8 字节 + PathBuf，仅含本次会话访问过的图，内存有界。
+    /// 独立锁：未命中时可在**不持模型主锁**的情况下 stat + 回写（慢盘上 stat
+    /// 可达毫秒级，放主锁内会阻塞导航与扫描线程）。
+    file_sizes: Mutex<HashMap<PathBuf, u64>>,
 }
 
 struct InnerData {
@@ -81,15 +91,14 @@ struct InnerData {
     loading: bool,
     /// Drop 后置位：扫描线程尽快退出
     cancelled: bool,
-    /// 已查过的图片大小缓存（key=图片路径）：state() 读取免重复 fs::metadata
-    /// 系统调用 —— 翻回上一张/幻灯片循环同一张图时零 syscall。
-    /// 每张图最多 8 字节 + PathBuf，仅含本次会话访问过的图，内存有界。
-    file_sizes: HashMap<PathBuf, u64>,
 }
 
 /// 扫描完成回调（携带最新状态，供前端刷新计数）
 pub type OnReady = Box<dyn FnOnce(BrowseState) + Send>;
 
+/// Clone 仅复制 Arc 句柄（同一模型），导航/状态方法走 &self + 内部锁；
+/// AppState 持 Arc<Option<_>>：命令可快照出模型后释放全局锁再慢慢等填充
+#[derive(Clone)]
 pub struct BrowseModel {
     inner: Arc<ModelInner>,
 }
