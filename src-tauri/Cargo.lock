@@ -2035,28 +2035,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image-viewer"
-version = "0.6.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "ed25519-dalek",
- "image",
- "kamadak-exif",
- "natord",
- "rawler",
- "reqwest",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-opener",
- "tauri-plugin-process",
- "tauri-plugin-updater",
- "winreg",
-]
-
-[[package]]
 name = "image-webp"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6136,6 +6114,28 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "synstructure",
+]
+
+[[package]]
+name = "z-viewer"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "ed25519-dalek",
+ "image",
+ "kamadak-exif",
+ "natord",
+ "rawler",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
+ "tauri-plugin-process",
+ "tauri-plugin-updater",
+ "winreg",
 ]
 
 [[package]]

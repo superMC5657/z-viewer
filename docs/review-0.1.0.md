@@ -1,4 +1,4 @@
-# Image Viewer v0.1.0 代码审查报告
+# ZViewer v0.1.0 代码审查报告
 
 > 审查范围：核心浏览 / 缓存 / 解码流程（TypeScript 前端 + Rust 后端）
 > 验证情况：TypeScript 类型检查通过；Rust 全部 30 个单测通过

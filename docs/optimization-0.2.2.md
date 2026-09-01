@@ -1,4 +1,4 @@
-# Image Viewer v0.2.3 性能优化报告
+# ZViewer v0.2.3 性能优化报告
 
 > 优化范围：前端幻灯片日志清理 + 后端 5 项性能优化（browse 导航 / cache / decode / 构建配置）
 > 验证情况：`cargo test` 全部 32 个单测通过；`cargo check --release` 无警告；TypeScript 类型检查通过

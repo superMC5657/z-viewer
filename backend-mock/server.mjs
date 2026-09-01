@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Image Viewer 授权服务（参考实现，零 npm 依赖）
+ * ZViewer 授权服务（参考实现，零 npm 依赖）
  *
  * 用法：node server.mjs [--port 8787]
  * 环境变量：
@@ -243,7 +243,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Image Viewer 授权服务已启动: http://127.0.0.1:${PORT}`);
+  console.log(`ZViewer 授权服务已启动: http://127.0.0.1:${PORT}`);
   console.log(`数据文件: ${DATA_FILE}`);
   console.log(`激活码: node gen-codes.mjs --count 5 --note "..."`);
 });

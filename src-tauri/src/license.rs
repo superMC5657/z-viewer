@@ -37,17 +37,17 @@ pub const LICENSE_ISSUER: &str = "soft-candy";
 /// "plugins": {
 ///   "store": {
 ///     "apiBase": "https://your-server.example.com",
-///     "buyUrl": "https://your-server.example.com/p/image-viewer",
-///     "product": "image-viewer",
+///     "buyUrl": "https://your-server.example.com/p/z-viewer",
+///     "product": "z-viewer",
 ///     "licenseLevel": "pro",
 ///     "licensePublicKeys": {
-///       "pro": "<image-viewer/pro 的 Ed25519 公钥，raw/DER base64 或 PEM>"
+///       "pro": "<z-viewer/pro 的 Ed25519 公钥，raw/DER base64 或 PEM>"
 ///     },
     ///     "licenseFileName": "license.json",
-    ///     "activatePath": "/api/v1/apps/image-viewer/activate",
-    ///     "verifyPath": "/api/v1/apps/image-viewer/verify",
-    ///     "deactivatePath": "/api/v1/apps/image-viewer/deactivate",
-    ///     "analyticsPath": "/api/v1/apps/image-viewer/analytics",
+    ///     "activatePath": "/api/v1/apps/z-viewer/activate",
+    ///     "verifyPath": "/api/v1/apps/z-viewer/verify",
+    ///     "deactivatePath": "/api/v1/apps/z-viewer/deactivate",
+    ///     "analyticsPath": "/api/v1/apps/z-viewer/analytics",
     ///     "analyticsToken": "<soft-candy 管理后台生成的埋点 Bearer token，空 = 不携带>"
 ///   }
 /// }
@@ -754,7 +754,7 @@ mod tests {
         StoreConfig {
             api_base: String::new(),
             buy_url: None,
-            product: "image-viewer".into(),
+            product: "z-viewer".into(),
             license_level: "pro".into(),
             public_keys: HashMap::from([("pro".to_string(), pubkey_b64.to_string())]),
             license_file_name: "license.json".into(),
@@ -787,10 +787,10 @@ mod tests {
     fn claims(device_id: &str, level: &str, expires_at: i64) -> Claims {
         Claims {
             iss: LICENSE_ISSUER.into(),
-            aud: "image-viewer".into(),
+            aud: "z-viewer".into(),
             sub: "ABCD-EFGH-JKMN-PQRS".into(),
             code: "ABCD-EFGH-JKMN-PQRS".into(),
-            app: "image-viewer".into(),
+            app: "z-viewer".into(),
             level: level.into(),
             level_label: if level == "pro" { "专业版" } else { level }.into(),
             device_id: device_id.into(),

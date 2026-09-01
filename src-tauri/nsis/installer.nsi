@@ -1,4 +1,4 @@
-; Custom NSIS installer template for Image-Viewer.
+; Custom NSIS installer template for ZViewer.
 ; Based on the stock Tauri v2 template shipped with tauri-cli v2.11.4
 ; (crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi).
 ; Local change: the default `currentUser` install directory now lives under

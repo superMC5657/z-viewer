@@ -9,7 +9,7 @@ static SEQ: AtomicU32 = AtomicU32::new(0);
 
 fn temp_base() -> PathBuf {
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("image-viewer-test-{}-{n}", std::process::id()))
+    std::env::temp_dir().join(format!("z-viewer-test-{}-{n}", std::process::id()))
 }
 
 fn touch(p: &Path) {

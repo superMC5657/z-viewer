@@ -6,7 +6,7 @@
  *   node scripts/build-latest-json.mjs \
  *     --repo <owner>/<releases-repo> \
  *     --tag <vX.Y.Z> \
- *     --assets '[{"target":"windows-x86_64","file":"Image Viewer_0.1.0_x64-setup.exe"}, ...]' \
+ *     --assets '[{"target":"windows-x86_64","file":"ZViewer_0.1.0_x64-setup.exe"}, ...]' \
  *     --dir artifacts \
  *     --output latest.json
  *
@@ -49,7 +49,7 @@ if (!repo || !tag || !assetsJson) {
 }
 if (repo.includes('<') || repo.includes('>')) {
   console.error(
-    `错误: --repo 仍是占位符 "${repo}",请替换为真实产物仓库(如 myname/image-viewer-release)后再发布`,
+    `错误: --repo 仍是占位符 "${repo}",请替换为真实产物仓库(如 myname/z-viewer-release)后再发布`,
   )
   process.exit(1)
 }
@@ -76,7 +76,7 @@ for (const { target, file } of assets) {
   }
   platforms[target] = {
     signature,
-    // 文件名可能含空格(如 "Image Viewer_0.4.1_x64-setup.exe"),URL 必须百分号编码,
+    // 文件名可能含空格(如 "ZViewer_0.4.1_x64-setup.exe"),URL 必须百分号编码,
     // 否则 Tauri updater 解析 URL 会失败
     url: `https://gh-proxy.com/https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(file)}`,
   }
@@ -89,7 +89,7 @@ if (Object.keys(platforms).length === 0) {
 
 const latest = {
   version: tag.replace(/^v/, ''),
-  notes: `Image Viewer ${tag}`,
+  notes: `ZViewer ${tag}`,
   pub_date: new Date().toISOString(),
   platforms,
 }

@@ -15,7 +15,7 @@
  *   - 以 package.json 的 version 为基准读取当前版本;写前会校验各文件是否一致,
  *     不一致时告警并一并修正。
  *   - 采用文本级替换,保持各文件原有格式与注释不变(不经过 JSON/Toml 序列化)。
- *   - Cargo.toml / Cargo.lock 只改名为 image-viewer 的 package 段,
+ *   - Cargo.toml / Cargo.lock 只改名为 z-viewer 的 package 段,
  *     不会误伤其它依赖的 version 行。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -31,7 +31,7 @@ const jsonGet = (s) => s.match(/^(\s*"version":\s*")([^"]+)(")/m)?.[2]
 const jsonSet = (s, v) => s.replace(/^(\s*"version":\s*")[^"]+(")/m, `$1${v}$2`)
 
 // Cargo 系:package 段 name 行紧邻 version 行
-const appName = 'image-viewer'
+const appName = 'z-viewer'
 const cargoPattern = () => new RegExp(`name = "${appName}"\nversion = "([^"]+)"`)
 const cargoGet = (s) => s.match(cargoPattern())?.[1]
 const cargoSet = (s, v) =>

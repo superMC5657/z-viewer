@@ -1,8 +1,8 @@
 # CD:Tauri Windows 打包 → 签名 → 发布到公开产物仓库(供公网下载 + 更新)
 #
 # 方案(仿 YLink,2026-08-15 确认):
-#   - 代码仓库 image-viewer 为 private(不开源),产物发布到公开产物仓库
-#     superMC5657/image-viewer-release,保证匿名下载与 gh-proxy 加速可行
+#   - 代码仓库 z-viewer 为 private(不开源),产物发布到公开产物仓库
+#     superMC5657/z-viewer-release,保证匿名下载与 gh-proxy 加速可行
 #   - latest.json 的资产 url 统一加 gh-proxy.com 前缀加速国内更新;updater endpoints 见
 #     src-tauri/tauri.conf.json(gh-proxy 优先,直连兜底)
 #   - 目前只要求 Windows 打包:仅 windows-latest → NSIS 安装包;
@@ -10,12 +10,12 @@
 #   - 前端/类型检查等 CI 质量门在 ci.yml,与本流水线并行触发
 #
 # 触发:push tag v* 或手动 workflow_dispatch
-# 需要配置的 repository secrets(在代码仓库 superMC5657/image-viewer 上配置):
+# 需要配置的 repository secrets(在代码仓库 superMC5657/z-viewer 上配置):
 #   TAURI_SIGNING_PRIVATE_KEY = 私钥(tauri signer sign 支持,base64 字符串)。
 #     注意:本项目密钥**有密码**(见项目根 .env 的 TAURI_SIGNING_PRIVATE_KEY_PASSWORD),
 #     CI 必须同时配置 TAURI_SIGNING_PRIVATE_KEY_PASSWORD,否则 tauri build 无法解密私钥签名。
 #     .env 是本机文件(已 gitignore),CI 读不到,需把 key 与 password 配到 GitHub secrets。
-#   RELEASES_PAT = 对公开产物仓库 superMC5657/image-viewer-release 有 contents:write
+#   RELEASES_PAT = 对公开产物仓库 superMC5657/z-viewer-release 有 contents:write
 #     权限的 PAT(如 fine-grained token,仅授给该仓库的 Contents: Read/Write)
 name: Release Tauri
 
@@ -153,7 +153,7 @@ jobs:
             ASSETS="${ASSETS}{\"target\":\"$T\",\"file\":\"$SAFE\"},"
           done
           ASSETS="${ASSETS%,}]"
-          node scripts/build-latest-json.mjs --repo superMC5657/image-viewer-release --tag "$TAG" --assets "$ASSETS" --dir artifacts --output artifacts/latest.json
+          node scripts/build-latest-json.mjs --repo superMC5657/z-viewer-release --tag "$TAG" --assets "$ASSETS" --dir artifacts --output artifacts/latest.json
 
       - name: Publish GitHub release (releases repo)
         env:
@@ -161,13 +161,13 @@ jobs:
         run: |
           set -e
           # 同名 tag 已存在则删除重建(产物仓库每次发版全量替换)
-          gh release delete "$TAG" --yes --cleanup-tag --repo superMC5657/image-viewer-release || true
+          gh release delete "$TAG" --yes --cleanup-tag --repo superMC5657/z-viewer-release || true
           cd artifacts
-          # 文件名可能含空格(Image Viewer_<ver>_x64-setup.exe),用数组展开避免 shell 分词
+          # 文件名可能含空格(ZViewer_<ver>_x64-setup.exe),用数组展开避免 shell 分词
           FILES=()
           while IFS= read -r -d '' f; do FILES+=("$f"); done < <(find . -type f -print0)
           gh release create "$TAG" "${FILES[@]}" \
-            --repo superMC5657/image-viewer-release \
-            --title "Image Viewer $TAG" \
-            --notes "Image Viewer $TAG 安装包与更新元数据。更新走 gh-proxy.com 镜像加速,客户端 updater 自动检查。" \
+            --repo superMC5657/z-viewer-release \
+            --title "ZViewer $TAG" \
+            --notes "ZViewer $TAG 安装包与更新元数据。更新走 gh-proxy.com 镜像加速,客户端 updater 自动检查。" \
             --latest
