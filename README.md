@@ -2,7 +2,7 @@
 
 基于 Tauri 2.x 的精美快速看图软件。深色毛玻璃 UI，核心特色是**跨同级文件夹无缝浏览**与**RAW/动画格式支持**。
 
-> 文档：`docs/需求报告与技术方案.md`（需求与技术方案）、`docs/UI设计草图.md`（界面唯一依据）、`docs/开发阶段规划.md`（里程碑追踪）、`docs/埋点协议-analytics.md`（会话统计埋点协议）、`docs/看图观感优化.md`（观感打磨记录）
+> 文档：`docs/需求报告与技术方案.md`（需求与技术方案）、`docs/UI设计草图.md`（界面唯一依据）、`docs/开发阶段规划.md`（里程碑追踪）、`docs/soft-candy-integration-guide.md`（专业版激活/埋点/更新接入契约）
 
 ## 技术栈
 
@@ -43,7 +43,7 @@
 
 ```bash
 pnpm install          # 安装前端依赖
-pnpm gen:test-images  # （可选）生成 test-images/ 测试图库
+python scripts/gen-test-images.py  # （可选）生成 test-images/ 测试图库（需 Python）
 pnpm tauri dev        # 开发模式（前端热更新 + Rust 自动重编译）
 ```
 
@@ -98,8 +98,7 @@ src-tauri/            # Rust 后端
   src/commands/       # Tauri IPC commands（含付费门控）
   src/license.rs      # 专业版授权：设备指纹、验签、在线验证、激活
   src/main.rs         # 入口、启动参数、授权初始化
-backend-mock/         # 旧授权参考实现，已废弃（soft-candy 为当前授权服务）
-scripts/              # 图标 / 测试图片生成脚本
+scripts/              # 图标 / 测试图片 / 版本号 / 发布 JSON 生成脚本
 test-images/          # 生成的测试图库（A/B/C 跨文件夹验证）
 ```
 
