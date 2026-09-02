@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 /**
- * 生成 Tauri updater 用的 latest.json（多平台合并 + gh-proxy.com 加速前缀）。
+ * 生成 Tauri updater 用的 latest.json(多平台合并 + gh-proxy.com 加速前缀)。
  *
  * 用法:
  *   node scripts/build-latest-json.mjs \
+ *     --name <appName> \
  *     --repo <owner>/<releases-repo> \
  *     --tag <vX.Y.Z> \
- *     --assets '[{"target":"windows-x86_64","file":"ZViewer_0.1.0_x64-setup.exe"}, ...]' \
+ *     --assets '[{"target":"windows-x86_64","file":"<appName>_0.1.0_x64-setup.exe"}, ...]' \
  *     --dir artifacts \
  *     --output latest.json
  *
  * 说明:
+ *   - --name 为应用显示名,写入更新说明(notes);脚本与项目解耦,可跨项目直接迁移。
  *   - file 为安装包文件名(basename,即 release 资产名);实际文件与同名 .sig
  *     位于 <dir>/<target>/ 下(由 `tauri signer sign` 生成)。
- *   - url 统一加 gh-proxy.com 前缀加速国内下载:
+ *   - url 默认加 gh-proxy.com 前缀加速国内下载,可用 --proxy-prefix 覆盖
+ *     (传空字符串则不加前缀):
  *     https://gh-proxy.com/https://github.com/<repo>/releases/download/<tag>/<file>
  *   - 平台 key 遵循 Tauri updater 约定:windows-x86_64 / darwin-aarch64 /
  *     darwin-x86_64 / linux-x86_64。
@@ -34,25 +37,30 @@ function parseArgs(argv) {
 }
 
 const {
+  name,
   repo,
   tag,
   assets: assetsJson,
   dir = '.',
   output = 'latest.json',
+  'proxy-prefix': proxyPrefix,
 } = parseArgs(process.argv.slice(2))
 
-if (!repo || !tag || !assetsJson) {
+if (!name || !repo || !tag || !assetsJson) {
   console.error(
-    '用法: node scripts/build-latest-json.mjs --repo <owner/repo> --tag <vX.Y.Z> --assets <json> [--dir artifacts] [--output latest.json]',
+    '用法: node scripts/build-latest-json.mjs --name <appName> --repo <owner/repo> --tag <vX.Y.Z> --assets <json> [--dir artifacts] [--output latest.json] [--proxy-prefix <url>]',
   )
   process.exit(1)
 }
 if (repo.includes('<') || repo.includes('>')) {
   console.error(
-    `错误: --repo 仍是占位符 "${repo}",请替换为真实产物仓库(如 myname/z-viewer-release)后再发布`,
+    `错误: --repo 仍是占位符 "${repo}",请替换为真实产物仓库(如 myname/my-app-release)后再发布`,
   )
   process.exit(1)
 }
+
+// url 加速前缀:默认 gh-proxy.com,--proxy-prefix 可覆盖(传空字符串 = 不加前缀)
+const urlPrefix = proxyPrefix ?? 'https://gh-proxy.com/'
 
 const assets = JSON.parse(assetsJson)
 if (!Array.isArray(assets) || assets.length === 0) {
@@ -76,9 +84,9 @@ for (const { target, file } of assets) {
   }
   platforms[target] = {
     signature,
-    // 文件名可能含空格(如 "ZViewer_0.4.1_x64-setup.exe"),URL 必须百分号编码,
+    // 文件名可能含空格,URL 必须百分号编码,
     // 否则 Tauri updater 解析 URL 会失败
-    url: `https://gh-proxy.com/https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(file)}`,
+    url: `${urlPrefix}https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(file)}`,
   }
 }
 
@@ -89,7 +97,7 @@ if (Object.keys(platforms).length === 0) {
 
 const latest = {
   version: tag.replace(/^v/, ''),
-  notes: `ZViewer ${tag}`,
+  notes: `${name} ${tag}`,
   pub_date: new Date().toISOString(),
   platforms,
 }

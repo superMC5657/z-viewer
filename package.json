@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "bump:version": "node scripts/bump-version.mjs",
+    "bump:version": "node scripts/bump-version.mjs --name z-viewer",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

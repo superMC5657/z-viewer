@@ -3,20 +3,18 @@
  * 一键同步项目版本号到四个文件:
  *   package.json · src-tauri/Cargo.toml · src-tauri/Cargo.lock · src-tauri/tauri.conf.json
  *
- * 用法:
- *   node scripts/bump-version.mjs 1.2.3             # 直接设置版本
- *   node scripts/bump-version.mjs --version 1.2.3   # 同上(显式写法)
- *   node scripts/bump-version.mjs --patch           # 0.1.0 -> 0.1.1
- *   node scripts/bump-version.mjs --minor           # 0.1.0 -> 0.2.0
- *   node scripts/bump-version.mjs --major           # 0.1.0 -> 1.0.0
- *   node scripts/bump-version.mjs 1.2.3 --dry-run   # 只预览,不写文件
+ * 用法(项目名通过 --name 传入;package.json 的 bump:version 已内置):
+ *   node scripts/bump-version.mjs --name <appName> 1.2.3            # 直接设置版本
+ *   node scripts/bump-version.mjs --name <appName> --patch          # 0.1.0 -> 0.1.1
+ *   node scripts/bump-version.mjs --name <appName> 1.2.3 --dry-run  # 只预览,不写文件
  *
  * 说明:
  *   - 以 package.json 的 version 为基准读取当前版本;写前会校验各文件是否一致,
  *     不一致时告警并一并修正。
  *   - 采用文本级替换,保持各文件原有格式与注释不变(不经过 JSON/Toml 序列化)。
- *   - Cargo.toml / Cargo.lock 只改名为 z-viewer 的 package 段,
+ *   - Cargo.toml / Cargo.lock 只改 --name 指定的 package 段,
  *     不会误伤其它依赖的 version 行。
+ *   - 项目名由 --name 传入,脚本本身与项目解耦,可跨项目直接迁移。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -30,8 +28,8 @@ const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
 const jsonGet = (s) => s.match(/^(\s*"version":\s*")([^"]+)(")/m)?.[2]
 const jsonSet = (s, v) => s.replace(/^(\s*"version":\s*")[^"]+(")/m, `$1${v}$2`)
 
-// Cargo 系:package 段 name 行紧邻 version 行
-const appName = 'z-viewer'
+// Cargo 系:package 段 name 行紧邻 version 行(name 由 --name 注入)
+let appName = ''
 const cargoPattern = () => new RegExp(`name = "${appName}"\nversion = "([^"]+)"`)
 const cargoGet = (s) => s.match(cargoPattern())?.[1]
 const cargoSet = (s, v) =>
@@ -47,18 +45,22 @@ const TARGETS = [
 function usage() {
   return [
     '用法:',
-    '  node scripts/bump-version.mjs <x.y.z>            直接设置版本',
-    '  node scripts/bump-version.mjs --version <x.y.z>  同上(显式写法)',
-    '  node scripts/bump-version.mjs --patch|--minor|--major  基于当前版本递增',
+    '  node scripts/bump-version.mjs --name <appName> <x.y.z>            直接设置版本',
+    '  node scripts/bump-version.mjs --name <appName> --version <x.y.z>  同上(显式写法)',
+    '  node scripts/bump-version.mjs --name <appName> --patch|--minor|--major  基于当前版本递增',
     '  node scripts/bump-version.mjs <...> --dry-run    只预览,不写文件',
+    '',
+    '--name: Cargo.toml / Cargo.lock 中 package 段的 name(即项目名);',
+    '        package.json 的 bump:version 已内置,跨项目迁移时只需改那一处。',
   ].join('\n')
 }
 
 function parseArgs(argv) {
-  const args = { version: null, bump: null, dryRun: false, help: false }
+  const args = { name: null, version: null, bump: null, dryRun: false, help: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
-    if (a === '--version') args.version = argv[++i]
+    if (a === '--name') args.name = argv[++i]
+    else if (a === '--version') args.version = argv[++i]
     else if (a === '--patch' || a === '--minor' || a === '--major') args.bump = a.slice(2)
     else if (a === '--dry-run') args.dryRun = true
     else if (a === '--help' || a === '-h') args.help = true
@@ -76,7 +78,9 @@ function loadTargets() {
     const text = readFileSync(abs, 'utf8')
     const current = t.get(text)
     if (!current) {
-      console.error(`错误: 无法在 ${t.file} 中定位版本号(文件格式可能已变化)`)
+      console.error(
+        `错误: 无法在 ${t.file} 中定位版本号(文件格式可能已变化,或 --name "${appName}" 不是其中的 package 名)`,
+      )
       process.exit(1)
     }
     return { ...t, abs, text, current }
@@ -105,6 +109,12 @@ const args = parseArgs(process.argv.slice(2))
 if (args.help) {
   console.log(usage())
   process.exit(0)
+}
+
+appName = args.name?.trim() ?? ''
+if (!appName) {
+  console.error(`错误: 缺少 --name <appName>(Cargo 系文件 package 段的名称)。\n\n${usage()}`)
+  process.exit(1)
 }
 
 const targets = loadTargets()
