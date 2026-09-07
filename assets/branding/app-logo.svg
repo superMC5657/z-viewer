@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- 浅色白瓷钛银底座渐变 -->
+    <linearGradient id="lightBgGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="50%" stop-color="#F3F5F9" />
+      <stop offset="100%" stop-color="#E2E6F0" />
+    </linearGradient>
+
+    <!-- 钛合金镜头凹槽阴影渐变 -->
+    <linearGradient id="lensMountGrad2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#DEE2EC" />
+      <stop offset="100%" stop-color="#F8FAFC" />
+    </linearGradient>
+
+    <!-- 光圈内部暗腔渐变 -->
+    <linearGradient id="irisChamber2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#121829" />
+      <stop offset="100%" stop-color="#05070D" />
+    </linearGradient>
+
+    <!-- 光圈叶片电光蓝渐变 -->
+    <linearGradient id="bladeGradLight2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00F0FF" />
+      <stop offset="50%" stop-color="#0066FF" />
+      <stop offset="100%" stop-color="#10182E" />
+    </linearGradient>
+
+    <!-- 底座柔和立体阴影 -->
+    <filter id="softShadow2" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#000000" flood-opacity="0.1" />
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000000" flood-opacity="0.06" />
+    </filter>
+  </defs>
+
+  <!-- 图标底座 (白瓷 Squircle) -->
+  <rect x="20" y="20" width="472" height="472" rx="108" fill="url(#lightBgGrad2)" stroke="rgba(0,0,0,0.06)" stroke-width="1.5" filter="url(#softShadow2)" />
+
+  <!-- 镜头外圈精密微型刻度环与沉头槽 -->
+  <circle cx="256" cy="256" r="182" fill="none" stroke="rgba(0,0,0,0.08)" stroke-width="1.5" stroke-dasharray="3 7" />
+  <circle cx="256" cy="256" r="172" fill="url(#lensMountGrad2)" stroke="rgba(0,0,0,0.08)" stroke-width="1.5" />
+  <circle cx="256" cy="256" r="158" fill="none" stroke="#0072FF" stroke-opacity="0.25" stroke-width="1" />
+
+  <!-- 镜头核心光学暗腔 -->
+  <circle cx="256" cy="256" r="148" fill="url(#irisChamber2)" stroke="rgba(0,102,255,0.4)" stroke-width="2.5" />
+
+  <!-- 6片顺时针咬合的精密光学光圈叶片 -->
+  <g transform="translate(256,256)">
+    <path d="M 0,-136 C 50,-136 110,-90 126,-40 L 48,-16 C 36,-44 10,-60 -20,-68 Z" fill="url(#bladeGradLight2)" stroke="#060912" stroke-width="3" />
+    <path d="M 0,-136 C 50,-136 110,-90 126,-40 L 48,-16 C 36,-44 10,-60 -20,-68 Z" fill="url(#bladeGradLight2)" stroke="#060912" stroke-width="3" transform="rotate(60)" />
+    <path d="M 0,-136 C 50,-136 110,-90 126,-40 L 48,-16 C 36,-44 10,-60 -20,-68 Z" fill="url(#bladeGradLight2)" stroke="#060912" stroke-width="3" transform="rotate(120)" />
+    <path d="M 0,-136 C 50,-136 110,-90 126,-40 L 48,-16 C 36,-44 10,-60 -20,-68 Z" fill="url(#bladeGradLight2)" stroke="#060912" stroke-width="3" transform="rotate(180)" />
+    <path d="M 0,-136 C 50,-136 110,-90 126,-40 L 48,-16 C 36,-44 10,-60 -20,-68 Z" fill="url(#bladeGradLight2)" stroke="#060912" stroke-width="3" transform="rotate(240)" />
+    <path d="M 0,-136 C 50,-136 110,-90 126,-40 L 48,-16 C 36,-44 10,-60 -20,-68 Z" fill="url(#bladeGradLight2)" stroke="#060912" stroke-width="3" transform="rotate(300)" />
+  </g>
+
+  <!-- 瞳孔中心深邃聚焦极点与纯白透镜高光 (Catchlight) -->
+  <circle cx="236" cy="236" r="10" fill="#FFFFFF" filter="drop-shadow(0 0 6px #00F0FF)" />
+  <circle cx="272" cy="270" r="4" fill="#FFFFFF" opacity="0.7" />
+
+  <!-- 镜头表面弧形镀膜高光反光 (Leica 光学反光质感) -->
+  <path d="M 148 180 Q 256 120 364 180 Q 256 150 148 180 Z" fill="#FFFFFF" fill-opacity="0.15" />
+</svg>
