@@ -5,7 +5,7 @@
   "identifier": "com.zviewer.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1425",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
@@ -24,7 +24,7 @@
         "fullscreen": false,
         "decorations": false,
         "shadow": true,
-        "zoomHotkeysEnabled": true
+        "zoomHotkeysEnabled": false
       }
     ],
     "security": {

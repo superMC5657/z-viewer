@@ -67,6 +67,7 @@ export const ICONS: Record<string, string> = {
   // —— 标题栏 ——
   minus: svgIcon('<path d="M5 12h14" stroke-width="1.6"/>', 14),
   square: svgIcon('<rect x="6.5" y="6.5" width="11" height="11" rx="1"/>', 14),
+  restore: svgIcon('<path d="M7.5 4.5h9a1 1 0 0 1 1 1v9"/><rect x="4.5" y="7.5" width="10" height="10" rx="1"/>', 14),
   close: svgIcon('<path d="m7 7 10 10M17 7 7 17" stroke-width="1.8"/>', 14),
 };
 

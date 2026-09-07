@@ -77,6 +77,13 @@ export class UI {
     }
   }
 
+  /** 工具栏按钮 Map 缓存（消除高频 DOM 查询） */
+  private toolbarButtons = new Map<string, HTMLElement>();
+  /** 幻灯片控制栏全屏按钮缓存 */
+  private ssFullscreenBtn: HTMLElement | null = null;
+  /** 上次 wake 触发时间（用于高频 mousemove 节流） */
+  private lastWakeAt = 0;
+
   /** 构建工具栏 DOM（按钮定义见 icons.ts，布局按草图 3.2） */
   buildToolbar(handlers: ToolbarHandlers): void {
     const frag = document.createDocumentFragment();
@@ -85,10 +92,13 @@ export class UI {
         frag.appendChild(sep());
       }
       for (const btn of group.items) {
-        frag.appendChild(this.makeButton(btn, handlers));
+        const el = this.makeButton(btn, handlers);
+        this.toolbarButtons.set(btn.id, el);
+        frag.appendChild(el);
       }
     }
     this.toolbar.appendChild(frag);
+    this.ssFullscreenBtn = this.slideshowBar.querySelector<HTMLElement>('[data-id="fullscreen"]');
   }
 
   private makeButton(btn: ToolbarButton, handlers: ToolbarHandlers): HTMLButtonElement {
@@ -106,25 +116,35 @@ export class UI {
   /** 工具栏按钮激活态（缩放模式 / 播放中 / 沉浸显示 accent 色）。
    *  同时作用于普通工具栏与幻灯片控制条（如 fullscreen 按钮在两处共享激活态） */
   setToolbarActive(id: string, active: boolean): void {
-    const sel = `[data-id="${id}"]`;
-    this.toolbar.querySelector<HTMLElement>(sel)?.classList.toggle("active", active);
-    this.slideshowBar.querySelector<HTMLElement>(sel)?.classList.toggle("active", active);
+    this.toolbarButtons.get(id)?.classList.toggle("active", active);
+    if (id === "fullscreen") {
+      this.ssFullscreenBtn?.classList.toggle("active", active);
+    }
   }
 
   /** 工具栏按钮高等级态（缓存高等级显示橙色） */
   setToolbarLevel(id: string, high: boolean): void {
-    const btn = this.toolbar.querySelector<HTMLElement>(`[data-id="${id}"]`);
-    btn?.classList.toggle("level-high", high);
+    this.toolbarButtons.get(id)?.classList.toggle("level-high", high);
   }
 
   /** 缩放模式按钮：适应窗口在纯 fit 态激活（accent），否则置灰（仍可点击恢复）；1:1 在 actual 态激活 */
   setZoomButtons(fit: boolean, actual: boolean): void {
-    const fitBtn = this.toolbar.querySelector<HTMLElement>('[data-id="zoom-fit"]');
-    const actualBtn = this.toolbar.querySelector<HTMLElement>('[data-id="zoom-actual"]');
+    const fitBtn = this.toolbarButtons.get("zoom-fit");
+    const actualBtn = this.toolbarButtons.get("zoom-actual");
     fitBtn?.classList.toggle("active", fit);
     fitBtn?.classList.toggle("dimmed", !fit);
     actualBtn?.classList.toggle("active", actual);
     actualBtn?.classList.remove("dimmed");
+  }
+
+  /** 标题栏最大化 / 还原状态视觉同步 */
+  updateMaximizeButton(isMaximized: boolean): void {
+    const btn = document.getElementById("btn-maximize");
+    if (!btn) return;
+    btn.innerHTML = isMaximized ? ICONS.restore : ICONS.square;
+    const tip = isMaximized ? "向下还原" : "最大化";
+    btn.title = tip;
+    btn.setAttribute("aria-label", tip);
   }
 
   /** 更新顶部信息条（草图 3.3） */
@@ -290,8 +310,18 @@ export class UI {
   /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1）
    *  帧条与普通工具栏同步；幻灯片模式下只唤醒控制浮条。
    *  鼠标悬停在浮层上（hoveringOverlay）时不设隐藏计时 —— 主动使用工具栏时不被隐藏。
-   *  幂等短路：浮层已可见时跳过 class 写入（mousemove 高频触发，只重置闲置计时） */
+   *  幂等短路：浮层已可见时跳过 class 写入（高频 mousemove 150ms 节流，降低定时器负担） */
   wake(): void {
+    const now = performance.now();
+    const isVisible = this.slideshowMode
+      ? !this.slideshowBar.classList.contains("hidden")
+      : !this.infoBar.classList.contains("hidden");
+
+    if (isVisible && now - this.lastWakeAt < 150) {
+      return;
+    }
+    this.lastWakeAt = now;
+
     if (this.slideshowMode) {
       // 播放中：仅控制浮条随鼠标唤醒，信息条/工具栏保持隐藏
       if (this.slideshowBar.classList.contains("hidden")) {
@@ -337,6 +367,12 @@ export class UI {
   private slideshowMode = false;
 
   // ---------- 专业版解锁对话框 ----------
+
+  /** 专业版解锁对话框当前是否处于显示状态 */
+  isLicenseDialogOpen(): boolean {
+    const mask = document.getElementById("unlock-dialog");
+    return Boolean(mask && !mask.classList.contains("hidden"));
+  }
 
   /** 激活/管理对话框显隐 */
   showLicenseDialog(info: LicenseInfo): void {
@@ -393,7 +429,7 @@ export class UI {
   /** 免费版锁定态：禁用文件夹跳转与缓存按钮（点击仍触发解锁引导，见 main.ts 拦截） */
   setLocked(locked: boolean): void {
     for (const id of ["folder-prev", "folder-next", "cache-toggle"]) {
-      const btn = this.toolbar.querySelector<HTMLElement>(`[data-id="${id}"]`);
+      const btn = this.toolbarButtons.get(id);
       if (!btn) continue;
       if (locked) {
         if (!btn.dataset.origTip) btn.dataset.origTip = btn.dataset.tip;

@@ -293,6 +293,7 @@ body.immersive #titlebar {
   color: var(--text-primary);
   white-space: nowrap;
   z-index: 40;
+  will-change: opacity, transform;
   transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
 }
 
@@ -352,6 +353,7 @@ body.immersive #info-bar {
   gap: var(--btn-gap);
   padding: 6px;
   z-index: 40;
+  will-change: opacity, transform;
   transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
 }
 #toolbar.hidden {

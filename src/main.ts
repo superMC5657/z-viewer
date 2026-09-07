@@ -12,9 +12,6 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { openUrl } from "@tauri-apps/plugin-opener";
 
 import { Viewer, type FitMode } from "./viewer";
 import { feLog } from "./logger";
@@ -25,7 +22,9 @@ import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
 import { ICONS } from "./icons";
 import { needsIpc, setRawExts, parseLoadEnvelope } from "./types";
-import type { AppSettings, BrowseState, LicenseInfo, LoadEnvelope, NavResult, StoreInfo } from "./types";
+import type { AppSettings, BrowseState, LicenseInfo, LoadEnvelope, NavResult } from "./types";
+import { checkForUpdate } from "./services/updater";
+import { LicenseService } from "./services/license";
 import "./ui.css";
 
 const stage = document.getElementById("stage")!;
@@ -41,13 +40,9 @@ const appWindow = getCurrentWindow();
 const windowState = new WindowState(appWindow, viewer, ui);
 const slideshow = new Slideshow();
 const prefetch = new PrefetchPool();
+
 const LICENSE_STATUS_CHANGED = "license://status-changed";
 let cacheLevel = 1;
-/** 专业版是否已解锁（启动时查询；控制按钮锁定态与功能入口） */
-let pro = false;
-/** 注销按钮是否处于“再次点击确认”状态 */
-let deactivateConfirmArmed = false;
-let deactivateConfirmTimer: number | undefined;
 /** 缓存等级设置请求代次：并发切换时只应用最后一次（防幻灯片自动切换与手动切换竞态） */
 let cacheLevelGen = 0;
 /** 幻灯片播放前的缓存等级（退出模式时恢复） */
@@ -59,6 +54,27 @@ let slideshowMode = false;
 let currentDims: { w: number; h: number } | null = null;
 /** 最近一次浏览状态（解锁后重开当前图片以启用跨文件夹扫描） */
 let lastState: BrowseState | null = null;
+
+const licenseService = new LicenseService(ui, {
+  onUnlocked: () => {
+    const saved = Number(localStorage.getItem("cache-level"));
+    if (Number.isFinite(saved) && saved >= 1 && saved <= 2) {
+      void setCacheLevel(saved, undefined, true);
+    }
+  },
+  onDowngraded: () => {
+    cacheLevel = 0;
+    syncCacheButton();
+    try {
+      localStorage.setItem("cache-level", "0");
+    } catch {
+      /* 忽略持久化失败 */
+    }
+  },
+  onReloadRequested: () => {
+    if (lastState) void openPath(lastState.path);
+  },
+});
 /** 当前 RAW 解码的 Blob URL（切换图片时 revoke，防止内存累积） */
 let currentBlobUrl: string | null = null;
 /** showImage 代次：播放中手动翻页等并发加载时，丢弃过期响应 */
@@ -82,6 +98,9 @@ async function showImage(state: BrowseState): Promise<void> {
   feLog(`显示图片: ${state.file_name} (${state.folder_name}) [${state.global_index + 1}/${state.global_total}]`);
   ui.setEmpty(false);
   ui.updateTitleFile(state.file_name);
+  const winTitle = `${state.file_name} - ZViewer`;
+  document.title = winTitle;
+  void appWindow.setTitle(winTitle).catch(() => undefined);
   ui.updateInfo(state, null);
   currentDims = null;
   currentAnimCandidate = false;
@@ -284,9 +303,9 @@ const BOUNDARY_TEXT: Record<string, string> = {
 
 /** 付费功能入口统一拦截：免费版弹出解锁引导（不发起 IPC） */
 function requirePro(): boolean {
-  if (pro) return true;
+  if (licenseService.isPro) return true;
   ui.showToast("专业版功能，解锁后可用");
-  void openLicenseDialog();
+  void licenseService.openDialog();
   return false;
 }
 
@@ -326,7 +345,7 @@ async function navApply(fn: () => Promise<NavResult>): Promise<void> {
     // 撞边界：图片未变化，只弹 Toast，不重载图片（避免闪烁与变换重置）
     ui.showToast(BOUNDARY_TEXT[result.boundary] ?? "已经到边界了");
     // 专业版功能被锁定（jump_folder 拦截）：引导解锁
-    if (result.boundary === "pro-required") void openLicenseDialog();
+    if (result.boundary === "pro-required") void licenseService.openDialog();
     return;
   }
   if (result.state) {
@@ -407,77 +426,14 @@ function handleToolbarAction(id: string): void {
       void toggleCache();
       break;
     case "update":
-      void checkForUpdate();
+      void checkForUpdate(ui);
       break;
     case "license":
-      void openLicenseDialog();
+      void licenseService.openDialog();
       break;
     case "slideshow":
       slideshow.toggle();
       break;
-  }
-}
-
-// ---------- 更新（tauri-plugin-updater） ----------
-
-/**
- * 检查更新：check → download（带进度 Toast）→ install → relaunch
- * 无新版本直接 Toast 提示；任意环节失败 Toast 报错，不中断浏览
- */
-async function checkForUpdate(): Promise<void> {
-  ui.showToast("正在检查更新…");
-  let update;
-  try {
-    update = await check();
-  } catch (err) {
-    ui.showToast(`检查更新失败：${String(err)}`);
-    feLog(`检查更新失败: ${String(err)}`);
-    return;
-  }
-  if (!update) {
-    ui.showToast("已是最新版本");
-    feLog("检查更新: 已是最新版本");
-    return;
-  }
-  feLog(`发现新版本: v${update.currentVersion} → v${update.version}`);
-  ui.showToast(`发现新版本 v${update.version}，开始下载…`);
-  try {
-    let total = 0;
-    let downloaded = 0;
-    let lastPct = 0;
-    await update.download((event) => {
-      if (event.event === "Started") {
-        total = event.data.contentLength ?? 0;
-        downloaded = 0;
-        lastPct = 0;
-        feLog(`下载开始: 共 ${total} 字节`);
-      } else if (event.event === "Progress") {
-        downloaded += event.data.chunkLength;
-        // 进度 Toast（每 20% 刷一次，避免刷屏；未知总量时跳过百分比）
-        if (total > 0) {
-          const pct = Math.floor((downloaded / total) * 100);
-          if (pct - lastPct >= 20) {
-            lastPct = pct;
-            ui.showToast(`正在下载更新 ${pct}%…`);
-          }
-        }
-      } else if (event.event === "Finished") {
-        ui.showToast("下载完成，正在安装…");
-      }
-    });
-    await update.install();
-  } catch (err) {
-    ui.showToast(`更新失败：${String(err)}`);
-    feLog(`更新失败: ${String(err)}`);
-    return;
-  }
-  feLog("更新安装完成，重启应用");
-  ui.showToast("更新完成，正在重启…");
-  try {
-    await relaunch();
-  } catch (err) {
-    ui.showToast(`重启失败，请手动重启应用：${String(err)}`);
-    feLog(`重启失败: ${String(err)}`);
   }
 }
 
@@ -640,7 +596,7 @@ function buildSlideshowBar(): void {
         // 只在首次进入时记录播放前等级（暂停→继续不覆盖，恢复仍用最初的等级）
         slideshowPrevCacheLevel = cacheLevel;
         // 自动提级到高等级缓存（专业版功能）；免费版跳过（Rust 会拒绝，避免误弹错误）
-        if (pro && cacheLevel !== 2) void setCacheLevel(2);
+        if (licenseService.isPro && cacheLevel !== 2) void setCacheLevel(2);
       }
     }
     // running=false（暂停）：保持模式、保留进度计数、保留高等级缓存——随时可继续播放
@@ -655,11 +611,8 @@ function exitSlideshow(): void {
   slideshowMode = false;
   ui.setSlideshowMode(false); // 恢复普通浮层（内部 wake）
   ui.setSlideshowProgress(0, 0);
-  // 恢复播放前的缓存等级。条件：播放前不是 2（说明自动启用请求可能已发出/在飞，必须 force 打回），
-  // 或播放前是 2 但播放中被人为改过（当前播放时工具栏隐藏、无快捷键，仅防御未来扩展）。
-  // 两者都不满足（播放前 2 且期间未变）则无需恢复，避免多余 invoke。
-  // 免费版跳过：无在飞提级请求（进入时 pro 才提级），force 恢复会被 Rust 拒绝且误弹错误
-  if (pro && slideshowPrevCacheLevel !== null && (slideshowPrevCacheLevel !== 2 || cacheLevel !== 2)) {
+  // 恢复播放前的缓存等级。
+  if (licenseService.isPro && slideshowPrevCacheLevel !== null && (slideshowPrevCacheLevel !== 2 || cacheLevel !== 2)) {
     void setCacheLevel(slideshowPrevCacheLevel, undefined, true);
   }
   slideshowPrevCacheLevel = null;
@@ -706,158 +659,21 @@ function syncCacheButton(): void {
   ui.setToolbarLevel("cache-toggle", cacheLevel >= 2);
 }
 
-// ---------- 专业版解锁 ----------
-
-async function activateLicense(code: string, email: string): Promise<void> {
-  const errEl = document.getElementById("unlock-error")!;
-  errEl.classList.add("hidden");
-  try {
-    const info = await invoke<LicenseInfo>("activate_license", { code, email });
-    if (info.status === "pro") {
-      pro = true;
-      hideLicenseDialog();
-      ui.setLocked(false);
-      ui.showToast("专业版解锁成功");
-      // 恢复持久化的缓存等级（Rust 侧已放行）
-      const saved = Number(localStorage.getItem("cache-level"));
-      if (Number.isFinite(saved) && saved >= 1 && saved <= 2) {
-        void setCacheLevel(saved, undefined, true);
-      }
-      // 重开当前图片：以专业版模式重建浏览模型（启用兄弟文件夹扫描）
-      if (lastState) void openPath(lastState.path);
-    } else {
-      errEl.textContent = "激活失败，请检查激活码";
-      errEl.classList.remove("hidden");
-    }
-  } catch (err) {
-    errEl.textContent = String(err);
-    errEl.classList.remove("hidden");
-  }
-}
-
-/** 同步在线续验返回的授权状态；由 pro 降级时清理缓存 UI 并重建当前浏览模型 */
-function applyLicenseStatus(info: LicenseInfo): void {
-  const wasPro = pro;
-  pro = info.status === "pro";
-  ui.setLocked(!pro);
-  if (!wasPro || pro) return;
-  cacheLevel = 0;
-  syncCacheButton();
-  try {
-    localStorage.setItem("cache-level", "0");
-  } catch {
-    /* 忽略持久化失败 */
-  }
-  hideLicenseDialog();
-  ui.showToast("专业版授权已失效，请重新激活");
-  if (lastState) void openPath(lastState.path);
-}
-
-/** 打开激活/管理对话框（每次打开读取最新本地记录） */
-async function openLicenseDialog(): Promise<void> {
-  resetDeactivateConfirm();
-  try {
-    const info = await invoke<LicenseInfo>("get_license_status");
-    ui.showLicenseDialog(info);
-  } catch (err) {
-    ui.showToast(String(err));
-  }
-}
-
-/** 注销激活：先提示释放设备名额，成功后再删除本地记录并停用专业功能 */
-async function deactivateLicense(): Promise<void> {
-  const errEl = document.getElementById("unlock-error")!;
-  errEl.classList.add("hidden");
-  try {
-    const info = await invoke<LicenseInfo>("deactivate_license");
-    pro = info.status === "pro";
-    ui.setLocked(!pro);
-    hideLicenseDialog();
-    ui.showToast("已取消激活");
-    // 重开当前图片：以免费版模式重建浏览模型（关闭跨文件夹扫描）
-    if (lastState) void openPath(lastState.path);
-  } catch (err) {
-    resetDeactivateConfirm();
-    errEl.textContent = String(err);
-    errEl.classList.remove("hidden");
-  }
-}
-
-function hideLicenseDialog(): void {
-  resetDeactivateConfirm();
-  ui.hideLicenseDialog();
-}
-
-function resetDeactivateConfirm(): void {
-  deactivateConfirmArmed = false;
-  window.clearTimeout(deactivateConfirmTimer);
-  const dialog = document.getElementById("unlock-dialog") as HTMLElement | null;
-  const btn = document.getElementById("unlock-confirm") as HTMLButtonElement | null;
-  if (btn) btn.textContent = dialog?.dataset.mode === "active" ? "注销" : "激活";
-}
-
-/** 打开官网购买页（Rust 返回 buy_url，未配置时给出提示） */
-async function openStorePage(): Promise<void> {
-  const errEl = document.getElementById("unlock-error")!;
-  errEl.classList.add("hidden");
-  try {
-    const info = await invoke<StoreInfo>("get_store_info");
-    if (!info.buyUrl) {
-      errEl.textContent = "在线购买地址尚未配置，请联系开发者";
-      errEl.classList.remove("hidden");
-      return;
-    }
-    await openUrl(info.buyUrl);
-  } catch (err) {
-    errEl.textContent = String(err);
-    errEl.classList.remove("hidden");
-  }
-}
-
-/** 装配解锁对话框事件（取消 / 激活 / 注销 / 在线购买 / Enter 提交） */
-function bindUnlockDialog(): void {
-  document.getElementById("unlock-cancel")!.addEventListener("click", () => hideLicenseDialog());
-  document.getElementById("unlock-confirm")!.addEventListener("click", () => {
-    const dialog = document.getElementById("unlock-dialog") as HTMLElement;
-    const btn = document.getElementById("unlock-confirm") as HTMLButtonElement;
-    if (dialog.dataset.mode === "active") {
-      if (!deactivateConfirmArmed) {
-        deactivateConfirmArmed = true;
-        btn.textContent = "确认注销";
-        ui.showToast("再次点击确认注销");
-        window.clearTimeout(deactivateConfirmTimer);
-        deactivateConfirmTimer = window.setTimeout(resetDeactivateConfirm, 3000);
-        return;
-      }
-      void deactivateLicense();
-      return;
-    }
-    const code = (document.getElementById("unlock-code") as HTMLInputElement).value;
-    const email = (document.getElementById("unlock-email") as HTMLInputElement).value;
-    void activateLicense(code, email);
-  });
-  document.getElementById("unlock-buy")!.addEventListener("click", () => void openStorePage());
-  document.getElementById("unlock-code")!.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const code = (e.target as HTMLInputElement).value;
-      const email = (document.getElementById("unlock-email") as HTMLInputElement).value;
-      void activateLicense(code, email);
-    }
-  });
-  document.getElementById("unlock-email")!.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const code = (document.getElementById("unlock-code") as HTMLInputElement).value;
-      const email = (e.target as HTMLInputElement).value;
-      void activateLicense(code, email);
-    }
-  });
-}
-
 // ---------- 事件装配 ----------
 
 function bindEvents(): void {
   // 变换状态变化时同步缩放按钮（滚轮/键盘缩放、模式切换、图片加载后）
   viewer.onStateChange = syncZoomButtons;
+
+  // 标题栏窗口控制与最大化/还原状态同步
+  const syncMaximize = async () => {
+    try {
+      const isMax = await appWindow.isMaximized();
+      ui.updateMaximizeButton(isMax);
+    } catch {
+      /* 忽略失败 */
+    }
+  };
 
   // 标题栏窗口控制（appWindow 为模块级单例，见文件顶部）
   // 注入窗口控制图标（HTML 中按钮为空，图标在此填充）
@@ -865,8 +681,17 @@ function bindEvents(): void {
   document.getElementById("btn-maximize")!.innerHTML = ICONS.square;
   document.getElementById("btn-close")!.innerHTML = ICONS.close;
   document.getElementById("btn-minimize")!.addEventListener("click", () => void appWindow.minimize());
-  document.getElementById("btn-maximize")!.addEventListener("click", () => void appWindow.toggleMaximize());
+  document.getElementById("btn-maximize")!.addEventListener("click", () => {
+    void appWindow.toggleMaximize().then(() => syncMaximize());
+  });
   document.getElementById("btn-close")!.addEventListener("click", () => void appWindow.close());
+
+  // 双击自绘标题栏空白区域切换最大化/还原（Windows 标配）
+  const titlebar = document.getElementById("titlebar");
+  titlebar?.addEventListener("dblclick", (e) => {
+    if ((e.target as HTMLElement).closest(".tb-controls")) return;
+    void appWindow.toggleMaximize().then(() => syncMaximize());
+  });
 
   // 快捷键 + 滚轮
   attachInput(viewer, {
@@ -879,6 +704,13 @@ function bindEvents(): void {
     onTogglePin: () => void windowState.togglePin(),
     onToggleSlideshow: () => slideshow.toggle(),
     onWake: () => ui.wake(),
+    onCloseDialog: () => {
+      if (ui.isLicenseDialogOpen()) {
+        licenseService.hideDialog();
+        return true;
+      }
+      return false;
+    },
   });
 
   // 浮层唤醒 + 图片平移拖拽：合并为单个 mousemove 监听（panTo 无拖拽时零开销）
@@ -909,25 +741,32 @@ function bindEvents(): void {
     viewer.startPan(e.clientX, e.clientY);
   });
 
-  // 双击：实际大小 ↔ 适应窗口（草图 5.4）
-  stage.addEventListener("dblclick", () => {
+  // 双击：以点击位置为锚点在实际大小 ↔ 适应窗口之间平滑切换（草图 5.4 体验升级）
+  stage.addEventListener("dblclick", (e) => {
     if (!viewer.hasImage) return;
-    setFitMode(viewer.mode === "fit" ? "actual" : "fit");
+    viewer.toggleFitActual(e.clientX, e.clientY);
+    syncZoomButtons();
   });
 
-  // 窗口尺寸变化：rAF 合并（拖动窗口边缘时 resize 连发，只每帧重算一次 fit/apply）
+  // 窗口尺寸变化：rAF 合并并同步最大化按钮状态
   let resizeRaf = 0;
   window.addEventListener("resize", () => {
     cancelAnimationFrame(resizeRaf);
-    resizeRaf = requestAnimationFrame(() => viewer.onResize());
+    resizeRaf = requestAnimationFrame(() => {
+      viewer.onResize();
+      void syncMaximize();
+    });
   });
+
+  // 初始同步窗口最大化状态
+  void syncMaximize();
 }
 
 // ---------- 启动 ----------
 
 async function init(): Promise<void> {
   bindEvents();
-  bindUnlockDialog();
+  licenseService.bindDialogEvents();
   buildFrameBar();
   buildSlideshowBar();
   // 应用持久化的幻灯片间隔（buildSlideshowBar 已同步下拉框显示）
@@ -947,13 +786,13 @@ async function init(): Promise<void> {
     scheduleRefreshContext();
   });
   await listen<LicenseInfo>(LICENSE_STATUS_CHANGED, (event) => {
-    applyLicenseStatus(event.payload);
+    licenseService.applyStatus(event.payload);
   });
 
   try {
     // 授权状态：免费版锁定付费功能按钮
     const info = await invoke<LicenseInfo>("get_license_status");
-    applyLicenseStatus(info);
+    licenseService.applyStatus(info);
   } catch (err) {
     console.error(err);
   }
@@ -974,7 +813,7 @@ async function init(): Promise<void> {
     }
     // 读取缓存设置并同步 UI（localStorage 持久化优先，否则 Rust 默认）
     const settings = await invoke<AppSettings>("get_settings");
-    if (!pro) {
+    if (!licenseService.isPro) {
       // 免费版：缓存被锁定为关闭，忽略 localStorage 里的付费等级（避免显示橙色高等级态）
       cacheLevel = 0;
     } else {

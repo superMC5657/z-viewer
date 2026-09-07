@@ -21,6 +21,8 @@ export interface InputHandlers {
   onTogglePin: () => void;
   onToggleSlideshow: () => void;
   onWake: () => void;
+  /** 关闭弹窗（若有可见弹窗并成功关闭返回 true） */
+  onCloseDialog?: () => boolean;
 }
 
 export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void {
@@ -56,6 +58,14 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
         e.preventDefault();
         handlers.onJumpFolder("next");
         break;
+      case "Home":
+        e.preventDefault();
+        handlers.onJumpFolder("first");
+        break;
+      case "End":
+        e.preventDefault();
+        handlers.onJumpFolder("last");
+        break;
       case "ArrowUp":
         e.preventDefault();
         viewer.zoomByCenter(1.2);
@@ -65,9 +75,11 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
         viewer.zoomByCenter(1 / 1.2);
         break;
       case "1":
+        e.preventDefault();
         handlers.onSetMode("actual");
         break;
       case "0":
+        e.preventDefault();
         handlers.onSetMode("fit");
         break;
       case "r":
@@ -77,10 +89,12 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
         break;
       case "h":
       case "H":
+        e.preventDefault();
         viewer.flip("h");
         break;
       case "v":
       case "V":
+        e.preventDefault();
         viewer.flip("v");
         break;
       case "F":
@@ -91,12 +105,16 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
         handlers.onToggleImmersive();
         break;
       case "Escape":
-        // 仅退出沉浸模式（草图 3.5）
         e.preventDefault();
+        // 弹窗打开时优先关闭弹窗，未打开时退出沉浸模式
+        if (handlers.onCloseDialog && handlers.onCloseDialog()) {
+          return;
+        }
         handlers.onExitImmersive();
         break;
       case "T":
       case "t":
+        e.preventDefault();
         handlers.onTogglePin();
         break;
       case " ":
@@ -107,11 +125,33 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
     }
   };
 
-  // 滚轮缩放：以鼠标指针为锚点（草图 5.3）
+  // 滚轮缩放与触控板手势
   const onWheel = (e: WheelEvent): void => {
+    // 1. 位于表单、下拉菜单或弹窗内时不拦截滚轮，允许原生滚动
+    const target = e.target as HTMLElement | null;
+    if (target && target.closest("#slideshow-bar, #unlock-dialog, select, input, textarea")) {
+      return;
+    }
     handlers.onWake();
     if (!viewer.hasImage) return;
     e.preventDefault();
+
+    // 2. 触控板双指捏合手势（Pinch-to-zoom）或 Ctrl + 滚轮
+    if (e.ctrlKey) {
+      const factor = Math.exp(-e.deltaY * 0.005);
+      viewer.zoomAt(e.clientX, e.clientY, factor);
+      return;
+    }
+
+    // 3. 图片放大超出视口时，双指滑动平移画布（支持水平 deltaX 与 Shift+垂直）
+    if (viewer.isPannable() && (Math.abs(e.deltaX) > 0 || (e.shiftKey && Math.abs(e.deltaY) > 0))) {
+      const dx = e.deltaX !== 0 ? -e.deltaX : (e.shiftKey ? -e.deltaY : 0);
+      const dy = e.deltaX !== 0 ? -e.deltaY : 0;
+      viewer.panDelta(dx, dy);
+      return;
+    }
+
+    // 4. 常规鼠标滚轮：以鼠标指针为锚点缩放（草图 5.3）
     const factor = Math.exp(-e.deltaY * 0.0016);
     viewer.zoomAt(e.clientX, e.clientY, factor);
   };
@@ -131,15 +171,22 @@ export function attachInput(viewer: Viewer, handlers: InputHandlers): () => void
     if (e.button === 3 || e.button === 4) e.preventDefault();
   };
 
+  // 禁用网页默认右键菜单（防止弹出 Chromium 开发菜单）
+  const onContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+  };
+
   document.addEventListener("keydown", onKeyDown);
   document.addEventListener("wheel", onWheel, { passive: false });
   document.addEventListener("mousedown", onMouseDown);
   document.addEventListener("auxclick", onAuxClick);
+  window.addEventListener("contextmenu", onContextMenu);
 
   return () => {
     document.removeEventListener("keydown", onKeyDown);
     document.removeEventListener("wheel", onWheel);
     document.removeEventListener("mousedown", onMouseDown);
     document.removeEventListener("auxclick", onAuxClick);
+    window.removeEventListener("contextmenu", onContextMenu);
   };
 }

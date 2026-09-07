@@ -52,8 +52,11 @@ export class Viewer {
   // 拖拽平移（rAF 合并，保证 60fps 高频输入只写一帧 style）
   private drag: { sx: number; sy: number; cx0: number; cy0: number } | null = null;
   private rafHandle: number | null = null;
-  /** 动画播放计时器 */
-  private animTimer: number | undefined;
+  /** 动画播放 rAF 句柄 */
+  private rafAnimHandle: number | null = null;
+  private lastAnimTick = 0;
+  /** 渲染模式缓存（避免重复写 style） */
+  private currentRenderingMode: "pixelated" | "auto" | "" = "";
   /** 旋转/翻转过渡计时器（与播放器独立，互不干扰） */
   private transformTimer: number | undefined;
   /** 沉浸模式：fit 时是否避让标题栏 */
@@ -95,9 +98,9 @@ export class Viewer {
     return this.fitMode;
   }
 
-  /** 是否处于「纯适应窗口」状态（fit 模式且用户未手动缩放） */
+  /** 是否处于「纯适应窗口」状态（fit 模式且缩放接近 1，容差防浮点抖动） */
   get isFit(): boolean {
-    return this.fitMode === "fit" && this.userScale === 1;
+    return this.fitMode === "fit" && Math.abs(this.userScale - 1) < 0.005;
   }
 
   get currentScale(): number {
@@ -239,19 +242,38 @@ export class Viewer {
 
   // ---------- 变换操作 ----------
 
-  setMode(mode: FitMode): void {
+  setMode(mode: FitMode, anchorX?: number, anchorY?: number): void {
     // 无 early return：fit 模式下手动缩放后（fitMode 仍为 "fit"），
     // 点击适应窗口必须重置 userScale 回到纯 fit 状态
     this.fitMode = mode;
     this.userScale = 1;
     if (mode === "actual") {
+      const s0 = this.currentScale;
       this.baseScale = 1;
+      if (anchorX !== undefined && anchorY !== undefined && s0 > 0) {
+        // 以点击位置为中心锚点放大到 1:1
+        const s1 = 1;
+        const ratio = s1 / s0;
+        this.cx = anchorX - (anchorX - this.cx) * ratio;
+        this.cy = anchorY - (anchorY - this.cy) * ratio;
+        this.clampPan();
+      }
       // 必须 apply：否则只改状态不更新 transform，看起来像没触发
       this.apply();
     } else {
       this.fit(); // fit() 内部已 apply
     }
     this.onStateChange?.();
+  }
+
+  /** 双击切换适应窗口与实际大小（支持按点击位置作为锚点） */
+  toggleFitActual(anchorX?: number, anchorY?: number): void {
+    if (!this.loaded) return;
+    if (this.isFit) {
+      this.setMode("actual", anchorX, anchorY);
+    } else {
+      this.setMode("fit");
+    }
   }
 
   rotate(delta: number): void {
@@ -312,6 +334,15 @@ export class Viewer {
     this.scheduleApply();
   }
 
+  /** 触控板平移 / 相对位移平移 */
+  panDelta(dx: number, dy: number): void {
+    if (!this.loaded) return;
+    this.cx += dx;
+    this.cy += dy;
+    this.clampPan();
+    this.scheduleApply();
+  }
+
   endPan(): void {
     this.drag = null;
     this.stage.classList.remove("dragging");
@@ -344,12 +375,16 @@ export class Viewer {
   play(): void {
     if (!this.isAnimation || this.animPlaying) return;
     this.animPlaying = true;
+    this.lastAnimTick = performance.now();
     this.scheduleNext();
   }
 
   pause(): void {
     this.animPlaying = false;
-    window.clearTimeout(this.animTimer);
+    if (this.rafAnimHandle !== null) {
+      cancelAnimationFrame(this.rafAnimHandle);
+      this.rafAnimHandle = null;
+    }
   }
 
   togglePlay(): void {
@@ -370,7 +405,8 @@ export class Viewer {
   seekFrame(index: number): void {
     if (!this.isAnimation) return;
     this.pause();
-    this.animIndex = clamp(index, 0, this.animFrames.length - 1);
+    const n = this.animFrames.length;
+    this.animIndex = clamp(index, 0, n - 1);
     this.drawFrame();
   }
 
@@ -378,14 +414,21 @@ export class Viewer {
 
   private scheduleNext(): void {
     if (!this.animPlaying) return;
-    // 兜底下限 1ms：异常 0 延迟帧（旧缓存/极端数据）不至于让 setTimeout(0) 全速疯转
-    const delay = Math.max(this.animDelays[this.animIndex] ?? 100, 1);
-    this.animTimer = window.setTimeout(() => {
+    if (this.rafAnimHandle !== null) {
+      cancelAnimationFrame(this.rafAnimHandle);
+      this.rafAnimHandle = null;
+    }
+    const loop = (now: number) => {
       if (!this.animPlaying) return;
-      this.animIndex = (this.animIndex + 1) % this.animFrames.length;
-      this.drawFrame();
-      this.scheduleNext();
-    }, delay);
+      const targetDelay = Math.max(this.animDelays[this.animIndex] ?? 100, 16);
+      if (now - this.lastAnimTick >= targetDelay) {
+        this.lastAnimTick = now;
+        this.animIndex = (this.animIndex + 1) % this.animFrames.length;
+        this.drawFrame();
+      }
+      this.rafAnimHandle = requestAnimationFrame(loop);
+    };
+    this.rafAnimHandle = requestAnimationFrame(loop);
   }
 
   private drawFrame(): void {
@@ -398,7 +441,10 @@ export class Viewer {
 
   private stopAnimation(): void {
     this.animPlaying = false;
-    window.clearTimeout(this.animTimer);
+    if (this.rafAnimHandle !== null) {
+      cancelAnimationFrame(this.rafAnimHandle);
+      this.rafAnimHandle = null;
+    }
     // 显式释放位图（ImageBitmap 持有解码内存，等 GC 不可控；长 GIF 可达数百帧）
     for (const bmp of this.animFrames) bmp.close();
     this.animFrames = [];
@@ -408,17 +454,19 @@ export class Viewer {
 
   // ---------- 切图 crossfade（快照层） ----------
 
-  /** 冻结当前画面到快照层：把此刻 <img>/<canvas> 的显示效果（含变换）按设备像素
-   *  像素级重绘。之后旧元素被隐藏/换源也不可见跳变，新图解码完成再交叉淡化。
-   *  画 asset 协议图会污染画布（tainted），但仅作显示、绝不回读像素，无碍。 */
+  /** 冻结当前画面到快照层：复用现有 Canvas 物理尺寸，避免高频切图时重复申请/丢弃 GPU 显存 */
   private captureGhost(): void {
     if (!this.loaded) return;
     window.clearTimeout(this.ghostTimer);
     const dpr = window.devicePixelRatio || 1;
-    // 尺寸赋值本身会清空画布内容
-    this.ghost.width = Math.max(1, Math.round(this.stage.clientWidth * dpr));
-    this.ghost.height = Math.max(1, Math.round(this.stage.clientHeight * dpr));
+    const targetW = Math.max(1, Math.round(this.stage.clientWidth * dpr));
+    const targetH = Math.max(1, Math.round(this.stage.clientHeight * dpr));
+    if (this.ghost.width !== targetW || this.ghost.height !== targetH) {
+      this.ghost.width = targetW;
+      this.ghost.height = targetH;
+    }
     const g = this.ghostCtx;
+    g.clearRect(0, 0, targetW, targetH);
     g.imageSmoothingEnabled = true;
     g.imageSmoothingQuality = "high";
     // 复刻 apply() 的变换链（translate → rotate → scale → 居中偏移）
@@ -434,14 +482,14 @@ export class Viewer {
     this.ghost.classList.add("visible");
   }
 
-  /** 新图已就绪：快照淡出（与新图淡入叠加为交叉淡化），淡出完成后置零尺寸释放内存 */
+  /** 新图已就绪：快照淡出；闲置未切图时释放显存，消除连续翻页时的显存震荡 */
   private releaseGhost(): void {
     window.clearTimeout(this.ghostTimer);
     this.ghost.classList.remove("visible");
     this.ghostTimer = window.setTimeout(() => {
       this.ghost.width = 0;
       this.ghost.height = 0;
-    }, GHOST_FADE_MS);
+    }, GHOST_IDLE_RELEASE_MS);
   }
 
   private resetTransform(): void {
@@ -527,9 +575,12 @@ export class Viewer {
       `rotate(${this.rotTotal}deg) ` +
       `scale(${s * fx}, ${s * fy}) ` +
       `translate(${-this.naturalW / 2}px, ${-this.naturalH / 2}px)`;
-    // 放大超过 100% 时最近邻渲染：像素级清晰（照片 100% 检视 / 像素画均受益）；
-    // ≤100% 恢复浏览器默认平滑（缩小用最近邻会严重失真）
-    el.style.imageRendering = s > 1 ? "pixelated" : "auto";
+    // 状态缓存比对：避免高频平移/缩放每帧重复写入未改变的样式属性
+    const targetMode = s > 1 ? "pixelated" : "auto";
+    if (this.currentRenderingMode !== targetMode) {
+      el.style.imageRendering = targetMode;
+      this.currentRenderingMode = targetMode;
+    }
   }
 
   /** 平移范围约束：图片至少与视口保留 24px 重叠 */
@@ -570,8 +621,8 @@ export class Viewer {
 
 const TITLEBAR_H = 32;
 
-/** 快照层淡出完成后的内存释放延迟（略大于 150ms 过渡） */
-const GHOST_FADE_MS = 320;
+/** 快照层闲置未切图时释放显存的等待时长（避免高频切图重复分配显存） */
+const GHOST_IDLE_RELEASE_MS = 5000;
 
 /** 平移边距：图片边缘与视口保留的最小间距（isPannable/clampPan 共用） */
 const PAN_MARGIN = 24;
