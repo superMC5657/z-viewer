@@ -113,6 +113,7 @@ fn navigate(
     let nav = nav(&model);
     let r = nav_ok_or_none(&model, nav);
     if r.state.is_some() {
+        cache.advance_generation();
         // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
         promote_folder_first(&model, cache, first_cache);
         let s = settings.0.lock().map_err(|e| e.to_string())?;
@@ -143,6 +144,7 @@ pub fn open_path(
         BrowseModel::open_gated(p, on_ready, pro)
     };
     let model = model.ok_or_else(|| "无法打开：不是支持的图片格式".to_string())?;
+    cache.advance_generation();
     let st = model.state();
     {
         let s = settings.0.lock().map_err(|e| e.to_string())?;

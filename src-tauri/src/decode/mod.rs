@@ -90,6 +90,20 @@ impl LoadResult {
         }
     }
 
+    /// 原始 RGBA8 像素通道（TIFF/全量 RAW 极速直显，免二次 JPEG 有损压缩与解码损耗）
+    pub fn rgba(mode: &str, bytes: Vec<u8>, w: u32, h: u32, is_preview: bool) -> Self {
+        Self {
+            mode: mode.into(),
+            mime: Some("image/x-rgba".into()),
+            is_preview,
+            width: Some(w),
+            height: Some(h),
+            frame_delays: Vec::new(),
+            frame_sizes: Vec::new(),
+            bytes,
+        }
+    }
+
     /// 动画帧序列：帧 PNG 拼接为单段 payload，frame_sizes 供前端切分
     pub fn animated(frames: Vec<Vec<u8>>, delays: Vec<u32>) -> Self {
         let sizes = frames.iter().map(|f| f.len() as u32).collect();

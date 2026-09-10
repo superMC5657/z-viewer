@@ -49,6 +49,8 @@ pub struct DecodeCache {
     in_flight: Arc<Mutex<HashSet<String>>>,
     /// 当前进行中的预取任务数（配合 in_flight 锁做并发门控，见 begin_prefetch）
     prefetch_active: Arc<AtomicUsize>,
+    /// 导航代次：用户切换图片时递增，用于取消远离视口的过期预取任务
+    generation: Arc<AtomicUsize>,
 }
 
 impl DecodeCache {
@@ -58,7 +60,23 @@ impl DecodeCache {
             animated: Arc::new(Mutex::new(None)),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             prefetch_active: Arc::new(AtomicUsize::new(0)),
+            generation: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// 获取当前导航代次
+    pub fn current_generation(&self) -> usize {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// 推进导航代次（用户换图时调用）
+    pub fn advance_generation(&self) -> usize {
+        self.generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// 判定任务是否已过期（滞后于当前代次超过 max_lag 步）
+    pub fn is_stale(&self, gen: usize, max_lag: usize) -> bool {
+        self.generation.load(Ordering::Relaxed).saturating_sub(gen) > max_lag
     }
 
     /// 命中返回缓存值并移到末尾；未命中返回 None（生产路径走 get_entry 复用信封）

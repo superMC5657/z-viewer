@@ -1,7 +1,5 @@
-//! TIFF 静态解码通道：image crate 解码 → 方向回正 → 降采样 → JPEG 字节
-//! （Chromium 不解码 TIFF，走 Rust 通道复用「静态 JPEG」展示路径）
-
-use std::io::Cursor;
+//! TIFF 静态解码通道：image crate 解码 → 方向回正 → 降采样 → 原始 RGBA8 像素
+//! （Chromium 不解码 TIFF，走 Rust 通道原始像素直通，免二次 JPEG 有损压缩与编解码开销）
 
 use super::{cap_dimensions, LoadResult};
 
@@ -20,11 +18,7 @@ pub(super) fn decode_static(path: &str) -> Result<LoadResult, String> {
         .map_err(|e| format!("TIFF 解码失败: {e}"))?;
     let img = cap_dimensions(super::preview::apply_orientation(img, orientation));
     let (w, h) = (img.width(), img.height());
-    let img = img.to_rgb8(); // 16-bit/CMYK 统一归一为 8-bit RGB
+    let rgba = img.to_rgba8();
 
-    let mut buf: Vec<u8> = Vec::new();
-    img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Jpeg)
-        .map_err(|e| format!("JPEG 编码失败: {e}"))?;
-
-    Ok(LoadResult::jpeg("static", buf, w, h, false))
+    Ok(LoadResult::rgba("static", rgba.into_raw(), w, h, false))
 }

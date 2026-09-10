@@ -3,8 +3,6 @@
 //! rawler 0.7 的 develop 只解析 EXIF 方向（RawImage.orientation）但不应用，
 //! 全量输出前按方向回正（preview::apply_orientation）。
 
-use std::io::Cursor;
-
 use rawler::Orientation;
 
 use super::{cap_dimensions, LoadResult};
@@ -29,13 +27,9 @@ pub(super) fn decode_raw(path: &str, full: bool) -> Result<LoadResult, String> {
 
     let img = cap_dimensions(super::preview::apply_orientation(img, orientation));
     let (w, h) = (img.width(), img.height());
-    let img = img.to_rgb8();
+    let rgba = img.to_rgba8();
 
-    let mut buf: Vec<u8> = Vec::new();
-    img.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Jpeg)
-        .map_err(|e| format!("JPEG 编码失败: {e}"))?;
-
-    Ok(LoadResult::jpeg("raw", buf, w, h, false))
+    Ok(LoadResult::rgba("raw", rgba.into_raw(), w, h, false))
 }
 
 /// rawler Orientation → EXIF 1-8（Unknown 按 1 正常处理）

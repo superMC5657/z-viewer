@@ -183,20 +183,37 @@ async function showImage(state: BrowseState): Promise<void> {
         const blobs = splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
         await viewer.loadAnimation(blobs, header.frameDelays);
       } else if (header.mode === "raw" || header.mode === "static") {
-        // 单张 JPEG（RAW/TIFF）；RAW 预览毫秒级显示，全量解码后台替换
-        const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
-        try {
-          await viewer.loadStatic(url);
-        } catch (err) {
-          URL.revokeObjectURL(url); // 加载失败也要释放，防止 Blob 泄漏
-          throw err; // 交给外层统一 Toast
+        if (
+          header.mime === "image/x-rgba" &&
+          header.width &&
+          header.height &&
+          payload.byteLength === header.width * header.height * 4
+        ) {
+          // 原始 RGBA8 位图直显通道（TIFF/全量 RAW）：免二次 JPEG 压缩/解压损耗
+          const clamped = new Uint8ClampedArray(payload.buffer, payload.byteOffset, payload.byteLength);
+          const imgData = new ImageData(clamped, header.width, header.height);
+          const bitmap = await createImageBitmap(imgData);
+          if (seq !== showSeq) {
+            bitmap.close();
+            return;
+          }
+          await viewer.loadBitmap(bitmap);
+        } else {
+          // 单张 JPEG（RAW/TIFF 预览或回退）
+          const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
+          try {
+            await viewer.loadStatic(url);
+          } catch (err) {
+            URL.revokeObjectURL(url); // 加载失败也要释放，防止 Blob 泄漏
+            throw err; // 交给外层统一 Toast
+          }
+          if (seq !== showSeq) {
+            // 已被抢占：立即释放本函数创建的 Blob
+            URL.revokeObjectURL(url);
+            return;
+          }
+          currentBlobUrl = url;
         }
-        if (seq !== showSeq) {
-          // 已被抢占：立即释放本函数创建的 Blob
-          URL.revokeObjectURL(url);
-          return;
-        }
-        currentBlobUrl = url;
         // 预览阶段立即显示预览尺寸（全量解码完成后 upgradeRawToFull 再更新）
         if (header.width && header.height) {
           currentDims = { w: header.width, h: header.height };
@@ -261,21 +278,40 @@ async function upgradeRawToFull(state: BrowseState, seq: number): Promise<void> 
     if (seq !== showSeq) return;
     const { header, payload } = parseLoadEnvelope(buf);
     if (header.isPreview) return; // 防御：仍返回预览（异常路径），保持现有显示
-    const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
-    try {
-      await viewer.loadStatic(url);
-    } catch (err) {
-      URL.revokeObjectURL(url);
-      // 全量 JPEG 异常：恢复预览显示（预览引用仍存活）
-      if (previewUrl) await viewer.loadStatic(previewUrl).catch(() => undefined);
-      throw err;
+
+    if (
+      header.mime === "image/x-rgba" &&
+      header.width &&
+      header.height &&
+      payload.byteLength === header.width * header.height * 4
+    ) {
+      const clamped = new Uint8ClampedArray(payload.buffer, payload.byteOffset, payload.byteLength);
+      const imgData = new ImageData(clamped, header.width, header.height);
+      const bitmap = await createImageBitmap(imgData);
+      if (seq !== showSeq) {
+        bitmap.close();
+        return;
+      }
+      await viewer.loadBitmap(bitmap, true);
+      currentBlobUrl = null;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    } else {
+      const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
+      try {
+        await viewer.loadStatic(url);
+      } catch (err) {
+        URL.revokeObjectURL(url);
+        // 全量 JPEG 异常：恢复预览显示（预览引用仍存活）
+        if (previewUrl) await viewer.loadStatic(previewUrl).catch(() => undefined);
+        throw err;
+      }
+      if (seq !== showSeq) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      currentBlobUrl = url;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
     }
-    if (seq !== showSeq) {
-      URL.revokeObjectURL(url);
-      return;
-    }
-    currentBlobUrl = url;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
     // 信息条尺寸更新为全量尺寸
     currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
     ui.updateInfo(state, currentDims);

@@ -127,3 +127,21 @@ fn folder_first_cache_lru() {
     cache.set_capacity(0);
     assert!(cache.get("A").is_none(), "容量 0 全清");
 }
+
+#[test]
+fn generation_advance_and_is_stale() {
+    let cache = DecodeCache::new(4);
+    assert_eq!(cache.current_generation(), 0);
+    assert!(!cache.is_stale(0, 2));
+
+    cache.advance_generation(); // gen = 1
+    assert!(!cache.is_stale(0, 2));
+
+    cache.advance_generation(); // gen = 2
+    assert!(!cache.is_stale(0, 2));
+
+    cache.advance_generation(); // gen = 3
+    assert!(cache.is_stale(0, 2), "超过 max_lag 视为已过期");
+    assert!(!cache.is_stale(1, 2), "lag=2 未超过 max_lag");
+}
+

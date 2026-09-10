@@ -24,13 +24,19 @@ pub(super) fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, setting
         if !cache.begin_prefetch(&path) {
             continue;
         }
+        let gen = cache.current_generation();
         let cache = cache.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            // 用户快速切图已远离当前上下文：直接放弃本次预取，不占 CPU
+            if cache.is_stale(gen, 2) {
+                cache.end_prefetch(&path);
+                return;
+            }
             let result = crate::decode::load_image(&path, true).ok();
             if let Some(result) = result {
                 // 实时加载可能已填充缓存（end_prefetch 清登记后我们 put 会覆盖，内容相同无害）
                 // 仅缓存非 asset（asset 走 WebView 自带缓存）
-                if result.mode != "asset" && !cache.peek(&path) {
+                if result.mode != "asset" && !cache.peek(&path) && !cache.is_stale(gen, 3) {
                     cache.put(path.clone(), Arc::new(result));
                 }
             }
@@ -63,9 +69,14 @@ pub(super) fn prefetch_folder_firsts(
         if !cache.begin_prefetch(&folder_str) {
             continue;
         }
+        let gen = cache.current_generation();
         let cache = cache.clone();
         let first_cache = first_cache.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            if cache.is_stale(gen, 2) {
+                cache.end_prefetch(&folder_str);
+                return;
+            }
             // 取该文件夹第一张图并解码入队（后台线程，不阻塞导航命令）
             let Some(first) = BrowseModel::first_image_of(&folder) else {
                 cache.end_prefetch(&folder_str);
@@ -76,15 +87,17 @@ pub(super) fn prefetch_folder_firsts(
                 cache.end_prefetch(&folder_str);
                 return; // asset 由前端池预热
             }
-            if let Ok(result) = crate::decode::load_image(&path, true) {
-                if result.mode != "asset" {
-                    first_cache.put(
-                        folder_str.clone(),
-                        Arc::new(FolderFirst {
-                            path,
-                            result: Arc::new(result),
-                        }),
-                    );
+            if !cache.is_stale(gen, 2) {
+                if let Ok(result) = crate::decode::load_image(&path, true) {
+                    if result.mode != "asset" {
+                        first_cache.put(
+                            folder_str.clone(),
+                            Arc::new(FolderFirst {
+                                path,
+                                result: Arc::new(result),
+                            }),
+                        );
+                    }
                 }
             }
             cache.end_prefetch(&folder_str);

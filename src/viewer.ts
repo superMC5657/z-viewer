@@ -189,6 +189,44 @@ export class Viewer {
     });
   }
 
+  /** 加载单张位图（原始 RGBA 直通，免 JPEG 二次编解码开销） */
+  async loadBitmap(bitmap: ImageBitmap, keepTransform = false): Promise<void> {
+    this.stopAnimation();
+    this.settlePending();
+    const seq = ++this.loadSeq;
+    this.active = "canvas";
+    this.imgA.classList.remove("visible");
+    this.imgB.classList.remove("visible");
+
+    if (seq !== this.loadSeq) {
+      bitmap.close();
+      return;
+    }
+
+    const oldW = this.naturalW;
+    const oldH = this.naturalH;
+    this.naturalW = bitmap.width;
+    this.naturalH = bitmap.height;
+    this.canvas.width = this.naturalW;
+    this.canvas.height = this.naturalH;
+    this.ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+
+    this.loaded = true;
+    if (keepTransform && oldW > 0 && oldH > 0) {
+      if (this.fitMode === "fit" && Math.abs(this.userScale - 1) < 0.005) {
+        this.fit();
+      } else {
+        this.apply();
+      }
+    } else {
+      this.resetTransform();
+      this.fit();
+    }
+    this.canvas.classList.add("visible");
+    this.onStateChange?.();
+  }
+
   /** 加载预解码的动画位图序列（Web 原生 ImageDecoder 通道，首选零开销路径） */
   async loadBitmapsAnimation(bitmaps: ImageBitmap[], delays: number[]): Promise<void> {
     this.stopAnimation();
