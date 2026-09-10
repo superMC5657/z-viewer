@@ -28,12 +28,12 @@ import { LicenseService } from "./services/license";
 import "./ui.css";
 
 const stage = document.getElementById("stage")!;
-const img = document.getElementById("image") as HTMLImageElement;
+const imgA = document.getElementById("image-a") as HTMLImageElement;
+const imgB = document.getElementById("image-b") as HTMLImageElement;
 const frameCanvas = document.getElementById("frame-canvas") as HTMLCanvasElement;
-const ghostCanvas = document.getElementById("ghost-canvas") as HTMLCanvasElement;
 const dropOverlay = document.getElementById("drop-overlay")!;
 
-const viewer = new Viewer(stage, img, frameCanvas, ghostCanvas);
+const viewer = new Viewer(stage, imgA, imgB, frameCanvas);
 const ui = new UI();
 ui.buildToolbar({ onAction: handleToolbarAction });
 const appWindow = getCurrentWindow();
@@ -459,13 +459,66 @@ function frameControl(action: () => void): void {
     .catch((err) => ui.showToast(String(err)));
 }
 
-/** 按需拆帧：用户第一次点帧条时把原生播放切换为 canvas 逐帧模式（命中 DecodeCache 秒出） */
+/** 按需拆帧：用户第一次点帧条时把原生播放切换为 canvas 逐帧模式（优先 Web 原生 ImageDecoder 秒出，支持 Rust 降级） */
 async function loadAnimationOnDemand(): Promise<void> {
   const state = lastState;
   if (!state) return;
   const seq = showSeq; // 代次快照：await 期间切图则丢弃，防旧动画覆盖新图显示
   ui.setFrameLoading(true);
   try {
+    // 优先尝试 Web 原生 ImageDecoder（Chromium C++ 引擎硬件加速解码，免 Rust 端单帧 PNG 重编码）
+    if (typeof ImageDecoder !== "undefined") {
+      try {
+        const ext = state.path.split(".").pop()?.toLowerCase() ?? "";
+        const mime = ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/png";
+        if (await ImageDecoder.isTypeSupported(mime)) {
+          const resp = await fetch(convertFileSrc(state.path));
+          if (!resp.ok) throw new Error("无法读取动画文件");
+          const blob = await resp.blob();
+          if (seq !== showSeq) return;
+
+          const decoder = new ImageDecoder({ data: blob.stream(), type: mime });
+          await decoder.tracks.ready;
+          const track = decoder.tracks.selectedTrack;
+          const frameCount = track?.frameCount ?? 0;
+
+          if (frameCount <= 1) {
+            ui.setFrameBarVisible(false);
+            currentAnimCandidate = false;
+            ui.showToast("该文件不是多帧动画");
+            return;
+          }
+
+          const bitmaps: ImageBitmap[] = [];
+          const delays: number[] = [];
+          for (let i = 0; i < frameCount; i++) {
+            if (seq !== showSeq) {
+              for (const b of bitmaps) b.close();
+              return;
+            }
+            const res = await decoder.decode({ frameIndex: i });
+            const bmp = await createImageBitmap(res.image);
+            res.image.close();
+            bitmaps.push(bmp);
+            const d = res.image.duration ? Math.max(Math.round(res.image.duration / 1000), 10) : 100;
+            delays.push(d);
+          }
+
+          if (seq !== showSeq) {
+            for (const b of bitmaps) b.close();
+            return;
+          }
+
+          ui.setFrameBarVisible(true);
+          await viewer.loadBitmapsAnimation(bitmaps, delays);
+          return;
+        }
+      } catch (err) {
+        console.warn("ImageDecoder 解码失败，回退到 Rust 解码通道:", err);
+      }
+    }
+
+    // 回退通道：Rust 解码服务
     const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
     if (seq !== showSeq) return;
     const { header, payload } = parseLoadEnvelope(buf);

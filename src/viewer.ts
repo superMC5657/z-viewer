@@ -22,14 +22,12 @@ const ROTATE_MS = 220; // 略大于 200ms 过渡，结束后移除 animating cla
 export type FitMode = "fit" | "actual";
 
 export class Viewer {
-  private img: HTMLImageElement;
+  private imgA: HTMLImageElement;
+  private imgB: HTMLImageElement;
+  private activeImg: HTMLImageElement;
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private stage: HTMLElement;
-  /** 切图 crossfade 快照层：新图就绪前冻结旧画面（淡出完成后置零尺寸释放） */
-  private ghost: HTMLCanvasElement;
-  private ghostCtx: CanvasRenderingContext2D;
-  private ghostTimer: number | undefined;
 
   private loaded = false;
   private naturalW = 0;
@@ -79,15 +77,13 @@ export class Viewer {
   /** 变换状态变化回调（缩放/模式/旋转/加载后触发，用于同步按钮状态） */
   onStateChange: (() => void) | null = null;
 
-  constructor(stage: HTMLElement, img: HTMLImageElement, canvas: HTMLCanvasElement, ghost: HTMLCanvasElement) {
+  constructor(stage: HTMLElement, imgA: HTMLImageElement, imgB: HTMLImageElement, canvas: HTMLCanvasElement) {
     this.stage = stage;
-    this.img = img;
+    this.imgA = imgA;
+    this.imgB = imgB;
+    this.activeImg = imgA;
     this.canvas = canvas;
-    this.ghost = ghost;
     this.ctx = canvas.getContext("2d")!;
-    this.ghostCtx = ghost.getContext("2d")!;
-    this.img.addEventListener("load", () => this.handleLoad());
-    this.img.addEventListener("error", () => this.handleError());
   }
 
   get hasImage(): boolean {
@@ -126,81 +122,86 @@ export class Viewer {
 
   /** 加载静态图（asset 协议 URL 或 RAW 解码的 Blob URL） */
   loadStatic(url: string): Promise<void> {
-    this.captureGhost(); // 先冻结旧画面（需要当前变换状态，须在任何重置之前）
     this.stopAnimation();
     this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
     const seq = ++this.loadSeq;
     this.active = "img";
     this.canvas.classList.remove("visible");
-    this.resetTransform();
-    this.img.classList.remove("visible");
+
+    // 双缓冲轮换：取非当前显示的那个 img 作为 incoming
+    const incoming = this.activeImg === this.imgA ? this.imgB : this.imgA;
+    const outgoing = this.activeImg;
+
     return new Promise((resolve, reject) => {
       this.pending = { resolve, reject, seq };
-      // 超时兜底：2.5s 未完成先 resolve 防挂死（P2-1：**不清 pending**——
-      // 迟到的 load 事件到达时 handleLoad 仍会走 handleDecoded 完成显示，
-      // 否则慢图会以 opacity:0 永久黑屏）
       window.clearTimeout(this.staticLoadTimer);
       this.staticLoadTimer = window.setTimeout(() => {
         if (this.pending?.seq === seq) {
           this.pending.resolve();
         }
       }, 2500);
-      // 同 URL 不清空 src：保留浏览器已解码的位图缓存，切回时零解码
-      if (this.img.getAttribute("src") !== url) {
-        this.img.removeAttribute("src");
-        this.img.src = url;
-      } else {
-        // 同 URL：解码缓存应已就绪，显式等待解码完成（已解码则立即 resolve）
-        this.img
-          .decode()
-          .then(() => {
-            window.clearTimeout(this.staticLoadTimer);
-            if (this.pending?.seq === seq) {
-              this.pending = null;
-              this.handleDecoded(seq);
-              resolve();
-            }
-          })
-          .catch(() => {
-            // decode 失败（如已卸载）：重设 src 走正常 load
-            this.img.src = url;
-          });
+
+      const onDecoded = () => {
+        if (this.pending?.seq !== seq) return;
+        window.clearTimeout(this.staticLoadTimer);
+        this.naturalW = incoming.naturalWidth;
+        this.naturalH = incoming.naturalHeight;
+        this.loaded = true;
+        this.activeImg = incoming;
+        this.resetTransform();
+        this.fit(); // 内部针对 incoming 设置 transform
+
+        // 双缓冲 crossfade：纯 GPU 合成器透明度过渡，零 Canvas 绘图与主线程阻塞
+        incoming.classList.add("visible");
+        outgoing.classList.remove("visible");
+
+        this.pending?.resolve();
+        this.pending = null;
+        this.onStateChange?.();
+        resolve();
+      };
+
+      const onError = () => {
+        if (this.pending?.seq !== seq) return;
+        window.clearTimeout(this.staticLoadTimer);
+        this.pending = null;
+        outgoing.classList.remove("visible");
+        reject(new Error("图片加载失败"));
+      };
+
+      incoming.classList.remove("animating");
+      if (incoming.getAttribute("src") !== url) {
+        incoming.removeAttribute("src");
+        incoming.src = url;
       }
+      // 直接触发 decode()，在图片完成解码并上载到 GPU 显存后 resolve
+      incoming
+        .decode()
+        .then(() => onDecoded())
+        .catch(() => {
+          if (incoming.complete && incoming.naturalWidth > 0) {
+            onDecoded();
+          } else {
+            incoming.onload = () => onDecoded();
+            incoming.onerror = () => onError();
+          }
+        });
     });
   }
 
-  /** 加载动画图：预解码全部帧后显示第一帧并自动播放（帧 PNG 字节按 frame_sizes 切分） */
-  async loadAnimation(frameBlobs: Blob[], delays: number[]): Promise<void> {
-    this.captureGhost();
+  /** 加载预解码的动画位图序列（Web 原生 ImageDecoder 通道，首选零开销路径） */
+  async loadBitmapsAnimation(bitmaps: ImageBitmap[], delays: number[]): Promise<void> {
     this.stopAnimation();
-    this.settlePending(); // 作废进行中的静态加载
-    const seq = ++this.loadSeq; // 先登记代次，防止 await 期间被抢占
+    this.settlePending();
+    const seq = ++this.loadSeq;
     this.active = "canvas";
-    this.img.classList.remove("visible");
-    this.img.removeAttribute("src");
+    this.imgA.classList.remove("visible");
+    this.imgB.classList.remove("visible");
     this.resetTransform();
-    this.onFrameChange?.(0, frameBlobs.length); // 解码完成前先重置帧计数
+    this.onFrameChange?.(0, bitmaps.length);
 
-    if (frameBlobs.length === 0) {
-      this.releaseGhost();
-      return;
-    }
-    // allSettled：任一帧解码失败时仍能拿到已成功的帧并显式 close，
-    // 避免 Promise.all 直接 reject 造成已创建的 ImageBitmap 全部泄漏
-    const settled = await Promise.allSettled(frameBlobs.map((b) => createImageBitmap(b)));
-    const bitmaps: ImageBitmap[] = [];
-    let failed = false;
-    for (const s of settled) {
-      if (s.status === "fulfilled") bitmaps.push(s.value);
-      else failed = true;
-    }
-    if (failed) {
-      for (const b of bitmaps) b.close();
-      this.releaseGhost();
-      throw new Error("动画帧解码失败");
-    }
+    if (bitmaps.length === 0) return;
     if (seq !== this.loadSeq) {
-      // 已被抢占：显式释放本批位图
       for (const b of bitmaps) b.close();
       return;
     }
@@ -216,9 +217,25 @@ export class Viewer {
     this.drawFrame();
     this.fit();
     this.canvas.classList.add("visible");
-    this.releaseGhost(); // 新图开始淡入，快照同步淡出（交叉淡化）
     this.play();
     this.onStateChange?.();
+  }
+
+  /** 加载动画图：预解码全部帧后显示第一帧并自动播放（帧 PNG 字节按 frame_sizes 切分） */
+  async loadAnimation(frameBlobs: Blob[], delays: number[]): Promise<void> {
+    if (frameBlobs.length === 0) return;
+    const settled = await Promise.allSettled(frameBlobs.map((b) => createImageBitmap(b)));
+    const bitmaps: ImageBitmap[] = [];
+    let failed = false;
+    for (const s of settled) {
+      if (s.status === "fulfilled") bitmaps.push(s.value);
+      else failed = true;
+    }
+    if (failed) {
+      for (const b of bitmaps) b.close();
+      throw new Error("动画帧解码失败");
+    }
+    await this.loadBitmapsAnimation(bitmaps, delays);
   }
 
   /** 切换沉浸模式：fit 避让高度变化后重新布局（全屏动画后窗口尺寸才稳定，下一帧再校准一次） */
@@ -452,46 +469,6 @@ export class Viewer {
     this.animIndex = 0;
   }
 
-  // ---------- 切图 crossfade（快照层） ----------
-
-  /** 冻结当前画面到快照层：复用现有 Canvas 物理尺寸，避免高频切图时重复申请/丢弃 GPU 显存 */
-  private captureGhost(): void {
-    if (!this.loaded) return;
-    window.clearTimeout(this.ghostTimer);
-    const dpr = window.devicePixelRatio || 1;
-    const targetW = Math.max(1, Math.round(this.stage.clientWidth * dpr));
-    const targetH = Math.max(1, Math.round(this.stage.clientHeight * dpr));
-    if (this.ghost.width !== targetW || this.ghost.height !== targetH) {
-      this.ghost.width = targetW;
-      this.ghost.height = targetH;
-    }
-    const g = this.ghostCtx;
-    g.clearRect(0, 0, targetW, targetH);
-    g.imageSmoothingEnabled = true;
-    g.imageSmoothingQuality = "high";
-    // 复刻 apply() 的变换链（translate → rotate → scale → 居中偏移）
-    g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.translate(this.cx, this.cy);
-    g.rotate((this.rotation * Math.PI) / 180);
-    g.scale(
-      this.currentScale * (this.flipH ? -1 : 1),
-      this.currentScale * (this.flipV ? -1 : 1),
-    );
-    const src = this.active === "img" ? this.img : this.canvas;
-    g.drawImage(src, -this.naturalW / 2, -this.naturalH / 2, this.naturalW, this.naturalH);
-    this.ghost.classList.add("visible");
-  }
-
-  /** 新图已就绪：快照淡出；闲置未切图时释放显存，消除连续翻页时的显存震荡 */
-  private releaseGhost(): void {
-    window.clearTimeout(this.ghostTimer);
-    this.ghost.classList.remove("visible");
-    this.ghostTimer = window.setTimeout(() => {
-      this.ghost.width = 0;
-      this.ghost.height = 0;
-    }, GHOST_IDLE_RELEASE_MS);
-  }
-
   private resetTransform(): void {
     this.loaded = false;
     this.fitMode = "fit";
@@ -502,41 +479,9 @@ export class Viewer {
     this.flipH = false;
     this.flipV = false;
     this.stage.classList.remove("pannable", "dragging", "animating");
-    this.img.classList.remove("animating");
+    this.imgA.classList.remove("animating");
+    this.imgB.classList.remove("animating");
     this.canvas.classList.remove("animating");
-  }
-
-  private handleLoad(): void {
-    if (!this.pending || this.pending.seq !== this.loadSeq) return; // 已被更新的加载抢占
-    // 注意：此处不能先清 this.pending —— handleDecoded 内部会
-    // pending.resolve()（resolve loadStatic 的 Promise）再置 null。
-    // 若提前清空，快图的 load 事件会丢失 resolve，loadStatic 挂起，
-    // 幻灯片/切图只能靠外层 5s 兜底，2s 间隔形同虚设。
-    this.handleDecoded(this.loadSeq);
-  }
-
-  /** 解码完成公共处理：记录尺寸、fit、显示、resolve */
-  private handleDecoded(seq: number): void {
-    if (seq !== this.loadSeq) return;
-    window.clearTimeout(this.staticLoadTimer);
-    this.naturalW = this.img.naturalWidth;
-    this.naturalH = this.img.naturalHeight;
-    this.loaded = true;
-    this.fit();
-    this.img.classList.add("visible");
-    this.releaseGhost(); // 新图开始淡入，快照同步淡出（交叉淡化）
-    this.pending?.resolve();
-    this.pending = null;
-    this.onStateChange?.();
-  }
-
-  private handleError(): void {
-    if (!this.pending || this.pending.seq !== this.loadSeq) return;
-    const p = this.pending;
-    this.pending = null;
-    window.clearTimeout(this.staticLoadTimer);
-    this.releaseGhost(); // 加载失败回到黑底 + Toast，不留冻结的旧画面
-    p.reject(new Error("图片加载失败"));
   }
 
   /** 作废进行中的静态加载：静默 resolve，让新加载覆盖显示 */
@@ -566,7 +511,7 @@ export class Viewer {
 
   private apply(): void {
     if (!this.loaded) return;
-    const el = this.active === "img" ? this.img : this.canvas;
+    const el = this.active === "img" ? this.activeImg : this.canvas;
     const s = this.currentScale;
     const fx = this.flipH ? -1 : 1;
     const fy = this.flipV ? -1 : 1;
@@ -610,7 +555,7 @@ export class Viewer {
 
   /** 旋转/翻转时的 200ms ease-in-out 过渡 */
   private animateTransform(): void {
-    const el = this.active === "img" ? this.img : this.canvas;
+    const el = this.active === "img" ? this.activeImg : this.canvas;
     el.classList.add("animating");
     window.clearTimeout(this.transformTimer);
     this.transformTimer = window.setTimeout(() => {
@@ -620,9 +565,6 @@ export class Viewer {
 }
 
 const TITLEBAR_H = 32;
-
-/** 快照层闲置未切图时释放显存的等待时长（避免高频切图重复分配显存） */
-const GHOST_IDLE_RELEASE_MS = 5000;
 
 /** 平移边距：图片边缘与视口保留的最小间距（isPannable/clampPan 共用） */
 const PAN_MARGIN = 24;

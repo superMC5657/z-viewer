@@ -8,10 +8,9 @@
   <body>
     <!-- ===== 看图画布 ===== -->
     <main id="stage">
-      <img id="image" alt="" draggable="false" decoding="async" />
+      <img id="image-a" class="stage-img" alt="" draggable="false" decoding="async" />
+      <img id="image-b" class="stage-img" alt="" draggable="false" decoding="async" />
       <canvas id="frame-canvas" draggable="false"></canvas>
-      <!-- 切图 crossfade 快照层：新图就绪前冻结旧画面（viewer.ts captureGhost） -->
-      <canvas id="ghost-canvas" draggable="false"></canvas>
       <div id="empty-state">
         <div class="empty-icon">🖼️</div>
         <div class="empty-title">拖入图片或文件夹开始浏览</div>

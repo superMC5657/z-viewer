@@ -27,13 +27,11 @@ export class PrefetchPool {
       img.dataset.path = p;
       img.decoding = "async";
       this.loading.add(p);
-      img.onload = () => {
-        // 解码完成后显式 decode()，确保位图真正进入渲染进程缓存
-        img.decode().catch(() => undefined);
-        this.loading.delete(p);
-      };
-      img.onerror = () => this.loading.delete(p);
       img.src = url;
+      img
+        .decode()
+        .then(() => this.loading.delete(p))
+        .catch(() => this.loading.delete(p));
       this.imgs.push(img);
       this.trim();
     }

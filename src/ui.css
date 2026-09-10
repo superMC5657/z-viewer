@@ -65,43 +65,26 @@ body {
   overflow: hidden;
 }
 
-#image,
+.stage-img,
 #frame-canvas {
   position: absolute;
   top: 0;
   left: 0;
   transform-origin: 0 0;
-  will-change: transform;
+  will-change: transform, opacity;
   opacity: 0;
   transition: opacity var(--t-image) ease-out;
   pointer-events: none;
 }
 
-#image.visible,
+.stage-img.visible,
 #frame-canvas.visible {
   opacity: 1;
 }
 
-#image.animating,
+.stage-img.animating,
 #frame-canvas.animating {
   transition: transform var(--t-rotate) ease-in-out;
-}
-
-/* ---- 切图 crossfade 快照层：位于 image/frame-canvas 之上（DOM 顺序靠后），
-       位图尺寸 = 视口 × DPR（设备像素 1:1）。新图淡入时快照同步淡出 →
-       交叉淡化；淡出完成由 viewer.ts 置零尺寸释放内存 ---- */
-#ghost-canvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  opacity: 0;
-  transition: opacity var(--t-image) ease-out;
-  pointer-events: none;
-}
-#ghost-canvas.visible {
-  opacity: 1;
 }
 
 /* ---- 拖拽光标：仅按下拖动时显示抓取（悬停保持默认箭头，
