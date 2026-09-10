@@ -104,6 +104,8 @@ async function showImage(state: BrowseState): Promise<void> {
   ui.updateInfo(state, null);
   currentDims = null;
   currentAnimCandidate = false;
+  window.clearTimeout(rawUpgradeTimer);
+  rawUpgradeTimer = undefined;
   ui.setFrameBarVisible(false);
   ui.setFramePlaying(false);
   // 旧 RAW Blob 不再需要（新图将覆盖显示）
@@ -201,7 +203,7 @@ async function showImage(state: BrowseState): Promise<void> {
           ui.updateInfo(state, currentDims);
         }
         if (header.isPreview) {
-          await upgradeRawToFull(state, seq);
+          scheduleRawUpgrade(state, seq);
         }
       } else {
         // 单帧动画降级：asset 协议直读
@@ -225,6 +227,27 @@ async function showImage(state: BrowseState): Promise<void> {
     void invoke("record_view", { path: state.path }).catch(() => undefined);
   } finally {
     ui.endDecoding();
+  }
+}
+
+let rawUpgradeTimer: number | undefined;
+
+/** 防抖调度 RAW 全量解码：快速翻页时只展示内嵌 JPEG 预览（毫秒级、单图 2~3MB、零 CPU 占用）；
+ *  仅当用户在当前图停留 >350ms（判定停止翻页）或用户执行放大操作时，才向后台请求全量解码 */
+function scheduleRawUpgrade(state: BrowseState, seq: number, delay = 350): void {
+  window.clearTimeout(rawUpgradeTimer);
+  rawUpgradeTimer = window.setTimeout(() => {
+    if (seq === showSeq) {
+      void upgradeRawToFull(state, seq);
+    }
+  }, delay);
+}
+
+function triggerImmediateRawUpgrade(): void {
+  if (rawUpgradeTimer !== undefined && lastState) {
+    window.clearTimeout(rawUpgradeTimer);
+    rawUpgradeTimer = undefined;
+    void upgradeRawToFull(lastState, showSeq);
   }
 }
 
@@ -375,6 +398,7 @@ function syncZoomButtons(): void {
 }
 
 function setFitMode(mode: FitMode): void {
+  if (mode === "actual") triggerImmediateRawUpgrade();
   viewer.setMode(mode);
   syncZoomButtons();
 }
@@ -715,8 +739,13 @@ function syncCacheButton(): void {
 // ---------- 事件装配 ----------
 
 function bindEvents(): void {
-  // 变换状态变化时同步缩放按钮（滚轮/键盘缩放、模式切换、图片加载后）
-  viewer.onStateChange = syncZoomButtons;
+  // 变换状态变化时同步缩放按钮；放大超过 100% 立即提升为原图全量清晰度
+  viewer.onStateChange = () => {
+    syncZoomButtons();
+    if (viewer.currentScale > 1) {
+      triggerImmediateRawUpgrade();
+    }
+  };
 
   // 标题栏窗口控制与最大化/还原状态同步
   const syncMaximize = async () => {

@@ -244,8 +244,8 @@ pub fn pack_envelope(result: &LoadResult) -> Vec<u8> {
     buf
 }
 
-/// 长边降采样上限（屏幕 2 倍尺寸足够，控制传输体积；raw/tiff 共用）
-pub(super) const MAX_DIM: u32 = 2560;
+/// 长边降采样上限（覆盖 4K 超清 3840×2160，保证高分屏 1:1 清晰呈现同时严格防爆显存）
+pub(super) const MAX_DIM: u32 = 3840;
 
 /// 超限降采样：长边 > MAX_DIM 时按比例缩到上限（Triangle 滤波）
 pub(super) fn cap_dimensions(mut img: image::DynamicImage) -> image::DynamicImage {

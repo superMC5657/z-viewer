@@ -125,3 +125,54 @@ fn preview_tiff_walk_finds_embedded_jpeg() {
     assert!(p.jpeg.starts_with(&[0xFF, 0xD8]));
     std::fs::remove_file(&dir).ok();
 }
+
+#[test]
+fn preview_raf_extracts_embedded_jpeg() {
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x04, 0x00, 0x05];
+    jpeg.extend_from_slice(&[0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+    jpeg.push(0xFF);
+    jpeg.push(0xD9);
+
+    let mut data = vec![0u8; 128];
+    data[..16].copy_from_slice(b"FUJIFILMCCD-RAW ");
+    let jpeg_off = 128u32;
+    let jpeg_len = jpeg.len() as u32;
+    data[84..88].copy_from_slice(&jpeg_off.to_be_bytes());
+    data[88..92].copy_from_slice(&jpeg_len.to_be_bytes());
+    data.extend_from_slice(&jpeg);
+
+    let dir = std::env::temp_dir().join("iv_preview_raf_test.raf");
+    std::fs::write(&dir, &data).unwrap();
+    let p = preview::extract_preview(&dir.to_string_lossy()).expect("应提取到富士 RAF 内嵌 JPEG");
+    assert_eq!((p.width, p.height), (5, 4));
+    assert!(p.jpeg.starts_with(&[0xFF, 0xD8]));
+    std::fs::remove_file(&dir).ok();
+}
+
+#[test]
+fn preview_isobmff_cr3_extracts_embedded_jpeg() {
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xC0, 0x00, 0x11, 0x08, 0x00, 0x04, 0x00, 0x05];
+    jpeg.extend_from_slice(&[0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01]);
+    jpeg.push(0xFF);
+    jpeg.push(0xD9);
+
+    let mut data = Vec::new();
+    // ftyp box
+    data.extend_from_slice(&16u32.to_be_bytes());
+    data.extend_from_slice(b"ftyp");
+    data.extend_from_slice(b"crx \x00\x00\x00\x00");
+
+    // uuid box (PRVW)
+    let uuid_box_len = (8 + 16 + jpeg.len()) as u32;
+    data.extend_from_slice(&uuid_box_len.to_be_bytes());
+    data.extend_from_slice(b"uuid");
+    data.extend_from_slice(b"PRVW\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+    data.extend_from_slice(&jpeg);
+
+    let dir = std::env::temp_dir().join("iv_preview_cr3_test.cr3");
+    std::fs::write(&dir, &data).unwrap();
+    let p = preview::extract_preview(&dir.to_string_lossy()).expect("应提取到佳能 CR3 内嵌 JPEG");
+    assert_eq!((p.width, p.height), (5, 4));
+    assert!(p.jpeg.starts_with(&[0xFF, 0xD8]));
+    std::fs::remove_file(&dir).ok();
+}

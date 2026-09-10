@@ -25,15 +25,127 @@ const TAG_JPG_LENGTH: u16 = 0x0202;
 const TAG_JPG_FROM_RAW: u16 = 0x002E; // CR2
 const TAG_PREVIEW_IMAGE: u16 = 0x0111; // DNG
 
-/// 提取内嵌 JPEG 预览（best-effort；任何异常/校验失败返回 None）
+/// 提取内嵌 JPEG 预览（best-effort；支持 TIFF/CR2/NEF/ARW/DNG、富士 RAF 及佳能 CR3/ISOBMFF）
 pub(super) fn extract_preview(path: &str) -> Option<Preview> {
     let mut f = File::open(path).ok()?;
-    let mut hdr = [0u8; 8];
-    f.read_exact(&mut hdr).ok()?;
+    let mut hdr = [0u8; 16];
+    let n = f.read(&mut hdr).ok()?;
+    if n < 8 {
+        return None;
+    }
+
+    // 1. 富士 RAF 格式（前 16 字节为 "FUJIFILMCCD-RAW "）
+    if n >= 16 && &hdr[..16] == b"FUJIFILMCCD-RAW " {
+        return extract_raf_preview(&mut f);
+    }
+
+    // 2. 佳能 CR3 / ISOBMFF 格式（[size][ftyp][crx ]...）
+    if n >= 12 && &hdr[4..8] == b"ftyp" {
+        return extract_isobmff_preview(&mut f);
+    }
+
+    // 3. 标准 TIFF 结构（CR2/NEF/ARW/DNG 等）
+    extract_tiff_preview(&mut f, &hdr[..8])
+}
+
+/// 富士 RAF 内嵌 JPEG 提取（头偏移 84 处存偏移，88 处存长度，微秒级读取）
+fn extract_raf_preview(f: &mut File) -> Option<Preview> {
+    let file_len = f.metadata().ok()?.len();
+    if file_len < 120 {
+        return None;
+    }
+    f.seek(SeekFrom::Start(84)).ok()?;
+    let mut info = [0u8; 8];
+    f.read_exact(&mut info).ok()?;
+    let off = u32::from_be_bytes([info[0], info[1], info[2], info[3]]) as u64;
+    let len = u32::from_be_bytes([info[4], info[5], info[6], info[7]]) as usize;
+    if off == 0 || len < 4 || off + (len as u64) > file_len {
+        return None;
+    }
+    f.seek(SeekFrom::Start(off)).ok()?;
+    let mut buf = vec![0u8; len];
+    f.read_exact(&mut buf).ok()?;
+    if buf.len() >= 2 && buf[0] == 0xFF && buf[1] == 0xD8 {
+        if let Some((w, h)) = jpeg_dimensions(&buf) {
+            return Some(Preview {
+                jpeg: buf,
+                width: w,
+                height: h,
+            });
+        }
+    }
+    None
+}
+
+/// 佳能 CR3 (ISOBMFF) 内嵌 JPEG 提取（解析 box 并提取 PRVW/uuid 中的预览）
+fn extract_isobmff_preview(f: &mut File) -> Option<Preview> {
+    let file_len = f.metadata().ok()?.len();
+    let mut pos = 0u64;
+    while pos + 8 <= file_len && pos < 32 * 1024 * 1024 {
+        f.seek(SeekFrom::Start(pos)).ok()?;
+        let mut hdr = [0u8; 8];
+        if f.read_exact(&mut hdr).is_err() {
+            break;
+        }
+        let size = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as u64;
+        let box_type = &hdr[4..8];
+        let box_size = if size == 1 {
+            let mut ext = [0u8; 8];
+            if f.read_exact(&mut ext).is_err() {
+                break;
+            }
+            u64::from_be_bytes(ext)
+        } else if size == 0 {
+            file_len - pos
+        } else {
+            size
+        };
+
+        if box_size < 8 {
+            break;
+        }
+
+        if box_type == b"uuid" || box_type == b"moov" || box_type == b"PRVW" {
+            let read_len = (box_size.min(16 * 1024 * 1024)) as usize;
+            let mut buf = vec![0u8; read_len];
+            f.seek(SeekFrom::Start(pos)).ok()?;
+            if f.read_exact(&mut buf).is_ok() {
+                if let Some(soi) = find_jpeg_soi(&buf) {
+                    let sub = &buf[soi..];
+                    if let Some((w, h)) = jpeg_dimensions(sub) {
+                        return Some(Preview {
+                            jpeg: sub.to_vec(),
+                            width: w,
+                            height: h,
+                        });
+                    }
+                }
+            }
+        }
+
+        pos = pos.saturating_add(box_size);
+    }
+    None
+}
+
+fn find_jpeg_soi(buf: &[u8]) -> Option<usize> {
+    if buf.len() < 3 {
+        return None;
+    }
+    for i in 0..buf.len() - 2 {
+        if buf[i] == 0xFF && buf[i + 1] == 0xD8 && buf[i + 2] == 0xFF {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// 标准 TIFF IFD 结构提取内嵌 JPEG
+fn extract_tiff_preview(f: &mut File, hdr: &[u8]) -> Option<Preview> {
     let little = match &hdr[..4] {
         b"II*\x00" => true,
         b"MM\x00*" => false,
-        _ => return None, // 非 TIFF 结构（如 RAF 定制头）——回退全量解码
+        _ => return None,
     };
     let file_len = f.metadata().ok()?.len();
     let mut ifd_off = rd_u32(&hdr[4..8], little);
