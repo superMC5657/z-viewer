@@ -84,7 +84,7 @@ body {
 
 .stage-img.animating,
 #frame-canvas.animating {
-  transition: transform var(--t-rotate) ease-in-out;
+  transition: transform var(--t-rotate) ease-in-out, opacity var(--t-image) ease-out;
 }
 
 /* ---- 拖拽光标：仅按下拖动时显示抓取（悬停保持默认箭头，

@@ -144,11 +144,11 @@ export class Viewer {
       const onDecoded = () => {
         if (this.pending?.seq !== seq) return;
         window.clearTimeout(this.staticLoadTimer);
+        this.resetTransform();
         this.naturalW = incoming.naturalWidth;
         this.naturalH = incoming.naturalHeight;
         this.loaded = true;
         this.activeImg = incoming;
-        this.resetTransform();
         this.fit(); // 内部针对 incoming 设置 transform
 
         // 双缓冲 crossfade：纯 GPU 合成器透明度过渡，零 Canvas 绘图与主线程阻塞
@@ -165,6 +165,7 @@ export class Viewer {
         if (this.pending?.seq !== seq) return;
         window.clearTimeout(this.staticLoadTimer);
         this.pending = null;
+        this.resetTransform();
         outgoing.classList.remove("visible");
         reject(new Error("图片加载失败"));
       };
@@ -205,6 +206,9 @@ export class Viewer {
 
     const oldW = this.naturalW;
     const oldH = this.naturalH;
+    if (!keepTransform) {
+      this.resetTransform();
+    }
     this.naturalW = bitmap.width;
     this.naturalH = bitmap.height;
     this.canvas.width = this.naturalW;
@@ -220,7 +224,6 @@ export class Viewer {
         this.apply();
       }
     } else {
-      this.resetTransform();
       this.fit();
     }
     this.canvas.classList.add("visible");
