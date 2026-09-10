@@ -144,4 +144,3 @@ fn generation_advance_and_is_stale() {
     assert!(cache.is_stale(0, 2), "超过 max_lag 视为已过期");
     assert!(!cache.is_stale(1, 2), "lag=2 未超过 max_lag");
 }
-

@@ -1,13 +1,16 @@
 //! commands 模块测试（#[cfg(test)] 独立文件，不混入产品代码）
 //! 测试通过 `super::*` 访问 AppSettings / prefetch 函数等。
 
-use super::*;
 use super::prefetch::prefetch_folder_firsts;
+use super::*;
 use crate::cache::FolderFirstCache;
 
 #[test]
 fn neighbor_window_rules() {
-    let s = |l| AppSettings { cache_level: l, folder_first_depth: 1 };
+    let s = |l| AppSettings {
+        cache_level: l,
+        folder_first_depth: 1,
+    };
     assert_eq!(s(0).neighbor_window(), (0, 0), "0：不预取");
     assert_eq!(s(1).neighbor_window(), (1, 1), "1：前后各 1");
     assert_eq!(s(2).neighbor_window(), (1, 3), "2(高)：前 1 后 3");
@@ -88,7 +91,10 @@ fn folder_first_cache_promote_to_neighbor() {
     // 验证：预取 C 首图入队列 A → 导航到 C → promote 并入队列 B
     // C 首图 c01.png 单帧判定 asset → 队列 A 不缓存（asset 由前端池预热）；
     // 此测试验证非 asset 场景：用 B 首图 img_2.gif（动画，非 asset）
-    let base = std::env::current_dir().unwrap().join("..").join("test-images");
+    let base = std::env::current_dir()
+        .unwrap()
+        .join("..")
+        .join("test-images");
     // 构造 B 首图为 gif 的模型：直接从 B/img_2.gif 打开
     let model = BrowseModel::open(&base.join("B/img_2.gif"), None).unwrap();
     model.wait_ready();

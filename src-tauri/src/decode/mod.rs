@@ -20,9 +20,9 @@
 mod animation;
 mod preview;
 mod raw;
-mod tiff;
 #[cfg(test)]
 mod tests;
+mod tiff;
 
 use std::path::Path;
 
@@ -182,15 +182,11 @@ pub fn is_animated(path: &str) -> bool {
     match ext.as_str() {
         "gif" => {
             let mut magic = [0u8; 6];
-            f.read_exact(&mut magic).is_ok()
-                && (&magic == b"GIF87a" || &magic == b"GIF89a")
+            f.read_exact(&mut magic).is_ok() && (&magic == b"GIF87a" || &magic == b"GIF89a")
         }
         "webp" => {
             let mut hdr = [0u8; 12];
-            if f.read_exact(&mut hdr).is_err()
-                || &hdr[0..4] != b"RIFF"
-                || &hdr[8..12] != b"WEBP"
-            {
+            if f.read_exact(&mut hdr).is_err() || &hdr[0..4] != b"RIFF" || &hdr[8..12] != b"WEBP" {
                 return false;
             }
             let mut buf = [0u8; 8];
@@ -203,7 +199,9 @@ pub fn is_animated(path: &str) -> bool {
                 }
                 let size = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) as u64;
                 // 块数据 + 奇数长度对齐字节
-                if f.seek(std::io::SeekFrom::Current((size + (size & 1)) as i64)).is_err() {
+                if f.seek(std::io::SeekFrom::Current((size + (size & 1)) as i64))
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -227,7 +225,9 @@ pub fn is_animated(path: &str) -> bool {
                     b"IEND" | b"IDAT" => break, // IDAT 之后不会再出现 acTL
                     _ => {}
                 }
-                if f.seek(std::io::SeekFrom::Current((len + 4) as i64)).is_err() {
+                if f.seek(std::io::SeekFrom::Current((len + 4) as i64))
+                    .is_err()
+                {
                     break;
                 }
             }

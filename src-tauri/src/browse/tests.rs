@@ -278,7 +278,11 @@ fn context_paths_cross_folder_both_directions() {
         .iter()
         .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
         .collect();
-    assert_eq!(names, vec!["a10.png", "b2.jpg", "c1.png"], "前1后2（跨文件夹）");
+    assert_eq!(
+        names,
+        vec!["a10.png", "b2.jpg", "c1.png"],
+        "前1后2（跨文件夹）"
+    );
     cleanup(&base);
 }
 
@@ -362,7 +366,10 @@ fn free_mode_single_folder_no_cross() {
         let d = m.inner.m.lock().unwrap();
         assert_eq!(d.folders.len(), 1, "免费版 folders 只含当前文件夹");
         assert!(!d.loading, "免费版无后台扫描，loading=false");
-        assert_eq!(d.global_total, 3, "全局总数 = 当前文件夹图片数（不累计兄弟）");
+        assert_eq!(
+            d.global_total, 3,
+            "全局总数 = 当前文件夹图片数（不累计兄弟）"
+        );
     }
     // next 到文件夹末尾即停（不跨到 B）
     let m = m;
@@ -370,13 +377,24 @@ fn free_mode_single_folder_no_cross() {
     for _ in 0..2 {
         assert_eq!(m.next(), Nav::Ok, "文件夹内翻页正常");
     }
-    assert_eq!(m.next(), Nav::Boundary(Boundary::LastImage), "文件夹末尾即全局边界（不跨文件夹）");
+    assert_eq!(
+        m.next(),
+        Nav::Boundary(Boundary::LastImage),
+        "文件夹末尾即全局边界（不跨文件夹）"
+    );
     // prev 回退正常，回到开头后再 prev 撞全局边界
     assert_eq!(m.prev(), Nav::Ok);
     assert_eq!(m.prev(), Nav::Ok);
-    assert_eq!(m.prev(), Nav::Boundary(Boundary::FirstImage), "文件夹开头即全局边界");
+    assert_eq!(
+        m.prev(),
+        Nav::Boundary(Boundary::FirstImage),
+        "文件夹开头即全局边界"
+    );
     // jump_folder 无目标可跳
-    assert_eq!(m.jump_folder(FolderTarget::Next), Nav::Boundary(Boundary::LastFolder));
+    assert_eq!(
+        m.jump_folder(FolderTarget::Next),
+        Nav::Boundary(Boundary::LastFolder)
+    );
     cleanup(&base);
 }
 
@@ -387,7 +405,11 @@ fn pro_mode_cross_folder_still_works() {
     let m = BrowseModel::open_gated(&base.join("A/a10.png"), None, true).unwrap();
     {
         let d = m.inner.m.lock().unwrap();
-        assert_eq!(d.folders.len(), 4, "专业版扫描全部同级目录（含空目录，后台压缩）");
+        assert_eq!(
+            d.folders.len(),
+            4,
+            "专业版扫描全部同级目录（含空目录，后台压缩）"
+        );
         assert!(d.loading);
     }
     m.wait_ready();

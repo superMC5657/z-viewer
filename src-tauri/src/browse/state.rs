@@ -10,7 +10,11 @@ impl BrowseModel {
     /// 当前图片上下文的路径（跨文件夹衔接），用于预加载缓存（8.2）
     /// 前 prev_n 张 + 后 next_n 张；未填充的文件夹方向跳过（预取是优化，不等待）
     pub fn context_paths(&self, prev_n: usize, next_n: usize) -> Vec<PathBuf> {
-        let d = self.inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let d = self
+            .inner
+            .m
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fi = d.folder_index;
         let ii = d.image_index;
         let mut out = Vec::with_capacity(prev_n + next_n);
@@ -74,13 +78,21 @@ impl BrowseModel {
 
     /// 当前文件夹路径
     pub fn current_folder_path(&self) -> PathBuf {
-        let d = self.inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let d = self
+            .inner
+            .m
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         d.folders[d.folder_index].path.clone()
     }
 
     /// 当前文件夹相邻的文件夹路径（前 depth 个 + 后 depth 个，跨文件夹跳转预取队列 A 用）
     pub fn neighbor_folders(&self, depth: usize) -> Vec<PathBuf> {
-        let d = self.inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let d = self
+            .inner
+            .m
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fi = d.folder_index;
         let mut out = Vec::new();
         for i in (fi.saturating_sub(depth))..fi {
@@ -131,9 +143,17 @@ impl BrowseModel {
     /// 等待后台枚举完成（测试用）
     #[cfg(test)]
     pub fn wait_ready(&self) {
-        let mut d = self.inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut d = self
+            .inner
+            .m
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while d.loading {
-            d = self.inner.cv.wait(d).unwrap_or_else(std::sync::PoisonError::into_inner);
+            d = self
+                .inner
+                .cv
+                .wait(d)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -144,7 +164,10 @@ impl BrowseModel {
     pub(super) fn state_from_inner(inner: &Arc<ModelInner>) -> BrowseState {
         // 第一段（持模型主锁）：等待当前文件夹填充，取一份 O(1) 快照后立即释放锁
         let snapshot = {
-            let mut d = inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut d = inner
+                .m
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             loop {
                 if let Some(imgs) = &d.folders[d.folder_index].images {
                     let folder = &d.folders[d.folder_index];

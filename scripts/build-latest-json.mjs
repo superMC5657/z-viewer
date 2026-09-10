@@ -44,11 +44,12 @@ const {
   dir = '.',
   output = 'latest.json',
   'proxy-prefix': proxyPrefix,
+  'direct-output': directOutput,
 } = parseArgs(process.argv.slice(2))
 
 if (!name || !repo || !tag || !assetsJson) {
   console.error(
-    '用法: node scripts/build-latest-json.mjs --name <appName> --repo <owner/repo> --tag <vX.Y.Z> --assets <json> [--dir artifacts] [--output latest.json] [--proxy-prefix <url>]',
+    '用法: node scripts/build-latest-json.mjs --name <appName> --repo <owner/repo> --tag <vX.Y.Z> --assets <json> [--dir artifacts] [--output latest.json] [--direct-output latest-direct.json] [--proxy-prefix <url>]',
   )
   process.exit(1)
 }
@@ -69,6 +70,7 @@ if (!Array.isArray(assets) || assets.length === 0) {
 }
 
 const platforms = {}
+const directPlatforms = {}
 for (const { target, file } of assets) {
   if (!target || !file) {
     console.error(`跳过无效资产条目: ${JSON.stringify({ target, file })}`)
@@ -82,11 +84,17 @@ for (const { target, file } of assets) {
     console.error(`错误: 找不到签名文件 ${sigPath}（需先对产物执行 tauri signer sign）`)
     process.exit(1)
   }
+  const encodedFile = encodeURIComponent(file)
+  const rawUrl = `https://github.com/${repo}/releases/download/${tag}/${encodedFile}`
   platforms[target] = {
     signature,
     // 文件名可能含空格,URL 必须百分号编码,
     // 否则 Tauri updater 解析 URL 会失败
-    url: `${urlPrefix}https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(file)}`,
+    url: `${urlPrefix}${rawUrl}`,
+  }
+  directPlatforms[target] = {
+    signature,
+    url: rawUrl,
   }
 }
 
@@ -108,3 +116,16 @@ console.log(
     .map((k) => `\n  ${k} -> ${platforms[k].url}`)
     .join('')}`,
 )
+
+if (directOutput) {
+  const latestDirect = {
+    ...latest,
+    platforms: directPlatforms,
+  }
+  writeFileSync(resolve(directOutput), JSON.stringify(latestDirect, null, 2))
+  console.log(
+    `已生成直连容灾版本 ${directOutput}:${Object.keys(directPlatforms)
+      .map((k) => `\n  ${k} -> ${directPlatforms[k].url}`)
+      .join('')}`,
+  )
+}

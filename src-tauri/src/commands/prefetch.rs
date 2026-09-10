@@ -58,7 +58,7 @@ pub(super) fn prefetch_folder_firsts(
         return;
     }
     let depth = settings.folder_first_depth.min(3); // 首图队列深度上限 3
-    // 锁内仅收集邻居文件夹路径（快速克隆），枚举与解码全部移入后台线程
+                                                    // 锁内仅收集邻居文件夹路径（快速克隆），枚举与解码全部移入后台线程
     let folders = model.neighbor_folders(depth);
     for folder in folders {
         let folder_str = folder.to_string_lossy().to_string();

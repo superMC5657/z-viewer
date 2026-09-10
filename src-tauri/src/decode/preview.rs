@@ -132,12 +132,7 @@ fn find_jpeg_soi(buf: &[u8]) -> Option<usize> {
     if buf.len() < 3 {
         return None;
     }
-    for i in 0..buf.len() - 2 {
-        if buf[i] == 0xFF && buf[i + 1] == 0xD8 && buf[i + 2] == 0xFF {
-            return Some(i);
-        }
-    }
-    None
+    (0..buf.len() - 2).find(|&i| buf[i] == 0xFF && buf[i + 1] == 0xD8 && buf[i + 2] == 0xFF)
 }
 
 /// 标准 TIFF IFD 结构提取内嵌 JPEG

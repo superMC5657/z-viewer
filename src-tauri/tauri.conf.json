@@ -65,6 +65,7 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUyRUJERDNDQTE5RTU0RkMKUldUOFZKNmhQTjNyVWt3WjJxRnJleU9HbjlURHR6bDJ5WlpVY0RLamxveGYvRDF0NHBjQmRna1gK",
       "endpoints": [
         "https://gh-proxy.com/https://github.com/superMC5657/z-viewer-release/releases/latest/download/latest.json",
+        "https://github.com/superMC5657/z-viewer-release/releases/latest/download/latest-direct.json",
         "https://github.com/superMC5657/z-viewer-release/releases/latest/download/latest.json"
       ],
       "windows": {

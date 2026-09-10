@@ -1,12 +1,14 @@
-# CI:前端/类型检查
-# 触发:仅发布 tag(v*), 日常开发检查在本地,
-# 打 tag 发布时才在 CI 全量检查)
-# 注:发布打包流水线见 release-tauri.yml
+# CI: 前端与 Rust 质量检查门禁
+# 触发: main 分支 push、PR 以及 tag 发布
+# 包含: TypeScript 类型检查、Rust fmt 代码格式、Clippy 静态分析、Cargo 单元测试
 name: CI
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,20 +37,29 @@ jobs:
       - name: Typecheck
         run: pnpm exec tsc --noEmit
 
-  # Rust 测试（browse 大小写/路径语义、授权验签、缓存/解码行为）
-  # 跑在 windows-latest:应用仅发 Windows 包,大小写不敏感/winreg 等语义
-  # 只在 Windows 下成立;test-images/ 已入库,测试资产随仓库走
-  rust-tests:
-    name: Rust tests
+  # Rust 静态检查与测试（fmt, clippy, test）
+  # 跑在 windows-latest: 应用仅发 Windows 包，大小写不敏感/winreg 等语义
+  # 只在 Windows 下成立；test-images/ 已入库，测试资产随仓库走
+  rust-quality:
+    name: Rust quality & tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - name: Run cargo test
+      - name: Check code formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
+      - name: Run Clippy lints
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Run Cargo tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+

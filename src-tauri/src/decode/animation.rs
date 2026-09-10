@@ -17,7 +17,8 @@ pub(super) fn decode_animation(path: &str) -> Result<Option<LoadResult>, String>
     // 必须在编码前按 EXIF 回正（WebP EXIF / PNG eXIf；GIF 无 EXIF → 1）。
     // 复用同一文件句柄：EXIF 头在文件前部，读方向后 seek 回开头再拆帧（省一次 open）
     let orientation = super::preview::read_orientation(&file).unwrap_or(1);
-    file.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+    file.seek(std::io::SeekFrom::Start(0))
+        .map_err(|e| e.to_string())?;
     let reader = BufReader::new(&file);
 
     match ext.as_str() {
@@ -35,7 +36,8 @@ pub(super) fn decode_animation(path: &str) -> Result<Option<LoadResult>, String>
             collect_frames(apng.into_frames(), orientation)
         }
         "webp" => {
-            let decoder = image::codecs::webp::WebPDecoder::new(reader).map_err(|e| e.to_string())?;
+            let decoder =
+                image::codecs::webp::WebPDecoder::new(reader).map_err(|e| e.to_string())?;
             collect_frames(decoder.into_frames(), orientation)
         }
         _ => Ok(None),
@@ -44,10 +46,7 @@ pub(super) fn decode_animation(path: &str) -> Result<Option<LoadResult>, String>
 
 /// 前两帧仅解码不编码：帧数 < 2 直接判定静态，避免无谓 PNG 编码；
 /// 确认多帧后边解码边编码、逐帧释放（长 GIF 峰值内存 ≈ ~2 帧）
-fn collect_frames(
-    iter: image::Frames<'_>,
-    orientation: u8,
-) -> Result<Option<LoadResult>, String> {
+fn collect_frames(iter: image::Frames<'_>, orientation: u8) -> Result<Option<LoadResult>, String> {
     let mut frame_iter = iter;
     let Some(first) = frame_iter.next() else {
         return Ok(None);

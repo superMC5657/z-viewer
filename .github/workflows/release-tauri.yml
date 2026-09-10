@@ -158,21 +158,41 @@ jobs:
             ASSETS="${ASSETS}{\"target\":\"$T\",\"file\":\"$SAFE\"},"
           done
           ASSETS="${ASSETS%,}]"
-          node scripts/build-latest-json.mjs --name "$APP_NAME" --repo "$RELEASES_REPO" --tag "$TAG" --assets "$ASSETS" --dir artifacts --output artifacts/latest.json
+          node scripts/build-latest-json.mjs \
+            --name "$APP_NAME" \
+            --repo "$RELEASES_REPO" \
+            --tag "$TAG" \
+            --assets "$ASSETS" \
+            --dir artifacts \
+            --output artifacts/latest.json \
+            --direct-output artifacts/latest-direct.json
 
       - name: Publish GitHub release (releases repo)
         env:
           GH_TOKEN: ${{ secrets.RELEASES_PAT }}
         run: |
           set -e
-          # 同名 tag 已存在则删除重建(产物仓库每次发版全量替换)
-          gh release delete "$TAG" --yes --cleanup-tag --repo "$RELEASES_REPO" || true
           cd artifacts
           # 文件名可能含空格($APP_NAME_<ver>_x64-setup.exe),用数组展开避免 shell 分词
           FILES=()
           while IFS= read -r -d '' f; do FILES+=("$f"); done < <(find . -type f -print0)
-          gh release create "$TAG" "${FILES[@]}" \
-            --repo "$RELEASES_REPO" \
-            --title "$APP_NAME $TAG" \
-            --notes "$APP_NAME $TAG 安装包与更新元数据。更新走 gh-proxy.com 镜像加速,客户端 updater 自动检查。" \
-            --latest
+
+          # 原子发布与无损容灾：
+          # 若 Release 已存在，使用 upload --clobber 原地覆盖更新资产，避免先删后建导致的公网 404 与中断风险；
+          # 若不存在则创建全新 Release。
+          if gh release view "$TAG" --repo "$RELEASES_REPO" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，执行原地覆盖资产..."
+            gh release upload "$TAG" "${FILES[@]}" --clobber --repo "$RELEASES_REPO"
+            gh release edit "$TAG" \
+              --repo "$RELEASES_REPO" \
+              --title "$APP_NAME $TAG" \
+              --notes "$APP_NAME $TAG 安装包与更新元数据。更新支持镜像容灾加速，客户端 updater 自动检查。" \
+              --latest
+          else
+            echo "创建新 Release $TAG..."
+            gh release create "$TAG" "${FILES[@]}" \
+              --repo "$RELEASES_REPO" \
+              --title "$APP_NAME $TAG" \
+              --notes "$APP_NAME $TAG 安装包与更新元数据。更新支持镜像容灾加速，客户端 updater 自动检查。" \
+              --latest
+          fi

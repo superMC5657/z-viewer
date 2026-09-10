@@ -162,13 +162,25 @@ pub fn next_image(
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
 ) -> Result<NavResult, String> {
-    let r = navigate(state.inner(), cache.inner(), first_cache.inner(), settings.inner(), |m| m.next());
+    let r = navigate(
+        state.inner(),
+        cache.inner(),
+        first_cache.inner(),
+        settings.inner(),
+        |m| m.next(),
+    );
     // 仅幻灯片自动播放使用的 next_image 打印跳转日志（手动 prev/next/jump_folder 不打）
     // 整个 if-let 用 cfg 门控：release 下连绑定一起剥离，避免 dev_log 空展开产生未使用变量警告
     #[cfg(debug_assertions)]
     if let Ok(result) = &r {
         if let Some(st) = &result.state {
-            dev_log!("next_image 跳转: {} [{}] ({}/{})", st.file_name, st.folder_name, st.global_index + 1, st.global_total);
+            dev_log!(
+                "next_image 跳转: {} [{}] ({}/{})",
+                st.file_name,
+                st.folder_name,
+                st.global_index + 1,
+                st.global_total
+            );
         } else if let Some(b) = &result.boundary {
             dev_log!("next_image 边界: {}", b);
         }
@@ -183,7 +195,13 @@ pub fn prev_image(
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
 ) -> Result<NavResult, String> {
-    navigate(state.inner(), cache.inner(), first_cache.inner(), settings.inner(), |m| m.prev())
+    navigate(
+        state.inner(),
+        cache.inner(),
+        first_cache.inner(),
+        settings.inner(),
+        |m| m.prev(),
+    )
 }
 
 /// 文件夹级跳转：target ∈ "first" | "prev" | "next" | "last"
@@ -207,7 +225,13 @@ pub fn jump_folder(
         "last" => FolderTarget::Last,
         _ => return Err(format!("未知跳转目标: {target}")),
     };
-    navigate(state.inner(), cache.inner(), first_cache.inner(), settings.inner(), |m| m.jump_folder(t))
+    navigate(
+        state.inner(),
+        cache.inner(),
+        first_cache.inner(),
+        settings.inner(),
+        |m| m.jump_folder(t),
+    )
 }
 
 /// 启动时查询初始状态（命令行参数已由 main.rs 注入模型）
@@ -232,8 +256,7 @@ pub async fn load_image(
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
 ) -> Result<tauri::ipc::Response, String> {
-    let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled()
-        && license.is_pro();
+    let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled() && license.is_pro();
     if caching {
         // 命中：信封已打包一次缓存于条目内，这里只做一次缓冲拷贝进 IPC 响应
         if let Some(hit) = cache.get_entry(&path) {
@@ -258,7 +281,9 @@ pub async fn load_image(
         // 实时解码完成：清除该路径的预取登记（预取任务 put 前 peek 会跳过）
         cache.end_prefetch(&path);
     }
-    Ok(tauri::ipc::Response::new(crate::decode::pack_envelope(&result)))
+    Ok(tauri::ipc::Response::new(crate::decode::pack_envelope(
+        &result,
+    )))
 }
 
 /// 轻量判定文件是否多帧动画（不拆帧）：WebP 扫 RIFF ANMF 块、PNG 扫 acTL 块、

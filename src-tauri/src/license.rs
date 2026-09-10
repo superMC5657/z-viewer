@@ -10,6 +10,7 @@
 //! 免费版限制（门控点见 commands / browse）：
 //! - 跨文件夹浏览（兄弟文件夹扫描、文件夹级跳转）
 //! - 预取缓存（DecodeCache / FolderFirstCache / get_context）
+//!
 //! dev（debug）构建恒为已解锁，开发调试不被门控干扰；release 才真正生效。
 
 use std::collections::HashMap;
@@ -43,12 +44,12 @@ pub const LICENSE_ISSUER: &str = "soft-candy";
 ///     "licensePublicKeys": {
 ///       "pro": "<z-viewer/pro 的 Ed25519 公钥，raw/DER base64 或 PEM>"
 ///     },
-    ///     "licenseFileName": "license.json",
-    ///     "activatePath": "/api/v1/apps/z-viewer/activate",
-    ///     "verifyPath": "/api/v1/apps/z-viewer/verify",
-    ///     "deactivatePath": "/api/v1/apps/z-viewer/deactivate",
-    ///     "analyticsPath": "/api/v1/apps/z-viewer/analytics",
-    ///     "analyticsToken": "<soft-candy 管理后台生成的埋点 Bearer token，空 = 不携带>"
+///     "licenseFileName": "license.json",
+///     "activatePath": "/api/v1/apps/z-viewer/activate",
+///     "verifyPath": "/api/v1/apps/z-viewer/verify",
+///     "deactivatePath": "/api/v1/apps/z-viewer/deactivate",
+///     "analyticsPath": "/api/v1/apps/z-viewer/analytics",
+///     "analyticsToken": "<soft-candy 管理后台生成的埋点 Bearer token，空 = 不携带>"
 ///   }
 /// }
 /// ```
@@ -268,8 +269,7 @@ impl LicenseManager {
                 .map_err(|e| format!("无法创建许可证目录 {}: {e}", dir.display()))?;
         }
         let tmp = self.storage.with_extension("json.tmp");
-        std::fs::write(&tmp, s)
-            .map_err(|e| format!("无法保存许可证到 {}: {e}", tmp.display()))?;
+        std::fs::write(&tmp, s).map_err(|e| format!("无法保存许可证到 {}: {e}", tmp.display()))?;
         match std::fs::rename(&tmp, &self.storage) {
             Ok(()) => Ok(()),
             Err(e) => {
@@ -305,7 +305,10 @@ impl LicenseManager {
         }
         #[cfg(not(debug_assertions))]
         {
-            Self::is_pro_with(&self.license.lock().ok().and_then(|g| g.clone()), &self.store)
+            Self::is_pro_with(
+                &self.license.lock().ok().and_then(|g| g.clone()),
+                &self.store,
+            )
         }
     }
 
@@ -388,10 +391,8 @@ impl LicenseManager {
     /// 在线续验（启动时后台调用）：soft-candy 会返回新 JWT 延长离线宽限期；
     /// 网络失败静默，只有明确吊销/失效时才清空本地授权并返回最新状态。
     pub async fn verify_online(&self) -> Option<LicenseInfo> {
-        let Some(lic) = self.license() else { return None };
-        let Some(lic_device_id) = lic.device_id() else {
-            return None;
-        };
+        let lic = self.license()?;
+        let lic_device_id = lic.device_id()?;
         if lic.email.is_empty() {
             return None; // 旧版许可证没有邮箱：等待用户在管理激活窗口重新激活后补全
         }
@@ -419,7 +420,10 @@ impl LicenseManager {
             let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
             let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
             if status.as_u16() == 401
-                || matches!(error, "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE")
+                || matches!(
+                    error,
+                    "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE"
+                )
             {
                 self.clear_license();
                 return Some(self.status());
@@ -430,7 +434,10 @@ impl LicenseManager {
             return None; // 响应异常保守视为有效，不误伤付费用户
         };
         let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
-        if matches!(error, "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE") {
+        if matches!(
+            error,
+            "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE"
+        ) {
             self.clear_license();
             return Some(self.status());
         }

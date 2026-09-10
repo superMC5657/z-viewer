@@ -90,15 +90,15 @@ impl BrowseModel {
         // 名字与双击/命令行传入路径通常字节一致）；不中再大小写不敏感兜底
         // （to_string_lossy 对 UTF-8 名返回借用零分配，语义与原实现一致）。
         let file_name_lossy = file_name_os.to_string_lossy();
-        let image_index = current_images.iter().position(|img| {
-            match img.file_name() {
+        let image_index = current_images
+            .iter()
+            .position(|img| match img.file_name() {
                 Some(n) if n == file_name_os => true,
                 Some(n) => n
                     .to_string_lossy()
                     .eq_ignore_ascii_case(file_name_lossy.as_ref()),
                 None => false,
-            }
-        })?;
+            })?;
 
         // 构建 folders：当前文件夹已填充，其余 None（后台填充）
         // 定位当前文件夹：先按名字比较（大小写不敏感，与 Windows 文件系统语义
@@ -119,7 +119,10 @@ impl BrowseModel {
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&current_folder_name)
             })
-            .or_else(|| dirs.iter().position(|d| canonical(d) == current_folder_canon));
+            .or_else(|| {
+                dirs.iter()
+                    .position(|d| canonical(d) == current_folder_canon)
+            });
         let mut folders = Vec::with_capacity(dirs.len());
         for (i, d) in dirs.iter().enumerate() {
             folders.push(Folder {
@@ -162,7 +165,11 @@ impl BrowseModel {
     /// 打开目录（门控）：取目录内第一张图片（自然排序）作为起点。
     /// 当前文件夹图片列表只枚举一次：首图与 open_with_current_images 的定位列表
     /// 共用同一份（此前 open_first 枚举一次、open_gated 内部又枚举一次）。
-    pub fn open_first_in_dir_gated(dir: &Path, on_ready: Option<OnReady>, cross_folder: bool) -> Option<Self> {
+    pub fn open_first_in_dir_gated(
+        dir: &Path,
+        on_ready: Option<OnReady>,
+        cross_folder: bool,
+    ) -> Option<Self> {
         let current_images = Self::list_images(dir);
         let first = current_images.first().cloned()?;
         Self::open_with_current_images(&first, current_images, on_ready, cross_folder)
@@ -200,7 +207,10 @@ impl BrowseModel {
 /// 后台扫描线程主循环：逐个填充兄弟文件夹 → 压缩空文件夹 → 回调 on_ready
 fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
     let pending: Vec<usize> = {
-        let d = scan_inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let d = scan_inner
+            .m
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         d.folders
             .iter()
             .enumerate()
@@ -211,7 +221,10 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
     for idx in pending {
         // 一次加锁取 (path, cancelled)：此前 cancelled 检查与 path clone 各自加锁
         let (path, cancelled) = {
-            let d = scan_inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let d = scan_inner
+                .m
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (d.folders[idx].path.clone(), d.cancelled)
         };
         if cancelled {
@@ -219,7 +232,10 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         }
         let imgs = BrowseModel::list_images(&path);
         {
-            let mut d = scan_inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut d = scan_inner
+                .m
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if d.cancelled {
                 return;
             }
@@ -240,7 +256,10 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
     // 全部填充完成：压缩空文件夹（open 时无法预知哪些兄弟为空）。
     // P2-2：若用户已导航进空文件夹，同样移除它并指向相邻非空文件夹，
     // 避免空文件夹永久残留、folder_total 虚高。
-    let mut d = scan_inner.m.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut d = scan_inner
+        .m
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if d.cancelled {
         return;
     }

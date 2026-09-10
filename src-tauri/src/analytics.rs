@@ -60,7 +60,9 @@ impl SessionStats {
             {
                 *g.formats.entry(ext).or_default() += 1;
             }
-            if let Some(dir) = Path::new(path).parent().filter(|d| !d.as_os_str().is_empty())
+            if let Some(dir) = Path::new(path)
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
             {
                 g.folders.insert(normalize_key(&dir.to_string_lossy()));
             }
@@ -133,7 +135,7 @@ pub fn report_exit(app: &tauri::AppHandle) {
         Ok(c) => c,
         Err(_) => return,
     };
-    let _ = tauri::async_runtime::block_on(async move {
+    tauri::async_runtime::block_on(async move {
         if let Some(req) = build_request(&client, &url, &payload, &store.analytics_token) {
             let _ = client.execute(req).await;
         }
@@ -282,8 +284,13 @@ mod tests {
 
     fn request_headers(token: &str) -> reqwest::header::HeaderMap {
         let client = reqwest::Client::new();
-        let req = build_request(&client, "http://127.0.0.1:8080/x", &serde_json::json!({}), token)
-            .expect("合法 URL 构造必成功");
+        let req = build_request(
+            &client,
+            "http://127.0.0.1:8080/x",
+            &serde_json::json!({}),
+            token,
+        )
+        .expect("合法 URL 构造必成功");
         req.headers().clone()
     }
 
