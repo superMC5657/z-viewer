@@ -51,7 +51,7 @@ pnpm tauri dev        # 开发模式（前端热更新 + Rust 自动重编译）
 
 - 命令行传参：`pnpm tauri dev -- test-images/A/10.png`
 - 拖拽图片 / 文件夹到窗口任意位置
-- 正式安装后（M5）支持双击图片直接打开
+- 正式安装后支持右键「用 ZViewer 打开」，也可在 Windows 设置 > 默认应用中将 ZViewer 设为默认看图后双击打开（非抢占式关联，不劫持系统默认）
 
 ## 快捷键
 
