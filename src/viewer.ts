@@ -53,8 +53,6 @@ export class Viewer {
   /** 动画播放 rAF 句柄 */
   private rafAnimHandle: number | null = null;
   private lastAnimTick = 0;
-  /** 渲染模式缓存（避免重复写 style） */
-  private currentRenderingMode: "pixelated" | "auto" | "" = "";
   /** 旋转/翻转过渡计时器（与播放器独立，互不干扰） */
   private transformTimer: number | undefined;
   /** 沉浸模式：fit 时是否避让标题栏 */
@@ -561,12 +559,6 @@ export class Viewer {
       `rotate(${this.rotTotal}deg) ` +
       `scale(${s * fx}, ${s * fy}) ` +
       `translate(${-this.naturalW / 2}px, ${-this.naturalH / 2}px)`;
-    // 状态缓存比对：避免高频平移/缩放每帧重复写入未改变的样式属性
-    const targetMode = s > 1 ? "pixelated" : "auto";
-    if (this.currentRenderingMode !== targetMode) {
-      el.style.imageRendering = targetMode;
-      this.currentRenderingMode = targetMode;
-    }
   }
 
   /** 平移范围约束：图片至少与视口保留 24px 重叠 */

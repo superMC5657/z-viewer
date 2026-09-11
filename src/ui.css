@@ -75,6 +75,7 @@ body {
   opacity: 0;
   transition: opacity var(--t-image) ease-out;
   pointer-events: none;
+  image-rendering: auto;
 }
 
 .stage-img.visible,
