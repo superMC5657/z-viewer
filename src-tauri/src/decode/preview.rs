@@ -159,7 +159,7 @@ fn extract_tiff_preview(f: &mut File, hdr: &[u8]) -> Option<Preview> {
         }
         let mut entries = vec![0u8; n * 12];
         f.read_exact(&mut entries).ok()?;
-        for e in entries.chunks_exact(12) {
+        for e in entries.as_chunks::<12>().0 {
             let tag = rd_u16(&e[0..2], little);
             let count = rd_u32(&e[4..8], little);
             let val = rd_u32(&e[8..12], little);
