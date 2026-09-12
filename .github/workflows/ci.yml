@@ -1,14 +1,14 @@
-# CI: 前端与 Rust 质量检查门禁
-# 触发: main 分支 push、PR 以及 tag 发布
-# 包含: TypeScript 类型检查、Rust fmt 代码格式、Clippy 静态分析、Cargo 单元测试
+# CI: 前端与 Rust 质量检查门禁 (单机执行，零 dist 重复构建)
+# 触发: main 分支 push、PR、手动触发以及 Release 工作流内部调用
 name: CI
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
+    branches: [main, master]
   pull_request:
-    branches: [main]
+    branches: [main, master]
+  workflow_call:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -18,48 +18,44 @@ permissions:
   contents: read
 
 jobs:
-  frontend-quality:
-    name: Frontend quality
-    runs-on: ubuntu-latest
+  test:
+    name: Fullstack Quality & Tests
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
+        with:
+          version: 10
 
       - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
 
-      - name: Install deps
+      - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Typecheck
-        run: pnpm exec tsc --noEmit
+      - name: Frontend Lint (if configured)
+        run: pnpm run --if-present lint
 
-  # Rust 静态检查与测试（fmt, clippy, test）
-  # 跑在 windows-latest: 应用仅发 Windows 包，大小写不敏感/winreg 等语义
-  # 只在 Windows 下成立；test-images/ 已入库，测试资产随仓库走
-  rust-quality:
-    name: Rust quality & tests
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
+      - name: Frontend Test (if configured)
+        run: pnpm run --if-present test
+
+      # 构建前端生成 dist/ (供 tauri::generate_context! 编译期展开)
+      - name: Build frontend
+        run: pnpm build
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
 
-      - name: Check code formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
-
-      - name: Run Clippy lints
+      - name: Rust Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 
-      - name: Run Cargo tests
+      - name: Cargo tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
-

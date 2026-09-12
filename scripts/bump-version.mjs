@@ -3,18 +3,20 @@
  * 一键同步项目版本号到四个文件:
  *   package.json · src-tauri/Cargo.toml · src-tauri/Cargo.lock · src-tauri/tauri.conf.json
  *
- * 用法(项目名通过 --name 传入;package.json 的 bump:version 已内置):
- *   node scripts/bump-version.mjs --name <appName> 1.2.3            # 直接设置版本
- *   node scripts/bump-version.mjs --name <appName> --patch          # 0.1.0 -> 0.1.1
- *   node scripts/bump-version.mjs --name <appName> 1.2.3 --dry-run  # 只预览,不写文件
+ * 用法(项目名默认读取 package.json 的 name,也可通过 --name 覆盖):
+ *   pnpm bump 1.2.3            # 直接设置版本
+ *   pnpm bump --patch          # 0.1.0 -> 0.1.1
+ *   pnpm bump --minor          # 0.1.0 -> 0.2.0
+ *   pnpm bump --major          # 0.1.0 -> 1.0.0
+ *   pnpm bump <...> --dry-run  # 只预览,不写文件
  *
  * 说明:
  *   - 以 package.json 的 version 为基准读取当前版本;写前会校验各文件是否一致,
  *     不一致时告警并一并修正。
  *   - 采用文本级替换,保持各文件原有格式与注释不变(不经过 JSON/Toml 序列化)。
- *   - Cargo.toml / Cargo.lock 只改 --name 指定的 package 段,
+ *   - Cargo.toml / Cargo.lock 只改 appName 指定的 package 段,
  *     不会误伤其它依赖的 version 行。
- *   - 项目名由 --name 传入,脚本本身与项目解耦,可跨项目直接迁移。
+ *   - 脚本完全与项目解耦,可跨项目直接迁移。
  */
 import { readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -28,7 +30,7 @@ const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
 const jsonGet = (s) => s.match(/^(\s*"version":\s*")([^"]+)(")/m)?.[2]
 const jsonSet = (s, v) => s.replace(/^(\s*"version":\s*")[^"]+(")/m, `$1${v}$2`)
 
-// Cargo 系:package 段 name 行紧邻 version 行(name 由 --name 注入)
+// Cargo 系:package 段 name 行紧邻 version 行(name 由 appName 注入)
 let appName = ''
 const cargoPattern = () => new RegExp(`name = "${appName}"\nversion = "([^"]+)"`)
 const cargoGet = (s) => s.match(cargoPattern())?.[1]
@@ -45,13 +47,12 @@ const TARGETS = [
 function usage() {
   return [
     '用法:',
-    '  node scripts/bump-version.mjs --name <appName> <x.y.z>            直接设置版本',
-    '  node scripts/bump-version.mjs --name <appName> --version <x.y.z>  同上(显式写法)',
-    '  node scripts/bump-version.mjs --name <appName> --patch|--minor|--major  基于当前版本递增',
-    '  node scripts/bump-version.mjs <...> --dry-run    只预览,不写文件',
+    '  pnpm bump <x.y.z>                             直接设置版本',
+    '  pnpm bump --patch|--minor|--major             基于当前版本递增',
+    '  pnpm bump <...> --dry-run                     只预览,不写文件',
     '',
-    '--name: Cargo.toml / Cargo.lock 中 package 段的 name(即项目名);',
-    '        package.json 的 bump:version 已内置,跨项目迁移时只需改那一处。',
+    '选项:',
+    '  --name <appName>  可选。Cargo 系 package 段名(默认自动读取 package.json 中的 name)',
   ].join('\n')
 }
 
@@ -113,7 +114,13 @@ if (args.help) {
 
 appName = args.name?.trim() ?? ''
 if (!appName) {
-  console.error(`错误: 缺少 --name <appName>(Cargo 系文件 package 段的名称)。\n\n${usage()}`)
+  try {
+    const pkg = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'))
+    appName = pkg.name?.trim() ?? ''
+  } catch {}
+}
+if (!appName) {
+  console.error(`错误: 缺少 --name <appName>(且无法从 package.json 读取 name)。\n\n${usage()}`)
   process.exit(1)
 }
 
