@@ -287,11 +287,13 @@ export class Viewer {
   /** 重新计算（窗口尺寸变化时调用） */
   onResize(): void {
     if (!this.loaded) return;
-    if (this.fitMode === "fit" && this.userScale === 1) {
+    if (this.isFit) {
+      this.userScale = 1;
       this.fit();
       // 窗口尺寸变化 → fit 倍率变化 → 同步缩放读数/按钮态
       this.onStateChange?.();
     } else {
+      this.clampPan();
       this.apply();
     }
   }
@@ -335,7 +337,8 @@ export class Viewer {
   rotate(delta: number): void {
     this.rotation = ((this.rotation + delta) % 360 + 360) % 360;
     this.rotTotal += delta; // 累计角度保持单调：过渡沿真实方向转 90°，而非绕 270°
-    if (this.fitMode === "fit" && this.userScale === 1) {
+    if (this.isFit) {
+      this.userScale = 1;
       // 旋转 90/270 后交换宽高重新适应
       this.fit();
     } else {
@@ -357,7 +360,9 @@ export class Viewer {
   zoomAt(mx: number, my: number, factor: number): void {
     if (!this.loaded) return;
     const s0 = this.currentScale;
-    const s1 = clamp(s0 * factor, MIN_SCALE, MAX_SCALE);
+    const minScale = Math.min(MIN_SCALE, this.baseScale * 0.1);
+    const maxScale = Math.max(MAX_SCALE, this.baseScale * 10);
+    const s1 = clamp(s0 * factor, minScale, maxScale);
     const ratio = s1 / s0;
     this.cx = mx - (mx - this.cx) * ratio;
     this.cy = my - (my - this.cy) * ratio;
@@ -540,9 +545,9 @@ export class Viewer {
     const availH = this.stage.clientHeight - (this.immersive ? 0 : TITLEBAR_H);
     const ew = this.rotation % 180 === 0 ? this.naturalW : this.naturalH;
     const eh = this.rotation % 180 === 0 ? this.naturalH : this.naturalW;
-    // 封顶 1×：小图保持原尺寸居中（低分辨率素材拉伸到全屏会糊化），
-    // 大图照常缩小适应；想看放大效果用滚轮/双击
-    this.baseScale = Math.min(availW / ew, availH / eh, 1);
+    if (availW <= 0 || availH <= 0 || ew <= 0 || eh <= 0) return;
+    // 保持图片最大的展示能力：等比缩放至触达窗口边界（小图放大、大图缩小，不设 1× 封顶）
+    this.baseScale = Math.min(availW / ew, availH / eh);
     this.cx = availW / 2;
     this.cy = (this.immersive ? 0 : TITLEBAR_H) + availH / 2;
     this.apply();
