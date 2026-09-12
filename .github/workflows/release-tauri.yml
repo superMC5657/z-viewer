@@ -69,8 +69,6 @@ jobs:
 
       # 2. 安装环境与依赖
       - uses: pnpm/action-setup@v6
-        with:
-          version: 10
 
       - uses: actions/setup-node@v7
         with:
