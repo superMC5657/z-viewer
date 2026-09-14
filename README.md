@@ -76,8 +76,19 @@ pnpm tauri dev        # 开发模式（前端热更新 + Rust 自动重编译）
 
 ```bash
 pnpm tauri build -- --no-bundle   # 仅产出可执行文件（快速验证）
-pnpm tauri build                  # 完整打包（NSIS 安装包）
+pnpm tauri build                  # 完整打包（Windows NSIS 安装包）
+pnpm build:linux                  # Linux 打包（deb + AppImage）
 ```
+
+**Linux 构建前提**（Ubuntu/Debian）：
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file patchelf libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+- 产物位于 `src-tauri/target/release/bundle/`（`deb/` 与 `appimage/` 子目录）
+- 自动更新（latest.json）在 Linux 上仅对 AppImage 生效，deb 需手动升级
+- 发版：打 `v*` tag 后 CI 自动构建 Windows/Linux 双平台安装包并发布（矩阵并行构建，统一生成双平台 latest.json，见 `.github/workflows/release-tauri.yml`）
 
 ## 目录结构
 

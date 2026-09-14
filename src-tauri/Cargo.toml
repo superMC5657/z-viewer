@@ -21,8 +21,11 @@ kamadak-exif = "0.6"
 base64 = "0.22"
 chrono = "0.4"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
-winreg = "0.55"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+
+# winreg 仅 Windows 可编译（读注册表 MachineGuid / 系统版本），非 Windows 平台不引入
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 
 # ============================================================
 # 编译优化

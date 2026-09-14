@@ -613,29 +613,55 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// 设备指纹：Windows MachineGuid（注册表读取），激活/验证/存储共用。
-/// 机器 GUID 系统级唯一且重装系统才变化；直接用作设备标识。
-/// 进程内缓存（OnceLock）：is_pro 在每个 Tauri 命令里都调用，注册表
-/// 打开+读值不该重复发生（GUID 运行期不变）。
+/// 设备指纹：激活/验证/存储共用。
+/// - Windows：注册表 MachineGuid，系统级唯一且重装系统才变化
+/// - Linux：/etc/machine-id（systemd 机器标识，与 MachineGuid 等价）
+///
+/// 进程内缓存（OnceLock）：is_pro 在每个 Tauri 命令里都调用，读取
+/// 不该重复发生（机器标识运行期不变）。
 pub fn device_id() -> String {
     static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            use winreg::enums::HKEY_LOCAL_MACHINE;
-            use winreg::RegKey;
-            RegKey::predef(HKEY_LOCAL_MACHINE)
-                .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
-                .and_then(|k| k.get_value::<String, _>("MachineGuid"))
-                .unwrap_or_else(|_| {
-                    // 兜底：注册表读取失败时用主机名+用户名组合，避免所有机器共用同一 id（跨机复制许可证）
-                    format!(
-                        "fallback-{}-{}",
-                        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "host".into()),
-                        std::env::var("USERNAME").unwrap_or_else(|_| "user".into())
-                    )
-                })
+    CACHE.get_or_init(device_id_uncached).clone()
+}
+
+#[cfg(windows)]
+fn device_id_uncached() -> String {
+    use winreg::enums::HKEY_LOCAL_MACHINE;
+    use winreg::RegKey;
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
+        .and_then(|k| k.get_value::<String, _>("MachineGuid"))
+        .unwrap_or_else(|_| {
+            // 兜底：注册表读取失败时用主机名+用户名组合，避免所有机器共用同一 id（跨机复制许可证）
+            format!(
+                "fallback-{}-{}",
+                std::env::var("COMPUTERNAME").unwrap_or_else(|_| "host".into()),
+                std::env::var("USERNAME").unwrap_or_else(|_| "user".into())
+            )
         })
-        .clone()
+}
+
+#[cfg(not(windows))]
+fn device_id_uncached() -> String {
+    std::fs::read_to_string("/etc/machine-id")
+        .or_else(|_| std::fs::read_to_string("/var/lib/dbus/machine-id"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            // 兜底：machine-id 不可用时用主机名+用户名组合，避免所有机器共用同一 id（跨机复制许可证）
+            let host = std::fs::read_to_string("/etc/hostname")
+                .map(|s| s.trim().to_string())
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| std::env::var("HOSTNAME").ok())
+                .unwrap_or_else(|| "host".into());
+            format!(
+                "fallback-{}-{}",
+                host,
+                std::env::var("USER").unwrap_or_else(|_| "user".into())
+            )
+        })
 }
 
 // ---------- Tauri 命令 ----------
