@@ -114,7 +114,7 @@ async function showImage(state: BrowseState): Promise<void> {
     currentBlobUrl = null;
   }
 
-  // 预取下一批上下文（方案三/四：asset 预热 + Rust 缓存）；防抖合并快速翻页
+  // 预取下一批上下文（asset 预热 + Rust 缓存）；防抖合并快速翻页
   scheduleRefreshContext();
 
   // asset 快速通道：浏览器原生解码直接 convertFileSrc，跳过 IPC
@@ -331,7 +331,7 @@ function splitFrames(payload: Uint8Array, sizes: number[], mime: string): Blob[]
   return blobs;
 }
 
-/** 获取当前上下文路径并预热（方案三/四） */
+/** 获取当前上下文路径并预热 */
 async function refreshContext(): Promise<void> {
   try {
     const paths = await invoke<string[]>("get_context");
@@ -900,7 +900,7 @@ async function init(): Promise<void> {
     const st = event.payload;
     ui.updateInfo(st, currentDims);
     ui.setSlideshowProgress(st.global_index + 1, st.global_total);
-    // 兄弟文件夹枚举完成：重新按强度预取（此前跨文件夹路径取不到）；防抖合并
+    // 兄弟文件夹枚举完成：按强度预取跨文件夹路径；防抖合并
     scheduleRefreshContext();
   });
   await listen<LicenseInfo>(LICENSE_STATUS_CHANGED, (event) => {
@@ -916,10 +916,10 @@ async function init(): Promise<void> {
   }
 
   try {
-    // RAW 扩展名单一真源：后端 decode::RAW_EXTS（失败保留 types.ts 内置兜底集）
+    // RAW 扩展名注册：同步自后端 decode::RAW_EXTS
     setRawExts(await invoke<string[]>("get_raw_extensions"));
   } catch (err) {
-    console.error("拉取 RAW 扩展名失败，使用内置兜底集", err);
+    console.error("拉取 RAW 扩展名失败", err);
   }
 
   try {

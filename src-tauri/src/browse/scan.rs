@@ -163,8 +163,7 @@ impl BrowseModel {
     }
 
     /// 打开目录（门控）：取目录内第一张图片（自然排序）作为起点。
-    /// 当前文件夹图片列表只枚举一次：首图与 open_with_current_images 的定位列表
-    /// 共用同一份（此前 open_first 枚举一次、open_gated 内部又枚举一次）。
+    /// 当前文件夹图片列表只枚举一次：首图与定位列表复用同一份。
     pub fn open_first_in_dir_gated(
         dir: &Path,
         on_ready: Option<OnReady>,
@@ -219,7 +218,7 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
             .collect()
     };
     for idx in pending {
-        // 一次加锁取 (path, cancelled)：此前 cancelled 检查与 path clone 各自加锁
+        // 一次加锁取 (path, cancelled)
         let (path, cancelled) = {
             let d = scan_inner
                 .m
@@ -253,8 +252,7 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         scan_inner.cv.notify_all();
     }
 
-    // 全部填充完成：压缩空文件夹（open 时无法预知哪些兄弟为空）。
-    // P2-2：若用户已导航进空文件夹，同样移除它并指向相邻非空文件夹，
+    // 若用户已导航进空文件夹，同样移除它并指向相邻非空文件夹，
     // 避免空文件夹永久残留、folder_total 虚高。
     let mut d = scan_inner
         .m

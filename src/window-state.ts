@@ -56,7 +56,7 @@ export class WindowState {
     await this.toggleImmersive();
   }
 
-  /** 切换窗口置顶（P3-3：沿用 toggleImmersive 的 in-flight 防重入，双击可正常取消） */
+  /** 切换窗口置顶（防重入，保证窗口状态同步） */
   async togglePin(): Promise<void> {
     if (this.toggling) return;
     this.toggling = true;

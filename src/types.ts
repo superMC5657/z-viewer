@@ -96,9 +96,8 @@ export function parseLoadEnvelope(buf: ArrayBuffer): { header: LoadEnvelope; pay
 }
 
 /**
- * 需走 Rust IPC 解码通道的扩展名：RAW + TIFF。
- * 动画（GIF/APNG/WebP）由浏览器原生 <img> 播放（首帧即时、零 IPC），
- * 帧控制（暂停/步进）按需拆帧时再走 load_image。
+ * 需走 Rust IPC 解码通道的扩展名（RAW + TIFF）。
+ * 动画由浏览器原生 <img> 播放，帧控制按需拆帧时走 load_image。
  */
 const RUST_EXTS = new Set([
   "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
@@ -106,26 +105,12 @@ const RUST_EXTS = new Set([
   "tif", "tiff",
 ]);
 
-/**
- * RAW 扩展名：以后端 decode::RAW_EXTS 为唯一真源 —— init 时通过
- * get_raw_extensions 命令拉取并整表替换（见 setRawExts）。此处的内置
- * 副本仅作命令就绪前/失败时的兜底，避免初始化早期误判通道；后端新增
- * RAW 格式时无需同步改这里。
- */
-const RAW_EXTS = new Set([
-  "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
-  "3fr", "kdc", "dcr", "mrw", "mef", "mos", "iiq", "fff", "ari",
-]);
-
-/** 用后端 RAW_EXTS 整表替换本地兜底集（init 时调用一次） */
+/** 以后端 decode::RAW_EXTS 更新扩展名集合 */
 export function setRawExts(exts: string[]): void {
-  // 清掉旧的 RAW 贡献，保留 TIFF 常驻
-  for (const e of [...RUST_EXTS]) {
-    if (e !== "tif" && e !== "tiff") RUST_EXTS.delete(e);
-  }
-  RAW_EXTS.clear();
+  RUST_EXTS.clear();
+  RUST_EXTS.add("tif");
+  RUST_EXTS.add("tiff");
   for (const e of exts) {
-    RAW_EXTS.add(e.toLowerCase());
     RUST_EXTS.add(e.toLowerCase());
   }
 }

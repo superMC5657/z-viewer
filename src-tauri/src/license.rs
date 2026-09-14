@@ -104,12 +104,6 @@ impl StoreConfig {
                 }
             }
         }
-        if public_keys.is_empty() {
-            // 兼容旧单等级配置：单个公钥按当前 licenseLevel 生效。
-            if let Some(key) = s("licensePublicKeyB64") {
-                public_keys.insert(license_level.clone(), key.to_string());
-            }
-        }
 
         Self {
             api_base: s("apiBase").unwrap_or_default().to_string(),
@@ -143,7 +137,7 @@ pub struct Claims {
     pub level: String,
     pub level_label: String,
     pub device_id: String,
-    /// 购买邮箱；旧版本令牌可能没有该 claim，本地记录仍会保存邮箱。
+    /// 购买邮箱
     #[serde(default)]
     pub email: Option<String>,
     pub features: Vec<String>,
@@ -156,13 +150,11 @@ pub struct Claims {
 #[serde(rename_all = "camelCase")]
 pub struct License {
     /// 激活码（大写；本地保存，注销激活时回传）
-    #[serde(default)]
     pub code: String,
-    /// soft-candy 返回的 JWT；磁盘字段名为 `license`，兼容旧版 `token` 字段
-    #[serde(rename = "license", alias = "token")]
+    /// soft-candy 返回的 JWT；磁盘字段名为 `license`
+    #[serde(rename = "license")]
     pub token: String,
     /// 购买邮箱（本地保存，激活/验证/注销激活时回传）
-    #[serde(default)]
     pub email: String,
 }
 
@@ -175,20 +167,9 @@ impl License {
         self.claims().map(|c| c.device_id)
     }
 
-    /// 从磁盘读取并补全旧版许可证：旧文件只有 token，激活码可从 JWT claims 恢复。
+    /// 从磁盘反序列化许可证
     fn from_persisted(s: &str) -> Option<License> {
-        let mut lic: License = serde_json::from_str(s).ok()?;
-        if let Some(claims) = lic.claims() {
-            if lic.code.is_empty() {
-                lic.code = claims.code.clone();
-            }
-            if lic.email.is_empty() {
-                if let Some(email) = claims.email.as_deref().filter(|e| !e.is_empty()) {
-                    lic.email = email.to_string();
-                }
-            }
-        }
-        Some(lic)
+        serde_json::from_str(s).ok()
     }
 
     /// 完整校验：JWT 验签通过 + 产品/等级/设备/功能位/有效期均匹配。
@@ -204,7 +185,7 @@ impl License {
         };
         verified == claims
             && claims_ok(&verified, dev, &store.product)
-            && (self.code.is_empty() || self.code.eq_ignore_ascii_case(&verified.code))
+            && self.code.eq_ignore_ascii_case(&verified.code)
             && email_matches_claims(&self.email, &verified)
     }
 }
@@ -221,9 +202,9 @@ pub struct LicenseInfo {
     pub level: Option<String>,
     /// 当前 JWT 的等级名称（如 专业版）
     pub level_label: Option<String>,
-    /// 本地保存的激活码（未激活/旧文件无法恢复时为 null）
+    /// 本地保存的激活码（未激活时为 null）
     pub code: Option<String>,
-    /// 本地保存的购买邮箱（未激活/旧文件无法恢复时为 null）
+    /// 本地保存的购买邮箱（未激活时为 null）
     pub email: Option<String>,
 }
 
@@ -246,7 +227,7 @@ fn http_client() -> reqwest::Client {
 }
 
 impl LicenseManager {
-    /// 从磁盘加载许可证（不存在/格式旧/验签失败 = 免费版）；store 为编译期配置。
+    /// 从磁盘加载许可证（不存在/验签失败 = 免费版）；store 为编译期配置。
     pub fn load(storage: PathBuf, store: StoreConfig) -> Self {
         let license = std::fs::read_to_string(&storage)
             .ok()
@@ -394,7 +375,7 @@ impl LicenseManager {
         let lic = self.license()?;
         let lic_device_id = lic.device_id()?;
         if lic.email.is_empty() {
-            return None; // 旧版许可证没有邮箱：等待用户在管理激活窗口重新激活后补全
+            return None; // 缺少购买邮箱：不发起在线验证
         }
         if self.store.api_base.is_empty() {
             return None; // 未配置授权服务器：不联网验证
@@ -993,24 +974,29 @@ mod tests {
     }
 
     #[test]
-    fn legacy_token_file_loads_code_and_email_from_claims() {
+    fn persisted_license_roundtrips_cleanly() {
         let (pubkey, signing) = test_keypair();
         let claims = claims(&device_id(), "pro", now() + 3600);
         let token = sign_jwt(&claims, &signing);
         let dir =
-            std::env::temp_dir().join(format!("iv-jwt-legacy-license-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("iv-jwt-clean-license-test-{}", std::process::id()));
         let storage = dir.join("license.json");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&storage, serde_json::json!({ "token": token }).to_string()).unwrap();
+        let original = License {
+            code: claims.code.clone(),
+            token,
+            email: claims.email.clone().unwrap_or_default(),
+        };
+        std::fs::write(&storage, serde_json::to_string(&original).unwrap()).unwrap();
 
         let store = test_store(&pubkey);
         let m = LicenseManager::load(storage, store);
-        let lic = m.license().expect("旧版 token 文件应可加载");
+        let lic = m.license().expect("标准许可证应可正常加载");
         assert_eq!(lic.code, claims.code);
         assert_eq!(lic.email, claims.email.unwrap());
         assert!(
             LicenseManager::is_pro_with(&m.license(), &test_store(&pubkey)),
-            "旧版 token 补全后仍应判为已解锁"
+            "标准许可证应判为已解锁"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

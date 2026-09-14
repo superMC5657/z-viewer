@@ -300,7 +300,7 @@ fn context_paths_at_global_boundaries() {
 
 #[test]
 fn nav_skips_empty_sibling_folder() {
-    // P2-2 回归：A 与 B 之间夹一个空目录 A0，从 A 末尾 next 应跳过 A0 直达 B
+    // A 与 B 之间夹一个空目录 A0，从 A 末尾 next 应跳过 A0 直达 B
     let base = temp_base();
     for n in ["a1", "a2"] {
         touch(&base.join("A").join(format!("{n}.png")));
@@ -328,7 +328,7 @@ fn nav_skips_empty_sibling_folder() {
 
 #[test]
 fn nav_during_scan_never_panics() {
-    // P2-2 竞态回归：扫描未完成时连续导航，期间后台压缩可能缩短 folders 列表，
+    // 扫描未完成时连续导航，期间后台压缩可能缩短 folders 列表，
     // 不得 panic（越界）或 poison 模型 Mutex
     let base = temp_base();
     for d in 0..10 {
@@ -401,7 +401,7 @@ fn free_mode_single_folder_no_cross() {
 #[test]
 fn pro_mode_cross_folder_still_works() {
     let base = build_tree();
-    // 专业版（cross_folder=true）：与旧行为一致，可跨到兄弟文件夹
+    // 专业版（cross_folder=true）：可跨到兄弟文件夹
     let m = BrowseModel::open_gated(&base.join("A/a10.png"), None, true).unwrap();
     {
         let d = m.inner.m.lock().unwrap();

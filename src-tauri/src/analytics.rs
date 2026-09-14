@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn empty_token_omits_auth_header() {
-        // token 为空 = 未配置埋点鉴权，不携带 Authorization（服务端不校验，兼容旧部署）
+        // token 为空时不携带 Authorization
         assert!(!request_headers("").contains_key(reqwest::header::AUTHORIZATION));
     }
 

@@ -46,8 +46,7 @@ pub(super) fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, setting
 }
 
 /// 队列 A：每个文件夹第一张图预取（跨文件夹跳转无延迟）
-/// 当前文件夹的邻居文件夹首图 → FolderFirstCache
-/// P3-1：目录枚举（first_image_of）移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
+/// 目录枚举（first_image_of）移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
 pub(super) fn prefetch_folder_firsts(
     model: &BrowseModel,
     cache: &DecodeCache,
@@ -107,8 +106,7 @@ pub(super) fn prefetch_folder_firsts(
 
 /// 导航进入新文件夹时，把 FolderFirstCache 命中的首图并入 DecodeCache
 /// （前端 load_image 按图片路径查队列 B，命中即零解码）
-/// 优化：首图路径已随缓存值保存（FolderFirst.path），无需再 list_images 扫目录定位，
-/// 避免在持有 AppState 锁的导航路径上做同步文件系统枚举（旧版会阻塞全部导航命令）
+/// 首图路径已随缓存值保存（FolderFirst.path），直接读取无需重复文件系统枚举
 pub(super) fn promote_folder_first(
     model: &BrowseModel,
     cache: &DecodeCache,

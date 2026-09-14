@@ -1,5 +1,5 @@
 /**
- * 前端预解码池（方案四：WebView2 层面预解码 DOM）
+ * 前端预解码池：WebView2 层面预解码 DOM
  *
  * asset 通道图片（jpg/bmp/ico/svg 等浏览器原生解码）提前用隐藏 <img>
  * 加载并 decode()，让 WebView2 保留已解码位图（同 URL 二次加载实测

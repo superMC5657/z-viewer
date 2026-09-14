@@ -1,5 +1,5 @@
 //! 导航：图片级（next/prev）跨文件夹无缝衔接 + 文件夹级跳转（jump_folder）。
-//! 导航到未填充文件夹时阻塞等待（Condvar）；跨文件夹时跳过空文件夹（P2-2）。
+//! 导航到未填充文件夹时阻塞等待（Condvar）；跨文件夹时跳过空文件夹。
 
 use std::sync::{Arc, MutexGuard};
 
@@ -57,8 +57,7 @@ impl BrowseModel {
         }
     }
 
-    /// 文件夹级跳转（PgUp/PgDn / 首末按钮），目标显示该文件夹第一张
-    /// 跳过空文件夹：跳转到实际含图的首/末/相邻文件夹（P2-2）
+    /// 跳过空文件夹：跳转到实际含图的首/末/相邻文件夹
     pub fn jump_folder(&self, target: FolderTarget) -> Nav {
         let d = self
             .inner
@@ -146,8 +145,7 @@ impl BrowseModel {
         d.global_index = new_prefix + new_ii;
     }
 
-    /// 在已持有锁的情况下等待某文件夹填充完成；返回 (长度, guard)。
-    /// 若等待期间压缩已把列表变短（idx 越界），返回 (0, guard) —— 不 panic（P2-2 竞态）。
+    /// 若等待期间压缩已把列表变短（idx 越界），返回 (0, guard) 防越界 panic。
     fn wait_folder_len<'a>(
         inner: &Arc<ModelInner>,
         mut guard: MutexGuard<'a, InnerData>,

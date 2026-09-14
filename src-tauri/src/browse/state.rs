@@ -98,8 +98,7 @@ impl BrowseModel {
         for i in (fi.saturating_sub(depth))..fi {
             out.push(d.folders[i].path.clone());
         }
-        // 防御式上界：len 为 0 或 fi 越界时静默返回空（等价旧式的 ..=(fi+depth).min(len-1)，
-        // 但空列表不再 len-1 下溢 panic —— open/压缩正常保证非空，此处只兜异常路径）
+        // 上界截断：防越界与空列表下溢
         let end = (fi + depth + 1).min(d.folders.len());
         for i in (fi + 1)..end {
             out.push(d.folders[i].path.clone());

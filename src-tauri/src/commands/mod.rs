@@ -352,8 +352,8 @@ pub fn get_raw_extensions() -> Vec<&'static str> {
     crate::decode::RAW_EXTS.to_vec()
 }
 
-/// 查询当前图片上下文路径（按缓存强度），供前端预解码池（方案四）预热
-/// P3-1：相邻文件夹首图的目录枚举移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
+/// 查询当前图片上下文路径（按缓存强度），供前端预解码池预热
+/// 相邻文件夹首图的目录枚举移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
 /// 专业版功能：免费版返回空（无预取）
 #[tauri::command]
 pub async fn get_context(
@@ -383,8 +383,7 @@ pub async fn get_context(
         .into_iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
-    // P3-2：缓存关闭（cache_level=0）时不返回任何首图路径，
-    // 前端不得继续预热（与「0=关闭不缓存不预取」语义一致）
+    // 缓存关闭（cache_level=0）时不返回任何首图路径，前端不预热
     let neighbors = if folder_depth > 0 && enabled {
         model.neighbor_folders(1)
     } else {
