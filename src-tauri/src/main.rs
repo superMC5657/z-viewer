@@ -8,6 +8,7 @@ mod commands;
 mod decode;
 mod license;
 mod logger;
+mod z_log;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -60,7 +61,9 @@ fn startup_image_path() -> Option<String> {
 }
 
 fn main() {
+    z_log::install_panic_hook();
     tauri::Builder::default()
+        .plugin(z_log::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
@@ -136,6 +139,8 @@ fn main() {
             license::deactivate_license,
             license::get_license_status,
             license::get_store_info,
+            z_log::zlog_get_dir,
+            z_log::zlog_export_bundle,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

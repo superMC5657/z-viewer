@@ -25,6 +25,7 @@ import { needsIpc, setRawExts, parseLoadEnvelope } from "./types";
 import type { AppSettings, BrowseState, LicenseInfo, LoadEnvelope, NavResult } from "./types";
 import { checkForUpdate } from "./services/updater";
 import { LicenseService } from "./services/license";
+import { initZLog } from "./lib/z-log";
 import "./ui.css";
 
 const stage = document.getElementById("stage")!;
@@ -960,5 +961,8 @@ function loadSsInterval(): number | null {
     return null;
   }
 }
+
+// 统一日志先行：转发 console/全局错误到 Rust 日志（LogDir 落盘），失败不阻塞启动
+void initZLog().catch(() => undefined);
 
 void init();
