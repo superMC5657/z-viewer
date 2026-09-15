@@ -646,6 +646,7 @@ function buildSlideshowBar(): void {
   intervalSel.addEventListener("change", () => {
     const ms = Number(intervalSel.value);
     slideshow.setInterval(ms);
+    console.info(`[slideshow] interval changed to ${ms}ms`);
     try {
       localStorage.setItem("ss-interval", String(ms));
     } catch {
@@ -669,6 +670,7 @@ function buildSlideshowBar(): void {
     (window as unknown as Record<string, unknown>).__lastAdvance = result;
     if (result.boundary === "last-image") {
       // 播放到全局最后一张：自动停止并提醒（需求 2.4），退出幻灯片模式回到浏览
+      console.info("[slideshow] finished: reached last image");
       ui.showToast("已播放完所有图片");
       exitSlideshow();
       return false;
@@ -685,6 +687,7 @@ function buildSlideshowBar(): void {
   slideshow.onStateChange = (running) => {
     // 播放/暂停只切换播放按钮图标与工具栏激活态；**不切换模式**
     //（暂停是真正停住，仍停留在幻灯片模式；退出模式由 exitSlideshow 显式完成）
+    console.info(running ? `[slideshow] started (interval: ${intervalSel.value}ms)` : "[slideshow] paused");
     ui.setSlideshowPlaying(running);
     ui.setToolbarActive("slideshow", running);
     if (running) {
@@ -708,6 +711,7 @@ function buildSlideshowBar(): void {
 /** 退出幻灯片模式，返回图片浏览（返回按钮 / 播放完 / 打开新图） */
 function exitSlideshow(): void {
   if (slideshowMode === false) return; // 幂等
+  console.info("[slideshow] exited");
   slideshow.stop();
   slideshowMode = false;
   ui.setSlideshowMode(false); // 恢复普通浮层（内部 wake）

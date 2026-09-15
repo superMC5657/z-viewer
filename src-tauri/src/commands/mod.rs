@@ -133,7 +133,14 @@ fn navigate(
         // 导航边界：高频且用户可见 toast，只 debug（release 不可见）
         log::debug!("browse boundary {b}");
     }
-    if r.state.is_some() {
+    if let Some(st) = r.state.as_ref() {
+        // 单图切换：高频交互，只 debug（dev 模式可见，release 不可见防刷盘）
+        log::debug!(
+            "browse nav {}/{} {}",
+            st.global_index + 1,
+            st.global_total,
+            st.file_name
+        );
         cache.advance_generation();
         // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
         promote_folder_first(&model, cache, first_cache);
@@ -238,13 +245,18 @@ pub fn jump_folder(
             return Err(format!("未知跳转目标: {target}"));
         }
     };
-    navigate(
+    let r = navigate(
         state.inner(),
         cache.inner(),
         first_cache.inner(),
         settings.inner(),
         |m| m.jump_folder(t),
-    )
+    )?;
+    if let Some(st) = r.state.as_ref() {
+        // 文件夹级跳转成功：低频关键定位变更，记 info
+        log::info!("browse jump folder {target} ok {}", st.folder_name);
+    }
+    Ok(r)
 }
 
 /// 启动时查询初始状态（命令行参数已由 main.rs 注入模型）
@@ -354,6 +366,8 @@ pub fn set_cache_level(
         cache.set_capacity(if level >= 2 { 8 } else { 4 });
         first_cache.set_capacity(4);
     }
+    // 缓存等级变更：核心配置变迁，记 info
+    log::info!("cache level set {level}");
     Ok(*g)
 }
 

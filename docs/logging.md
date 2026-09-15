@@ -78,16 +78,18 @@ void initZLog().catch(() => undefined);
 - 路径只许 basename（`Path::file_name`）；原因取首行或截断封顶（`first_line_of` 200 字符）。
 - 禁止：完整 args/全路径/激活码-email-JWT-deviceId 三件套值/服务端原文/全文 dump；
   `redact` 只是兜底，“不该记的值”不许进消息。
-- 禁止 `println!/eprint!/dbg!`；前端业务不加打点（框架转发 + 全局错误已够）。
+- 禁止 `println!/eprint!/dbg!`；前端高频热路径不打点，关键生命周期（如幻灯片启停）使用 `console.info` 经 `z-log` 统一转发。
 
 ## 浏览（`main.rs` 启动路径 + `commands/mod.rs`）
 
-重要才记：打开结果 + 打开失败 + 边界（debug）。
+重要才记：打开结果 + 打开失败 + 边界（debug）+ 文件夹跳转（info）+ 单图翻页（debug）。
 
 - `info` browse open ok {basename}（启动传参/双击打开成功，`main.rs`；`open_path` 成功同文案，
   两处为不同入口各记一次，不存在双记）
 - `warn` browse open failed {basename}（启动路径打不开：非图片/空目录）
 - `error` browse open failed {basename}（`open_path` 模型建立失败，直接返回前端错误）
+- `info` browse jump folder {target} ok {folder_name}（文件夹级跳转成功，记录跳转目标与落点文件夹名）
+- `debug` browse nav {global_index+1}/{global_total} {file_name}（单图切换：高频交互，仅 dev 可见，release 不落盘防刷屏）
 - `debug` browse boundary {first-image|last-image|first-folder|last-folder}
   （静态枚举映射，高频且用户可见 toast，不 info 化；`navigate` 三导航命令共用。
   `pro-required` 是免费版 `jump_folder` 早返（`commands/mod.rs:228-230`）给前端的解锁引导，
@@ -97,6 +99,14 @@ void initZLog().catch(() => undefined);
 - `debug` browse open skipped invalid startup arg（启动参数非法/不存在，`None` 静默跳过；
   静态文案，不记参数原文；`main.rs:62`；无参数正常启动不记）
 
+## 幻灯片（`src/main.ts`）
+
+关键模式与生命周期由前端 `console.info` 经 `z-log.ts` 转发（dev 终端与 `webview.log` 可见）：
+- `info` [slideshow] started (interval: {ms}ms) / paused（幻灯片开始/暂停播放）
+- `info` [slideshow] interval changed to {ms}ms（播放间隔调整）
+- `info` [slideshow] exited（退出幻灯片模式返回普通浏览）
+- `info` [slideshow] finished: reached last image（播放到最后一张自动结束）
+
 ## 解码（`commands/mod.rs` → `decode/*.rs`）
 
 - `warn` decode failed {basename}: {原因首行}（`load_image` 实时路径：RAW/TIFF/动画全通道收敛于此；
@@ -104,8 +114,9 @@ void initZLog().catch(() => undefined);
 - 解码器内部（`raw.rs`/`tiff.rs`/`animation.rs`）零 log：底层错误（io/ImageError/rawler `Display`）
   均不含路径，只在命令层记一次。
 
-## 缓存（`commands/prefetch.rs`）
+## 缓存（`commands/mod.rs` + `commands/prefetch.rs`）
 
+- `info` cache level set {level}（缓存等级切换：0=关闭、1=开启、2=高，配置变迁留痕）
 - `debug` cache prefetch failed {basename}: {原因首行}（队列 B 上下文预取 + 队列 A 首图预取；
   低价值后台优化，release 不可见）
 - LRU 本体（`cache/*.rs`）热路径零 log：锁失败/未命中是常态，不记。
