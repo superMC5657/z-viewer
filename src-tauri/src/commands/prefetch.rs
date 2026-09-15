@@ -6,6 +6,7 @@ use crate::browse::BrowseModel;
 use crate::cache::{DecodeCache, FolderFirst, FolderFirstCache};
 
 use super::settings::AppSettings;
+use super::{basename_of, first_line_of};
 
 /// 导航成功后后台预取上下文图片（按缓存强度），填充解码缓存（8.2）
 /// 仅缓存 RAW/动画（asset 通道由 WebView 自身缓存）；失败静默忽略
@@ -32,7 +33,18 @@ pub(super) fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, setting
                 cache.end_prefetch(&path);
                 return;
             }
-            let result = crate::decode::load_image(&path, true).ok();
+            let result = match crate::decode::load_image(&path, true) {
+                Ok(r) => Some(r),
+                // 后台预取失败：低价值，只 debug（release 不可见），记 basename + 原因首行
+                Err(e) => {
+                    log::debug!(
+                        "cache prefetch failed {}: {}",
+                        basename_of(&path),
+                        first_line_of(&e)
+                    );
+                    None
+                }
+            };
             if let Some(result) = result {
                 // 实时加载可能已填充缓存（end_prefetch 清登记后我们 put 会覆盖，内容相同无害）
                 // 仅缓存非 asset（asset 走 WebView 自带缓存）
@@ -87,14 +99,24 @@ pub(super) fn prefetch_folder_firsts(
                 return; // asset 由前端池预热
             }
             if !cache.is_stale(gen, 2) {
-                if let Ok(result) = crate::decode::load_image(&path, true) {
-                    if result.mode != "asset" {
-                        first_cache.put(
-                            folder_str.clone(),
-                            Arc::new(FolderFirst {
-                                path,
-                                result: Arc::new(result),
-                            }),
+                match crate::decode::load_image(&path, true) {
+                    Ok(result) => {
+                        if result.mode != "asset" {
+                            first_cache.put(
+                                folder_str.clone(),
+                                Arc::new(FolderFirst {
+                                    path,
+                                    result: Arc::new(result),
+                                }),
+                            );
+                        }
+                    }
+                    // 首图预取失败：低价值，只 debug，记 basename + 原因首行
+                    Err(e) => {
+                        log::debug!(
+                            "cache prefetch failed {}: {}",
+                            basename_of(&path),
+                            first_line_of(&e)
                         );
                     }
                 }

@@ -47,14 +47,19 @@ fn resolve_path_arg(arg: &str) -> PathBuf {
 fn startup_image_path() -> Option<String> {
     let mut args = std::env::args();
     args.next(); // 可执行文件自身
+    let mut saw_arg = false;
     for arg in args {
         if arg.starts_with('-') {
             continue;
         }
+        saw_arg = true;
         let resolved = resolve_path_arg(&arg);
         if resolved.is_file() || resolved.is_dir() {
             return Some(resolved.to_string_lossy().to_string());
         }
+    }
+    if saw_arg {
+        log::debug!("browse open skipped invalid startup arg");
     }
     None
 }
@@ -106,17 +111,29 @@ fn main() {
             // 双击图片打开 / 命令行传参（文件或目录）：初始化浏览模型
             if let Some(path) = startup_image_path() {
                 let p = Path::new(&path);
+                let base = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| "unknown".to_string());
                 let on_ready = Some(commands::on_ready_callback(app.handle().clone()));
                 let model = if p.is_dir() {
                     BrowseModel::open_first_in_dir_gated(p, on_ready, pro)
                 } else {
                     BrowseModel::open_gated(p, on_ready, pro)
                 };
-                if let Some(model) = model {
-                    let state = app.state::<AppState>();
-                    if let Ok(mut guard) = state.0.lock() {
-                        *guard = Some(std::sync::Arc::new(model));
-                    };
+                match model {
+                    // 启动打开结果：成功 info / 失败 warn，只记 basename
+                    Some(model) => {
+                        log::info!("browse open ok {base}");
+                        let state = app.state::<AppState>();
+                        if let Ok(mut guard) = state.0.lock() {
+                            *guard = Some(std::sync::Arc::new(model));
+                        };
+                    }
+                    None => {
+                        log::warn!("browse open failed {base}");
+                    }
                 }
             }
             Ok(())

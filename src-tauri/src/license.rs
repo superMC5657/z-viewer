@@ -229,10 +229,14 @@ fn http_client() -> reqwest::Client {
 impl LicenseManager {
     /// 从磁盘加载许可证（不存在/验签失败 = 免费版）；store 为编译期配置。
     pub fn load(storage: PathBuf, store: StoreConfig) -> Self {
+        let existed = storage.is_file();
         let license = std::fs::read_to_string(&storage)
             .ok()
             .and_then(|s| License::from_persisted(&s))
             .filter(|lic| lic.is_valid_with(&device_id(), &store));
+        if existed && license.is_none() {
+            log::debug!("license load invalid fallback to free");
+        }
         Self {
             license: Arc::new(Mutex::new(license)),
             storage,
@@ -394,6 +398,8 @@ impl LicenseManager {
             .send()
             .await;
         let Ok(resp) = resp else {
+            // 在线验证网络失败：离线降级，不阻止使用，只 warn（不记 URL/载荷）
+            log::warn!("license verify offline, using grace period");
             return None; // 网络失败不阻止使用
         };
         if !resp.status().is_success() {
@@ -406,12 +412,17 @@ impl LicenseManager {
                     "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE"
                 )
             {
+                // 吊销：只记静态文案，不记 error/message 原文与授权值
+                log::warn!("license revoked, credentials removed");
                 self.clear_license();
                 return Some(self.status());
             }
+            // 其他服务端错误：保留凭证等重验，只 debug（release 不可见）
+            log::debug!("license verify deferred");
             return None; // 其他服务端错误保守视为有效，不误伤付费用户
         };
         let Ok(body) = resp.json::<serde_json::Value>().await else {
+            log::debug!("license verify deferred");
             return None; // 响应异常保守视为有效，不误伤付费用户
         };
         let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
@@ -419,11 +430,13 @@ impl LicenseManager {
             error,
             "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE"
         ) {
+            log::warn!("license revoked, credentials removed");
             self.clear_license();
             return Some(self.status());
         }
         let valid = body.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
         if !valid {
+            log::warn!("license revoked, credentials removed");
             self.clear_license();
             return Some(self.status());
         }
@@ -442,6 +455,7 @@ impl LicenseManager {
                 let _ = self.persist(&refreshed);
             }
         }
+        log::debug!("license verify ok");
         None
     }
 
@@ -681,15 +695,37 @@ pub async fn activate_license(
     if !is_valid_email(&email) {
         return Err("请输入正确的购买邮箱".to_string());
     }
-    state.activate(code, email).await?;
-    Ok(state.status())
+    // 只记事件不记值：激活码/email/JWT 不进日志；Err 载荷含服务端原文与路径，只记静态文案
+    match state.activate(code, email).await {
+        Ok(_) => {
+            log::info!("license activated");
+            Ok(state.status())
+        }
+        Err(e) => {
+            // 本地验签不过单独一条（精确匹配自有静态文案；服务端 msg 自由文本不参与分流）
+            if e == "激活码无效（JWT 验签失败）" {
+                log::warn!("license activate token verify failed");
+            } else {
+                log::warn!("license activate failed");
+            }
+            Err(e)
+        }
+    }
 }
 
 /// 注销激活（成功会删除本地 license）
 #[tauri::command]
 pub async fn deactivate_license(state: State<'_, LicenseManager>) -> Result<LicenseInfo, String> {
-    state.deactivate().await?;
-    Ok(state.status())
+    match state.deactivate().await {
+        Ok(_) => {
+            log::info!("license deactivated");
+            Ok(state.status())
+        }
+        Err(e) => {
+            log::warn!("license deactivate failed");
+            Err(e)
+        }
+    }
 }
 
 /// 查询授权状态（启动时前端调用，同步按钮禁用态）

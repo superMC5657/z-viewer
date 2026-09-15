@@ -133,11 +133,19 @@ pub fn report_exit(app: &tauri::AppHandle) {
         .build()
     {
         Ok(c) => c,
-        Err(_) => return,
+        // 埋点上报失败：不影响功能，只 debug（release 不可见），不记负载内容
+        Err(_) => {
+            log::debug!("analytics report failed");
+            return;
+        }
     };
     tauri::async_runtime::block_on(async move {
         if let Some(req) = build_request(&client, &url, &payload, &store.analytics_token) {
-            let _ = client.execute(req).await;
+            if client.execute(req).await.is_err() {
+                log::debug!("analytics report failed");
+            }
+        } else {
+            log::debug!("analytics report failed");
         }
     });
 }

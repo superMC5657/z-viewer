@@ -83,6 +83,26 @@ fn nav_ok_or_none(model: &BrowseModel, nav: Nav) -> NavResult {
     }
 }
 
+/// 日志用 basename：只记文件名，不记全路径（用户名/目录结构不出日志）
+pub(super) fn basename_of(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// 日志用原因摘要：取首行 + 字符截断封顶，不记大段文本/服务端原文全文
+pub(super) fn first_line_of(s: &str) -> String {
+    const MAX_CHARS: usize = 200;
+    let line = s.lines().next().unwrap_or("").trim();
+    if line.chars().count() > MAX_CHARS {
+        line.chars().take(MAX_CHARS).collect()
+    } else {
+        line.to_string()
+    }
+}
+
 /// 构造后台扫描完成回调：emit BROWSE_SCAN_READY 供前端刷新位置计数
 /// （main.rs 启动注入与 open_path 共用同一实现）
 pub fn on_ready_callback(app: tauri::AppHandle) -> crate::browse::OnReady {
@@ -109,6 +129,10 @@ fn navigate(
     };
     let nav = nav(&model);
     let r = nav_ok_or_none(&model, nav);
+    if let Some(b) = r.boundary.as_deref() {
+        // 导航边界：高频且用户可见 toast，只 debug（release 不可见）
+        log::debug!("browse boundary {b}");
+    }
     if r.state.is_some() {
         cache.advance_generation();
         // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
@@ -140,7 +164,12 @@ pub fn open_path(
     } else {
         BrowseModel::open_gated(p, on_ready, pro)
     };
-    let model = model.ok_or_else(|| "无法打开：不是支持的图片格式".to_string())?;
+    let Some(model) = model else {
+        // 浏览模型打开失败：error，只记 basename
+        log::error!("browse open failed {}", basename_of(&path));
+        return Err("无法打开：不是支持的图片格式".to_string());
+    };
+    log::info!("browse open ok {}", basename_of(&path));
     cache.advance_generation();
     let st = model.state();
     {
@@ -204,7 +233,10 @@ pub fn jump_folder(
         "prev" => FolderTarget::Prev,
         "next" => FolderTarget::Next,
         "last" => FolderTarget::Last,
-        _ => return Err(format!("未知跳转目标: {target}")),
+        _ => {
+            log::warn!("browse jump failed: unknown target");
+            return Err(format!("未知跳转目标: {target}"));
+        }
     };
     navigate(
         state.inner(),
@@ -249,11 +281,24 @@ pub async fn load_image(
     // 实时加载（翻页/幻灯片）永远优先，直接自己解码（代价是重复解码一次，
     // 但绝不让实时路径被预取拖住或排队死锁）。
     let path2 = path.clone();
+    let base = basename_of(&path);
     let result = tauri::async_runtime::spawn_blocking(move || {
         crate::decode::load_image(&path2, full).map(Arc::new)
     })
     .await
-    .map_err(|e| format!("解码任务失败: {e}"))??;
+    .map_err(|e| {
+        let msg = format!("解码任务失败: {e}");
+        log::warn!("decode failed {base}: {}", first_line_of(&msg));
+        msg
+    })?;
+    let result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            // 解码失败：warn，只记 basename + 原因首行，不记全路径
+            log::warn!("decode failed {base}: {}", first_line_of(&e));
+            return Err(e);
+        }
+    };
     if caching {
         // asset 空结果（单帧 gif/png/webp）与内嵌预览不占缓存槽位
         if result.mode != "asset" && !result.is_preview {
