@@ -5,7 +5,6 @@
 
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { feLog } from "../logger";
 import type { UI } from "../ui";
 
 export async function checkForUpdate(ui: UI): Promise<void> {
@@ -15,15 +14,12 @@ export async function checkForUpdate(ui: UI): Promise<void> {
     update = await check();
   } catch (err) {
     ui.showToast(`检查更新失败：${String(err)}`);
-    feLog(`检查更新失败: ${String(err)}`);
     return;
   }
   if (!update) {
     ui.showToast("已是最新版本");
-    feLog("检查更新: 已是最新版本");
     return;
   }
-  feLog(`发现新版本: v${update.currentVersion} → v${update.version}`);
   ui.showToast(`发现新版本 v${update.version}，开始下载…`);
   try {
     let total = 0;
@@ -34,7 +30,6 @@ export async function checkForUpdate(ui: UI): Promise<void> {
         total = event.data.contentLength ?? 0;
         downloaded = 0;
         lastPct = 0;
-        feLog(`下载开始: 共 ${total} 字节`);
       } else if (event.event === "Progress") {
         downloaded += event.data.chunkLength;
         // 进度 Toast（每 20% 刷新一次，避免高频刷屏）
@@ -52,15 +47,12 @@ export async function checkForUpdate(ui: UI): Promise<void> {
     await update.install();
   } catch (err) {
     ui.showToast(`更新失败：${String(err)}`);
-    feLog(`更新失败: ${String(err)}`);
     return;
   }
-  feLog("更新安装完成，重启应用");
   ui.showToast("更新完成，正在重启…");
   try {
     await relaunch();
   } catch (err) {
     ui.showToast(`重启失败，请手动重启应用：${String(err)}`);
-    feLog(`重启失败: ${String(err)}`);
   }
 }

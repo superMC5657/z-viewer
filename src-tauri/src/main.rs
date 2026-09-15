@@ -7,7 +7,6 @@ mod cache;
 mod commands;
 mod decode;
 mod license;
-mod logger;
 mod z_log;
 
 use std::path::{Path, PathBuf};

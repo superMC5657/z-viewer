@@ -14,7 +14,6 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { Viewer, type FitMode } from "./viewer";
-import { feLog } from "./logger";
 import { UI } from "./ui";
 import { WindowState } from "./window-state";
 import { Slideshow } from "./slideshow";
@@ -96,7 +95,6 @@ const ANIM_CHECK_CACHE_MAX = 1000;
 async function showImage(state: BrowseState): Promise<void> {
   lastState = state;
   const seq = ++showSeq;
-  feLog(`显示图片: ${state.file_name} (${state.folder_name}) [${state.global_index + 1}/${state.global_total}]`);
   ui.setEmpty(false);
   ui.updateTitleFile(state.file_name);
   const winTitle = `${state.file_name} - ZViewer`;
@@ -340,8 +338,7 @@ async function refreshContext(): Promise<void> {
     prefetch.warm(paths, needsIpc);
     // needsIpc（RAW/TIFF）邻居已由 Rust prefetch_context（导航后自动触发）
     // 预取进 DecodeCache —— 前端不再重复 load_image，避免并发冗余解码
-  } catch (err) {
-    console.error("预取上下文失败", err);
+  } catch {
   }
 }
 
@@ -397,8 +394,7 @@ async function navApply(fn: () => Promise<NavResult>): Promise<void> {
   let result: NavResult;
   try {
     result = await fn();
-  } catch (err) {
-    console.error(err);
+  } catch {
     return;
   }
   if (result.boundary) {
@@ -574,8 +570,7 @@ async function loadAnimationOnDemand(): Promise<void> {
           await viewer.loadBitmapsAnimation(bitmaps, delays);
           return;
         }
-      } catch (err) {
-        console.warn("ImageDecoder 解码失败，回退到 Rust 解码通道:", err);
+      } catch {
       }
     }
 
@@ -664,17 +659,12 @@ function buildSlideshowBar(): void {
     let result: NavResult | null = null;
     try {
       result = await raceWithTimeout(invoke<NavResult>("next_image"), 3000);
-    } catch (err) {
-      feLog(`幻灯片跳转 IPC 失败: ${String(err)}`);
-      console.error("幻灯片 next_image 失败:", err);
+    } catch {
       return true; // 网络/IPC 异常不停止，下一轮重试
     }
     if (!result) {
-      feLog("幻灯片跳转超时（3s 无响应），跳过本跳");
-      console.warn("幻灯片 next_image 超时，跳过本跳");
       return true;
     }
-    feLog(`幻灯片跳转完成: boundary=${result.boundary ?? "无"} 下一张=${result.state?.file_name ?? "无"}`);
     // 调试探针：记录每次 advance 的返回（CDP 可读）
     (window as unknown as Record<string, unknown>).__lastAdvance = result;
     if (result.boundary === "last-image") {
@@ -684,7 +674,6 @@ function buildSlideshowBar(): void {
       return false;
     }
     if (!result.state) {
-      console.warn("幻灯片空 state，退出");
       exitSlideshow(); // 空模型（未打开图片）：停止空转并退出
       return false;
     }
@@ -696,7 +685,6 @@ function buildSlideshowBar(): void {
   slideshow.onStateChange = (running) => {
     // 播放/暂停只切换播放按钮图标与工具栏激活态；**不切换模式**
     //（暂停是真正停住，仍停留在幻灯片模式；退出模式由 exitSlideshow 显式完成）
-    feLog(`幻灯片 onStateChange: running=${running}, slideshowMode=${slideshowMode}`);
     ui.setSlideshowPlaying(running);
     ui.setToolbarActive("slideshow", running);
     if (running) {
@@ -720,7 +708,6 @@ function buildSlideshowBar(): void {
 /** 退出幻灯片模式，返回图片浏览（返回按钮 / 播放完 / 打开新图） */
 function exitSlideshow(): void {
   if (slideshowMode === false) return; // 幂等
-  feLog("exitSlideshow: 退出幻灯片模式");
   slideshow.stop();
   slideshowMode = false;
   ui.setSlideshowMode(false); // 恢复普通浮层（内部 wake）
@@ -912,15 +899,13 @@ async function init(): Promise<void> {
     // 授权状态：免费版锁定付费功能按钮
     const info = await invoke<LicenseInfo>("get_license_status");
     licenseService.applyStatus(info);
-  } catch (err) {
-    console.error(err);
+  } catch {
   }
 
   try {
     // RAW 扩展名注册：同步自后端 decode::RAW_EXTS
     setRawExts(await invoke<string[]>("get_raw_extensions"));
-  } catch (err) {
-    console.error("拉取 RAW 扩展名失败", err);
+  } catch {
   }
 
   try {
@@ -943,8 +928,7 @@ async function init(): Promise<void> {
     if (cacheLevel !== settings.cache_level) {
       await invoke<AppSettings>("set_cache_level", { level: cacheLevel }).catch(() => undefined);
     }
-  } catch (err) {
-    console.error(err);
+  } catch {
   }
   // 启动闲置计时：空状态或看图状态下浮层都会按时自动隐藏
   ui.wake();

@@ -19,8 +19,6 @@
  *   的 0ms busy loop；快加载（< intervalMs）时间隔仍严格 = 设定间隔
  */
 
-import { feLog } from "./logger";
-
 export class Slideshow {
   /** 定时器句柄（null = 未播放） */
   private timerId: number | null = null;
@@ -40,7 +38,6 @@ export class Slideshow {
 
   /** 开始播放（从当前图片开始） */
   start(): void {
-    feLog(`幻灯片 start: running=${this.running}, 间隔=${this.intervalMs}ms`);
     if (this.running) return;
     this.running = true;
     this.pendingAdvance = false;
@@ -51,7 +48,6 @@ export class Slideshow {
 
   /** 停止播放 */
   stop(): void {
-    feLog(`幻灯片 stop: running=${this.running}`);
     if (!this.running) return;
     this.running = false;
     this.pendingAdvance = false;
@@ -60,14 +56,12 @@ export class Slideshow {
   }
 
   toggle(): void {
-    feLog(`幻灯片 toggle: running=${this.running}`);
     if (this.running) this.stop();
     else this.start();
   }
 
   /** 设置间隔（毫秒），播放中立即生效：从当前时刻起算新间隔，下一拍按新间隔触发 */
   setInterval(ms: number): void {
-    feLog(`幻灯片 setInterval: ${ms}ms (原 ${this.intervalMs}ms)`);
     this.intervalMs = ms;
     this.pendingAdvance = false; // 重新锚定拍点：旧欠拍作废，下一拍按新间隔起算
     if (this.running) {
@@ -78,7 +72,6 @@ export class Slideshow {
 
   /** 手动翻页/跳转后重置计时（不中断播放）：从当前时刻起算下一间隔 */
   resetTimer(): void {
-    feLog(`幻灯片 resetTimer: running=${this.running}`);
     if (!this.running) return;
     this.pendingAdvance = false; // 手动翻页后重新锚定拍点，旧欠拍作废
     this.nextTickAt = performance.now() + this.intervalMs;
@@ -86,7 +79,6 @@ export class Slideshow {
   }
 
   private clearTimer(): void {
-    feLog(`幻灯片 clearTimer: timerId=${this.timerId}`);
     if (this.timerId !== null) {
       window.clearTimeout(this.timerId);
       this.timerId = null;
@@ -99,7 +91,6 @@ export class Slideshow {
     this.clearTimer();
     if (!this.running) return;
     const remaining = Math.max(0, this.nextTickAt - performance.now());
-    feLog(`幻灯片 schedule: ${remaining.toFixed(0)}ms 后触发下一拍`);
     this.timerId = window.setTimeout(() => {
       this.timerId = null;
       this.tick();
@@ -111,24 +102,20 @@ export class Slideshow {
    *  上一跳未完成（advancing）时跳过本拍但记录欠拍，当前跳完成后由 finally 立即补跳：
    *  慢加载时节奏 = max(intervalMs, 加载耗时)，不会翻倍成 intervalMs 的整数倍 */
   private tick(): void {
-    feLog(`幻灯片 tick: running=${this.running}, advancing=${this.advancing}, pending=${this.pendingAdvance}`);
     if (!this.running) return;
     this.nextTickAt += this.intervalMs;
     if (this.advancing) {
       this.pendingAdvance = true;
-      feLog("幻灯片 tick: 上一跳未完成，记录欠拍");
       return;
     }
     this.pendingAdvance = false;
     this.advancing = true;
     void this.advance().finally(() => {
-      feLog(`幻灯片 tick finally: 跳转完成，pending=${this.pendingAdvance}`);
       this.advancing = false;
       if (this.pendingAdvance) {
         this.pendingAdvance = false;
         if (this.running) {
           // 欠拍补跳：remaining=0 → 立即触发下一拍（由完成回调驱动，非 0ms 定时器轮询）
-          feLog("幻灯片 tick: 欠拍补跳");
           this.nextTickAt = performance.now();
           this.schedule();
         }
@@ -137,26 +124,20 @@ export class Slideshow {
   }
 
   private async advance(): Promise<void> {
-    feLog(`幻灯片 advance: running=${this.running}, 有 onAdvance=${this.onAdvance !== null}`);
     if (!this.running) return;
     if (!this.onAdvance) {
-      feLog("幻灯片 advance: 无 onAdvance，停止");
       this.stop();
       return;
     }
     let keepGoing = true;
     try {
       keepGoing = await this.onAdvance();
-      feLog(`幻灯片 advance: 完成，keepGoing=${keepGoing}`);
-    } catch (err) {
-      // 单跳失败不杀死播放：记录并继续下一跳（容错）
-      feLog(`幻灯片 advance: 异常 ${String(err)}`);
-      console.error("幻灯片跳转失败:", err);
+    } catch {
+      // 单跳失败不杀死播放：继续下一跳（容错）
       keepGoing = true;
     }
     if (!keepGoing) {
       // 撞到全局最后一张：停止（main.ts 负责 Toast）
-      feLog("幻灯片 advance: keepGoing=false，停止播放");
       this.stop();
     }
   }

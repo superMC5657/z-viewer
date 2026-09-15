@@ -3,7 +3,7 @@
 > 复用 `tauri-plugin-log` v2，不自造轮子，不引入 tracing/sentry，不自动上报。
 > 日志只进 LogDir 文件，**禁止写入业务 SQLite**。
 > 实现位置：`src-tauri/src/z_log.rs`（插件/脱敏/prune/panic/导出命令）、
-> `src-tauri/src/logger.rs`（`dev_log!`）、`src/lib/z-log.ts`（前端转发）、
+> `src/lib/z-log.ts`（前端转发）、
 > `src/logger.ts`（`feLog`，仅 DEV 控制台输出）。
 
 ## 日志目录（各 OS，`identifier = com.zviewer.app`）
@@ -64,8 +64,8 @@ void initZLog().catch(() => undefined);
   注册 `window.onerror` + `unhandledrejection`；仅 `import.meta.env.DEV` 时回显后端日志。
 - `detachZLog()`：取消回显（测试清理用）。
 - `feLog()`（`src/logger.ts`）：仅 DEV 控制台输出，不落盘；要落盘走 `console.*`。
-- 后端 `dev_log!(…)`（`src-tauri/src/logger.rs`）：`macro_rules` 在调用点展开，
-  内部转 `log::debug!("[BE] …")`，保留调用点文件行号；release 下被 `Info` 门槛过滤。
+- 后端直接用 `log::*`（`log::debug!/info!/warn!/error!`），经 `z_log` 插件分发落盘；
+  无私有宏封装，调用点即日志点（文件行号准确）；`debug` 在 release 下被 `Info` 门槛过滤。
 
 ## 导出诊断包（供 UI 按钮接线）
 
