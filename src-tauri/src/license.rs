@@ -413,16 +413,16 @@ impl LicenseManager {
                 )
             {
                 // 吊销：只记静态文案，不记 error/message 原文与授权值
-                log::warn!("license revoked, credentials removed");
+                log::warn!("license revoked, credentials removed (http-status)");
                 self.clear_license();
                 return Some(self.status());
             }
             // 其他服务端错误：保留凭证等重验，只 debug（release 不可见）
-            log::debug!("license verify deferred");
+            log::debug!("license verify deferred (http-status)");
             return None; // 其他服务端错误保守视为有效，不误伤付费用户
         };
         let Ok(body) = resp.json::<serde_json::Value>().await else {
-            log::debug!("license verify deferred");
+            log::debug!("license verify deferred (body)");
             return None; // 响应异常保守视为有效，不误伤付费用户
         };
         let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
@@ -430,13 +430,13 @@ impl LicenseManager {
             error,
             "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE"
         ) {
-            log::warn!("license revoked, credentials removed");
+            log::warn!("license revoked, credentials removed (body-error)");
             self.clear_license();
             return Some(self.status());
         }
         let valid = body.get("valid").and_then(|v| v.as_bool()).unwrap_or(true);
         if !valid {
-            log::warn!("license revoked, credentials removed");
+            log::warn!("license revoked, credentials removed (valid-flag)");
             self.clear_license();
             return Some(self.status());
         }

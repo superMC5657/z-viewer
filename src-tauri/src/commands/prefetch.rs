@@ -38,7 +38,7 @@ pub(super) fn prefetch_context(model: &BrowseModel, cache: &DecodeCache, setting
                 // 后台预取失败：低价值，只 debug（release 不可见），记 basename + 原因首行
                 Err(e) => {
                     log::debug!(
-                        "cache prefetch failed {}: {}",
+                        "cache prefetch failed (ctx) {}: {}",
                         basename_of(&path),
                         first_line_of(&e)
                     );
@@ -114,7 +114,7 @@ pub(super) fn prefetch_folder_firsts(
                     // 首图预取失败：低价值，只 debug，记 basename + 原因首行
                     Err(e) => {
                         log::debug!(
-                            "cache prefetch failed {}: {}",
+                            "cache prefetch failed (first) {}: {}",
                             basename_of(&path),
                             first_line_of(&e)
                         );
