@@ -11,8 +11,8 @@
  *   - 静态图 → <img>（asset 协议或 RAW 解码的 Blob URL）
  *   - 动画图 → <canvas> 逐帧绘制（ImageBitmap 预解码 + setTimeout 链按帧延迟播放）
  *
- * 切图 crossfade：加载新图前把旧画面（含变换）重绘到快照层 <canvas> 冻结，
- * 新图解码完成后快照淡出、新图淡入（150ms 交叉淡化，无黑屏跳变）。
+ * 切图瞬切：新图后台解码并计算 fit 变换完成后，在同一帧原子替换显示，
+ * 旧图与旧 Canvas 同步隐藏（0ms 瞬切直接切换，无交叉淡化、无黑屏跳变与频闪）。
  */
 
 const MIN_SCALE = 0.04;
@@ -124,7 +124,7 @@ export class Viewer {
     this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
     const seq = ++this.loadSeq;
     this.active = "img";
-    this.canvas.classList.remove("visible");
+    // 注意：不在此处立即隐藏 canvas，保证新图解码期间旧画面依然停留在屏幕上，杜绝黑屏空档
 
     // 双缓冲轮换：取非当前显示的那个 img 作为 incoming
     const incoming = this.activeImg === this.imgA ? this.imgB : this.imgA;
@@ -149,9 +149,10 @@ export class Viewer {
         this.activeImg = incoming;
         this.fit(); // 内部针对 incoming 设置 transform
 
-        // 双缓冲 crossfade：纯 GPU 合成器透明度过渡，零 Canvas 绘图与主线程阻塞
+        // 双缓冲瞬切：新图就绪后单帧原子切换，旧图/旧Canvas同步隐藏，杜绝黑屏空档
         incoming.classList.add("visible");
         outgoing.classList.remove("visible");
+        this.canvas.classList.remove("visible");
 
         this.pending?.resolve();
         this.pending = null;
@@ -165,6 +166,7 @@ export class Viewer {
         this.pending = null;
         this.resetTransform();
         outgoing.classList.remove("visible");
+        this.canvas.classList.remove("visible");
         reject(new Error("图片加载失败"));
       };
 
@@ -194,8 +196,7 @@ export class Viewer {
     this.settlePending();
     const seq = ++this.loadSeq;
     this.active = "canvas";
-    this.imgA.classList.remove("visible");
-    this.imgB.classList.remove("visible");
+    // 延迟隐藏 imgA/imgB：待 canvas 绘制并 fit 完成后再统一隐藏，避免中间黑屏
 
     if (seq !== this.loadSeq) {
       bitmap.close();
@@ -225,6 +226,8 @@ export class Viewer {
       this.fit();
     }
     this.canvas.classList.add("visible");
+    this.imgA.classList.remove("visible");
+    this.imgB.classList.remove("visible");
     this.onStateChange?.();
   }
 
@@ -234,8 +237,7 @@ export class Viewer {
     this.settlePending();
     const seq = ++this.loadSeq;
     this.active = "canvas";
-    this.imgA.classList.remove("visible");
-    this.imgB.classList.remove("visible");
+    // 延迟隐藏 imgA/imgB，避免首帧绘制前黑屏
     this.resetTransform();
     this.onFrameChange?.(0, bitmaps.length);
 
@@ -256,6 +258,8 @@ export class Viewer {
     this.drawFrame();
     this.fit();
     this.canvas.classList.add("visible");
+    this.imgA.classList.remove("visible");
+    this.imgB.classList.remove("visible");
     this.play();
     this.onStateChange?.();
   }

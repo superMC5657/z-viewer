@@ -29,7 +29,7 @@
   /* ---- 动效 ---- */
   --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
   --t-fade: 180ms;
-  --t-image: 150ms;
+  --t-image: 0ms;
   --t-toast: 200ms;
   --t-rotate: 200ms;
 }
@@ -73,7 +73,7 @@ body {
   transform-origin: 0 0;
   will-change: transform, opacity;
   opacity: 0;
-  transition: opacity var(--t-image) ease-out;
+  /* 移除 opacity 过渡，切图直接瞬切，消除 150ms 交叉淡化降亮与黑屏闪烁 */
   pointer-events: none;
   image-rendering: auto;
 }
@@ -85,7 +85,7 @@ body {
 
 .stage-img.animating,
 #frame-canvas.animating {
-  transition: transform var(--t-rotate) ease-in-out, opacity var(--t-image) ease-out;
+  transition: transform var(--t-rotate) ease-in-out;
 }
 
 /* ---- 拖拽光标：仅按下拖动时显示抓取（悬停保持默认箭头，

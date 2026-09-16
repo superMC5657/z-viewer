@@ -107,11 +107,15 @@ async function showImage(state: BrowseState): Promise<void> {
   rawUpgradeTimer = undefined;
   ui.setFrameBarVisible(false);
   ui.setFramePlaying(false);
-  // 旧 RAW Blob 不再需要（新图将覆盖显示）
-  if (currentBlobUrl) {
-    URL.revokeObjectURL(currentBlobUrl);
-    currentBlobUrl = null;
-  }
+  // 保留旧 RAW Blob 引用，待新图成功渲染后再释放，杜绝解码期间旧纹理提前失效
+  let prevBlobToRevoke = currentBlobUrl;
+  currentBlobUrl = null;
+  const revokePrevBlob = () => {
+    if (prevBlobToRevoke) {
+      URL.revokeObjectURL(prevBlobToRevoke);
+      prevBlobToRevoke = null;
+    }
+  };
 
   // 预取下一批上下文（asset 预热 + Rust 缓存）；防抖合并快速翻页
   scheduleRefreshContext();
@@ -138,7 +142,9 @@ async function showImage(state: BrowseState): Promise<void> {
         : Promise.resolve(false);
     try {
       await viewer.loadStatic(convertFileSrc(state.path));
+      revokePrevBlob();
     } catch (err) {
+      revokePrevBlob();
       if (seq === showSeq) {
         ui.showToast(`无法显示图片：${String(err)}`);
       }
@@ -243,6 +249,7 @@ async function showImage(state: BrowseState): Promise<void> {
     void invoke("record_view", { path: state.path }).catch(() => undefined);
   } finally {
     ui.endDecoding();
+    revokePrevBlob();
   }
 }
 
