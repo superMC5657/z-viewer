@@ -27,6 +27,9 @@ import { LicenseService } from "./services/license";
 import { initZLog } from "./lib/z-log";
 import "./ui.css";
 
+// 统一日志先行：页面加载第一时间挂载 console/全局错误转发（写入统一日志文件），失败不阻塞启动
+void initZLog().catch(() => undefined);
+
 const stage = document.getElementById("stage")!;
 const imgA = document.getElementById("image-a") as HTMLImageElement;
 const imgB = document.getElementById("image-b") as HTMLImageElement;
@@ -145,6 +148,7 @@ async function showImage(state: BrowseState): Promise<void> {
       revokePrevBlob();
     } catch (err) {
       revokePrevBlob();
+      console.error(`[render] failed: ${String(err)}`);
       if (seq === showSeq) {
         ui.showToast(`无法显示图片：${String(err)}`);
       }
@@ -956,8 +960,5 @@ function loadSsInterval(): number | null {
     return null;
   }
 }
-
-// 统一日志先行：转发 console/全局错误到 Rust 日志（LogDir 落盘），失败不阻塞启动
-void initZLog().catch(() => undefined);
 
 void init();

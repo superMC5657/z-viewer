@@ -50,6 +50,7 @@ impl SessionStats {
 
     /// 记录一次成功读图（前端 record_view 命令调用；asset/IPC 两通道显示成功都会调用）
     pub fn record(&self, path: &str) {
+        crate::z_log::set_last_viewed(path);
         if let Ok(mut g) = self.0.lock() {
             g.images_viewed += 1;
             g.unique_images.insert(normalize_key(path));
@@ -67,6 +68,13 @@ impl SessionStats {
                 g.folders.insert(normalize_key(&dir.to_string_lossy()));
             }
         }
+    }
+
+    /// 获取本次会话简报：(持续时间秒, 总读图次数, 去重图片数, 文件夹数)
+    pub fn summary(&self) -> (i64, u64, usize, usize) {
+        let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let duration = (now() - g.session_start).max(0);
+        (duration, g.images_viewed, g.unique_images.len(), g.folders.len())
     }
 
     /// 组装上报负载（聚合统计，无路径信息）
@@ -121,6 +129,14 @@ pub fn report_exit(app: &tauri::AppHandle) {
     let Some(stats) = app.try_state::<SessionStats>() else {
         return;
     };
+    let (duration, viewed, unique, folders) = stats.summary();
+    log::info!(
+        "zviewer exit: session duration {}s, images viewed: {}, unique: {}, folders: {}",
+        duration,
+        viewed,
+        unique,
+        folders
+    );
     let store = crate::license::StoreConfig::from_config(app.config());
     if store.api_base.is_empty() || store.analytics_path.is_empty() {
         return;

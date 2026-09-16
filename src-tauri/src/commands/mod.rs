@@ -127,6 +127,7 @@ fn navigate(
             None => return Ok(NavResult::none()),
         }
     };
+    let prev_folder = model.state().folder_name;
     let nav = nav(&model);
     let r = nav_ok_or_none(&model, nav);
     if let Some(b) = r.boundary.as_deref() {
@@ -134,6 +135,9 @@ fn navigate(
         log::debug!("browse boundary {b}");
     }
     if let Some(st) = r.state.as_ref() {
+        if st.folder_name != prev_folder {
+            log::info!("browse nav crossed folder to {}", st.folder_name);
+        }
         // 单图切换：高频交互，只 debug（dev 模式可见，release 不可见防刷盘）
         log::debug!(
             "browse nav {}/{} {}",
@@ -176,9 +180,14 @@ pub fn open_path(
         log::error!("browse open failed {}", basename_of(&path));
         return Err("无法打开：不是支持的图片格式".to_string());
     };
-    log::info!("browse open ok {}", basename_of(&path));
-    cache.advance_generation();
     let st = model.state();
+    log::info!(
+        "browse open ok {} (folder: {}, total: {})",
+        basename_of(&path),
+        st.folder_name,
+        st.global_total
+    );
+    cache.advance_generation();
     {
         let s = settings.0.lock().map_err(|e| e.to_string())?;
         prefetch_context(&model, cache.inner(), &s);
@@ -281,6 +290,7 @@ pub async fn load_image(
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
 ) -> Result<tauri::ipc::Response, String> {
+    crate::z_log::set_last_viewed(&path);
     let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled() && license.is_pro();
     if caching {
         // 命中：信封已打包一次缓存于条目内，这里只做一次缓冲拷贝进 IPC 响应

@@ -77,6 +77,20 @@ fn main() {
         .manage(DecodeCache::new(4))
         .manage(FolderFirstCache::new(4))
         .setup(|app| {
+            log::info!(
+                "zviewer startup: version {} (os: {}, arch: {})",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            );
+
+            // 启动时后台异步修剪日志（7天过期 / 20MB 水位保护，不阻塞冷启动）
+            if let Ok(dir) = app.path().app_log_dir() {
+                tauri::async_runtime::spawn(async move {
+                    z_log::prune(&dir, 7, 20 * 1024 * 1024);
+                });
+            }
+
             // 授权状态：从磁盘加载许可证；后台在线验证（吊销生效，网络失败不阻止）
             // 商店/授权配置：编译期固化在 tauri.conf.json → plugins.store
             let store = license::StoreConfig::from_config(app.config());
@@ -125,7 +139,12 @@ fn main() {
                 match model {
                     // 启动打开结果：成功 info / 失败 warn，只记 basename
                     Some(model) => {
-                        log::info!("browse open ok {base}");
+                        let st = model.state();
+                        log::info!(
+                            "browse open ok {base} (folder: {}, total: {})",
+                            st.folder_name,
+                            st.global_total
+                        );
                         let state = app.state::<AppState>();
                         if let Ok(mut guard) = state.0.lock() {
                             *guard = Some(std::sync::Arc::new(model));

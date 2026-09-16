@@ -20,10 +20,9 @@ panic hook 拿不到 `AppHandle`，用 `resolve_log_dir_fallback()` 按同样规
 
 | 文件 | 来源 | 说明 |
 | --- | --- | --- |
-| `rust.log`（+轮转兄弟 `rust_*.log`） | Rust 侧（`target` 非 `webview` 开头） | 后端业务/框架日志 |
-| `webview.log`（+轮转兄弟） | 前端经 `plugin:log\|log`（`target = webview…`） | 前端 `console.*` 转发、`window.onerror`、`unhandledrejection` |
+| `<productName>.log`（如 `ZViewer.log`，+轮转兄弟 `ZViewer_*.log`） | Rust 侧 + 前端经 `plugin:log|log` | 统一日志（文件名从配置文件 `tauri.conf.json` 的 `productName` 动态获取；统一因果时间轴） |
 | `crash-<ts>.txt` | panic hook | 版本/identifier/时间/线程/位置/payload/Backtrace，写盘前已脱敏 |
-| `zviewer-logs-<ts>.zip` | `zlog_export_bundle` | 诊断包（见下），下次导出时不被重复打包（只收 `*.log` + `crash-*.txt`） |
+| `<productName>-logs-<ts>.zip` | `zlog_export_bundle` | 诊断包（见下），下次导出时不被重复打包（只收 `*.log` + `crash-*.txt`） |
 
 单文件 1MB 轮转（`max_file_size`），策略 `KeepAll`（靠 prune 封顶）；
 `prune`：删 7 天前文件，总量超 20MB 时按 mtime 从旧到新删到预算内，
@@ -78,34 +77,34 @@ void initZLog().catch(() => undefined);
 - 路径只许 basename（`Path::file_name`）；原因取首行或截断封顶（`first_line_of` 200 字符）。
 - 禁止：完整 args/全路径/激活码-email-JWT-deviceId 三件套值/服务端原文/全文 dump；
   `redact` 只是兜底，“不该记的值”不许进消息。
-- 禁止 `println!/eprint!/dbg!`；前端高频热路径不打点，关键生命周期（如幻灯片启停）使用 `console.info` 经 `z-log` 统一转发。
+- 禁止 `println!/eprint!/dbg!`；前端高频热路径（鼠标移动、缩放、拖拽、rAF 逐帧渲染）不打点，关键生命周期与状态转换使用 `console.*` 经 `z-log` 统一汇入统一日志文件（`<productName>.log`）。
 
-## 浏览（`main.rs` 启动路径 + `commands/mod.rs`）
+## 应用生命周期与浏览（`main.rs` + `commands/mod.rs`）
 
-重要才记：打开结果 + 打开失败 + 边界（debug）+ 文件夹跳转（info）+ 单图翻页（debug）。
-
-- `info` browse open ok {basename}（启动传参/双击打开成功，`main.rs`；`open_path` 成功同文案，
-  两处为不同入口各记一次，不存在双记）
+- `info` zviewer startup: version {ver} (os: {os}, arch: {arch})（应用启动与运行环境）
+- `info` zviewer exit: session duration {dur}s, images viewed: {v}, unique: {u}, folders: {f}（正常退出时会话统计小结）
+- `info` browse open ok {basename} (folder: {folder_name}, total: {total})（打开图片成功，包含所属文件夹与总图片数）
 - `warn` browse open failed {basename}（启动路径打不开：非图片/空目录）
 - `error` browse open failed {basename}（`open_path` 模型建立失败，直接返回前端错误）
-- `info` browse jump folder {target} ok {folder_name}（文件夹级跳转成功，记录跳转目标与落点文件夹名）
+- `info` browse jump folder {target} ok {folder_name}（文件夹级跳转成功）
+- `info` browse nav crossed folder to {folder_name}（翻页无缝跨越进入新文件夹）
 - `debug` browse nav {global_index+1}/{global_total} {file_name}（单图切换：高频交互，仅 dev 可见，release 不落盘防刷屏）
-- `debug` browse boundary {first-image|last-image|first-folder|last-folder}
-  （静态枚举映射，高频且用户可见 toast，不 info 化；`navigate` 三导航命令共用。
-  `pro-required` 是免费版 `jump_folder` 早返（`commands/mod.rs:228-230`）给前端的解锁引导，
-  不经 `navigate`，无日志）
-- `warn` browse jump failed: unknown target（静态文案，不记 target 原文；
-  `Err` 回前端含 target，但不进日志）
-- `debug` browse open skipped invalid startup arg（启动参数非法/不存在，`None` 静默跳过；
-  静态文案，不记参数原文；`main.rs:62`；无参数正常启动不记）
+- `debug` browse boundary {first-image|last-image|first-folder|last-folder}（导航触底边界，debug 级别）
+- `warn` browse jump failed: unknown target（未知跳转目标）
 
-## 幻灯片（`src/main.ts`）
+## 前端交互与功能状态（`src/main.ts` + `src/viewer.ts` + `src/window-state.ts` + `src/services/updater.ts`）
 
-关键模式与生命周期由前端 `console.info` 经 `z-log.ts` 转发（dev 终端与 `webview.log` 可见）：
-- `info` [slideshow] started (interval: {ms}ms) / paused（幻灯片开始/暂停播放）
-- `info` [slideshow] interval changed to {ms}ms（播放间隔调整）
-- `info` [slideshow] exited（退出幻灯片模式返回普通浏览）
-- `info` [slideshow] finished: reached last image（播放到最后一张自动结束）
+所有常规翻页统一由 Rust 后端处理，前端仅在**关键视图模式变更**与**功能周期**时输出 INFO（低频、关键）：
+- `info` [ui] immersive mode: on / off（沉浸模式切换）
+- `info` [ui] pin window: on / off（窗口置顶切换）
+- `info` [view] fit mode: fit / actual（适应窗口 / 1:1 像素实际大小模式切换）
+- `info` [view] rotate: +90° / -90° (current: ...)（图片旋转）
+- `info` [view] flip: horizontal / vertical（图片翻转）
+- `info` [updater] checking for updates... / up to date / update available / update installed（更新检查生命周期）
+- `info` [slideshow] started (interval: {ms}ms) / paused / interval changed / finished / exited（幻灯片生命周期）
+- `error` window.onerror / unhandledrejection（全局未捕获异常）
+- `error` [render] failed: {err}（DOM 原生图片加载失败）
+- `debug` [app] frontend initialized（开发环境启动心跳）
 
 ## 解码（`commands/mod.rs` → `decode/*.rs`）
 

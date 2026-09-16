@@ -1,7 +1,7 @@
 //! 统一日志能力（Rust 侧）：复用 tauri-plugin-log v2，不造轮子。
 //!
 //! - dev：Debug + Stdout + LogDir + Webview（终端与前端控制台可见）
-//! - release：Info + 仅 LogDir（零 Stdout/Webview 回显），分 rust.log / webview.log
+//! - release：Info + 仅 LogDir（零 Stdout/Webview 回显），统一写入以应用名称命名的日志文件（如 ZViewer.log）
 //! - 日志只进 LogDir 文件，不碰业务 DB（无 sqlite）
 //! - 本地运行为主，不自动上报，只提供导出诊断包命令供按钮接线
 
@@ -14,7 +14,34 @@ use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy, W
 const MAX_FILE_SIZE: u128 = 1024 * 1024; // 1MB
 const PRUNE_KEEP_DAYS: u64 = 7;
 const PRUNE_MAX_BYTES: u64 = 20 * 1024 * 1024; // viewer 本地盘小：20MB 上限
-const APP_IDENTIFIER: &str = "com.zviewer.app";
+
+/// 从配置文件（tauri.conf.json）获取应用名称（productName，兜底为 Cargo 包名）
+pub fn app_name_from_config() -> String {
+    let conf_str = include_str!("../tauri.conf.json");
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(conf_str) {
+        if let Some(name) = val.get("productName").and_then(|v| v.as_str()) {
+            let name = name.trim();
+            if !name.is_empty() {
+                return name.to_string();
+            }
+        }
+    }
+    env!("CARGO_PKG_NAME").to_string()
+}
+
+/// 从配置文件（tauri.conf.json）获取应用标识（identifier）
+pub fn app_identifier_from_config() -> String {
+    let conf_str = include_str!("../tauri.conf.json");
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(conf_str) {
+        if let Some(id) = val.get("identifier").and_then(|v| v.as_str()) {
+            let id = id.trim();
+            if !id.is_empty() {
+                return id.to_string();
+            }
+        }
+    }
+    "com.zviewer.app".to_string()
+}
 
 /// 日志插件工厂：dev=Debug+Stdout+LogDir+Webview，release=Info+仅LogDir。
 pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
@@ -31,15 +58,11 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
         ))
     };
 
-    // rust 侧日志 -> rust.log；前端 webview 日志 -> webview.log
-    let rust_file = Target::new(TargetKind::LogDir {
-        file_name: Some("rust".to_string()),
-    })
-    .filter(|md| !md.target().starts_with(WEBVIEW_TARGET));
-    let webview_file = Target::new(TargetKind::LogDir {
-        file_name: Some("webview".to_string()),
-    })
-    .filter(|md| md.target().starts_with(WEBVIEW_TARGET));
+    // 统一日志文件：rust 后端与 webview 前端日志写入以应用名命名的日志文件（从配置文件获取），统一因果时间轴
+    let app_name = app_name_from_config();
+    let app_file = Target::new(TargetKind::LogDir {
+        file_name: Some(app_name),
+    });
 
     #[cfg(debug_assertions)]
     {
@@ -55,8 +78,7 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             .rotation_strategy(RotationStrategy::KeepAll)
             .targets([
                 Target::new(TargetKind::Stdout),
-                rust_file,
-                webview_file,
+                app_file,
                 // 仅把 Rust 日志回显到 devtools：前端日志本地已有 console 输出，
                 // 全量回显会形成 前端->后端->前端 的回声循环
                 Target::new(TargetKind::Webview)
@@ -79,7 +101,7 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             .max_file_size(MAX_FILE_SIZE)
             .rotation_strategy(RotationStrategy::KeepAll)
             .clear_targets()
-            .targets([rust_file, webview_file])
+            .targets([app_file])
             .build()
     }
 }
@@ -206,6 +228,7 @@ fn mask_token_kv(s: &str) -> String {
                 while v < s.len() && bytes[v].is_ascii_whitespace() {
                     v += 1;
                 }
+                let quote_start = v;
                 // 可选引号
                 let quote = if v < s.len() && (bytes[v] == b'"' || bytes[v] == b'\'') {
                     v += 1;
@@ -225,10 +248,10 @@ fn mask_token_kv(s: &str) -> String {
                 }
                 if val_start < v {
                     res.push_str(&s[i..=sep]);
-                    if v < s.len() && quote.is_none() {
-                        // 无引号：保留到分隔符后的空白
-                        let gap = &s[sep + 1..val_start];
-                        res.push_str(gap);
+                    // 保留分隔符后到引号/值之间的空白
+                    res.push_str(&s[sep + 1..quote_start]);
+                    if let Some(q) = quote {
+                        res.push(q as char);
                     }
                     res.push_str("[redacted]");
                     if let Some(q) = quote {
@@ -339,10 +362,11 @@ pub fn prune(dir: &Path, max_age_days: u64, max_total_bytes: u64) {
 
 /// 解析 tauri 推荐日志目录（无 AppHandle 时的兜底，供 panic hook 使用）。
 fn resolve_log_dir_fallback() -> PathBuf {
+    let identifier = app_identifier_from_config();
     #[cfg(target_os = "windows")]
     {
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            return PathBuf::from(local).join(APP_IDENTIFIER).join("logs");
+            return PathBuf::from(local).join(&identifier).join("logs");
         }
     }
     #[cfg(target_os = "macos")]
@@ -351,24 +375,37 @@ fn resolve_log_dir_fallback() -> PathBuf {
             return PathBuf::from(home)
                 .join("Library")
                 .join("Logs")
-                .join(APP_IDENTIFIER);
+                .join(&identifier);
         }
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let base = std::env::var("XDG_DATA_HOME").unwrap_or_default();
         if !base.is_empty() {
-            return PathBuf::from(base).join(APP_IDENTIFIER).join("logs");
+            return PathBuf::from(base).join(&identifier).join("logs");
         }
         if let Ok(home) = std::env::var("HOME") {
             return PathBuf::from(home)
                 .join(".local")
                 .join("share")
-                .join(APP_IDENTIFIER)
+                .join(&identifier)
                 .join("logs");
         }
     }
-    std::env::temp_dir().join(format!("{APP_IDENTIFIER}-logs"))
+    std::env::temp_dir().join(format!("{identifier}-logs"))
+}
+
+static LAST_VIEWED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 记录当前正在查看的文件路径（供崩溃报告溯源使用）
+pub fn set_last_viewed(path: &str) {
+    if let Ok(mut g) = LAST_VIEWED.lock() {
+        *g = Some(path.to_string());
+    }
+}
+
+pub fn get_last_viewed() -> Option<String> {
+    LAST_VIEWED.lock().ok().and_then(|g| g.clone())
 }
 
 /// 安装 panic hook：take_hook + 写 crash-{ts}.txt + Backtrace + 链回默认，绝不二次 panic。
@@ -395,13 +432,18 @@ fn write_crash_report(info: &std::panic::PanicHookInfo) {
         .unwrap_or_else(|| "<unknown>".to_string());
     let bt = std::backtrace::Backtrace::force_capture();
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
+    let app_name = app_name_from_config();
+    let identifier = app_identifier_from_config();
+    let last_image = get_last_viewed().unwrap_or_else(|| "<none>".to_string());
     let body = format!(
-        "version: {}\nidentifier: {}\ntime: {}\nthread: {:?}\nlocation: {}\npayload: {}\nbacktrace:\n{}\n",
+        "product: {}\nversion: {}\nidentifier: {}\ntime: {}\nthread: {:?}\nlocation: {}\nlast_viewed: {}\npayload: {}\nbacktrace:\n{}\n",
+        app_name,
         env!("CARGO_PKG_VERSION"),
-        APP_IDENTIFIER,
+        identifier,
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z"),
         std::thread::current().name().unwrap_or("<unnamed>").to_string(),
         location,
+        last_image,
         payload,
         bt
     );
@@ -431,7 +473,8 @@ pub async fn zlog_export_bundle(app: tauri::AppHandle) -> Result<String, String>
     prune(&dir, PRUNE_KEEP_DAYS, PRUNE_MAX_BYTES);
 
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let out_path = dir.join(format!("zviewer-logs-{ts}.zip"));
+    let app_name = app_name_from_config();
+    let out_path = dir.join(format!("{}-logs-{ts}.zip", app_name.to_lowercase()));
     export_bundle_inner(&dir, &out_path)?;
     Ok(out_path.to_string_lossy().to_string())
 }
@@ -469,10 +512,13 @@ fn export_bundle_inner(dir: &Path, out_path: &Path) -> Result<(), String> {
         zip.write_all(clean.as_bytes())
             .map_err(|e| e.to_string())?;
     }
+    let app_name = app_name_from_config();
+    let identifier = app_identifier_from_config();
     let version_txt = format!(
-        "product: ZViewer\nversion: {}\nidentifier: {}\nexported_at: {}\n",
+        "product: {}\nversion: {}\nidentifier: {}\nexported_at: {}\n",
+        app_name,
         env!("CARGO_PKG_VERSION"),
-        APP_IDENTIFIER,
+        identifier,
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z")
     );
     zip.start_file("version.txt", opts)
@@ -481,4 +527,118 @@ fn export_bundle_inner(dir: &Path, out_path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     zip.finish().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_dir() -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("z-viewer-test-log-{}-{n}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn test_redact_email() {
+        let input = "User supermc@example.com logged in";
+        assert_eq!(redact(input), "User [redacted-email] logged in");
+
+        let input_bracket = "Contact: <support@zviewer.app>;";
+        assert_eq!(redact(input_bracket), "Contact: <[redacted-email]>;");
+    }
+
+    #[test]
+    fn test_redact_bearer_and_tokens() {
+        let input1 = "Authorization: Bearer secret-token-12345";
+        assert_eq!(redact(input1), "Authorization: Bearer [redacted]");
+
+        let input2 = "token=abc123456789; status=ok";
+        assert_eq!(redact(input2), "token=[redacted]; status=ok");
+
+        let input3 = r#"{"analyticsToken": "super-secret-jwt-token"}"#;
+        assert_eq!(redact(input3), r#"{"analyticsToken": "[redacted]"}"#);
+    }
+
+    #[test]
+    fn test_redact_license_keys() {
+        let input = "License key is ZV-PRO-ABCD-1234-EFGH";
+        assert_eq!(redact(input), "License key is [redacted-key]");
+    }
+
+    #[test]
+    fn test_prune_size_budget() {
+        let dir = temp_dir();
+        let f1 = dir.join("app_old.log");
+        let f2 = dir.join("app_new.log");
+
+        // 写入测试文件
+        std::fs::write(&f1, vec![b'a'; 1000]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&f2, vec![b'b'; 1000]).unwrap();
+
+        // 限制总量 1500 字节，应删掉最旧的 f1
+        prune(&dir, 7, 1500);
+        assert!(!f1.exists(), "old file should be pruned");
+        assert!(f2.exists(), "newer file should be kept");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_app_name_and_identifier_from_config() {
+        let name = app_name_from_config();
+        assert_eq!(name, "ZViewer");
+
+        let id = app_identifier_from_config();
+        assert_eq!(id, "com.zviewer.app");
+    }
+
+    #[test]
+    fn test_export_bundle_inner() {
+        let dir = temp_dir();
+        let app_name = app_name_from_config();
+        let log_file_name = format!("{app_name}.log");
+        let log_file = dir.join(&log_file_name);
+        let crash_file = dir.join("crash-20260916.txt");
+        let other_file = dir.join("ignore.json");
+
+        std::fs::write(&log_file, "Hello Bearer secret123").unwrap();
+        std::fs::write(&crash_file, "Panic at test@example.com").unwrap();
+        std::fs::write(&other_file, "Ignored").unwrap();
+
+        let zip_path = dir.join("bundle.zip");
+        export_bundle_inner(&dir, &zip_path).expect("export should succeed");
+
+        assert!(zip_path.exists());
+
+        // 校验 zip 内容
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+
+        let mut names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        names.sort();
+
+        let mut expected = vec![log_file_name.as_str(), "crash-20260916.txt", "version.txt"];
+        expected.sort();
+        assert_eq!(names, expected);
+
+        // 验证 zip 内二次脱敏生效
+        use std::io::Read as _;
+        let mut app_content = String::new();
+        archive.by_name(&log_file_name).unwrap().read_to_string(&mut app_content).unwrap();
+        assert_eq!(app_content, "Hello Bearer [redacted]");
+
+        let mut crash_content = String::new();
+        archive.by_name("crash-20260916.txt").unwrap().read_to_string(&mut crash_content).unwrap();
+        assert_eq!(crash_content, "Panic at [redacted-email]");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

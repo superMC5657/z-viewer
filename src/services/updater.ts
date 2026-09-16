@@ -9,17 +9,21 @@ import type { UI } from "../ui";
 
 export async function checkForUpdate(ui: UI): Promise<void> {
   ui.showToast("正在检查更新…");
+  console.info("[updater] checking for updates...");
   let update;
   try {
     update = await check();
   } catch (err) {
+    console.warn(`[updater] check failed: ${String(err)}`);
     ui.showToast(`检查更新失败：${String(err)}`);
     return;
   }
   if (!update) {
+    console.info("[updater] check complete: already up to date");
     ui.showToast("已是最新版本");
     return;
   }
+  console.info(`[updater] update available: v${update.version}`);
   ui.showToast(`发现新版本 v${update.version}，开始下载…`);
   try {
     let total = 0;
@@ -46,13 +50,16 @@ export async function checkForUpdate(ui: UI): Promise<void> {
     });
     await update.install();
   } catch (err) {
+    console.error(`[updater] install failed: ${String(err)}`);
     ui.showToast(`更新失败：${String(err)}`);
     return;
   }
+  console.info("[updater] update installed, restarting...");
   ui.showToast("更新完成，正在重启…");
   try {
     await relaunch();
   } catch (err) {
+    console.error(`[updater] relaunch failed: ${String(err)}`);
     ui.showToast(`重启失败，请手动重启应用：${String(err)}`);
   }
 }

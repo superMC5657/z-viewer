@@ -305,6 +305,7 @@ export class Viewer {
   // ---------- 变换操作 ----------
 
   setMode(mode: FitMode, anchorX?: number, anchorY?: number): void {
+    console.info(`[view] fit mode: ${mode}`);
     // 无 early return：fit 模式下手动缩放后（fitMode 仍为 "fit"），
     // 点击适应窗口必须重置 userScale 回到纯 fit 状态
     this.fitMode = mode;
@@ -341,6 +342,7 @@ export class Viewer {
   rotate(delta: number): void {
     this.rotation = ((this.rotation + delta) % 360 + 360) % 360;
     this.rotTotal += delta; // 累计角度保持单调：过渡沿真实方向转 90°，而非绕 270°
+    console.info(`[view] rotate: ${delta > 0 ? "+" : ""}${delta}° (current: ${this.rotation}°)`);
     if (this.isFit) {
       this.userScale = 1;
       // 旋转 90/270 后交换宽高重新适应
@@ -356,6 +358,7 @@ export class Viewer {
   flip(axis: "h" | "v"): void {
     if (axis === "h") this.flipH = !this.flipH;
     else this.flipV = !this.flipV;
+    console.info(`[view] flip: ${axis === "h" ? "horizontal" : "vertical"}`);
     this.apply();
     this.animateTransform();
   }

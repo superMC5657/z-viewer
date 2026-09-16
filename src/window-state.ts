@@ -43,6 +43,7 @@ export class WindowState {
       this.ui.setImmersive(next);
       this.ui.setToolbarActive("fullscreen", next);
       this.viewer.setImmersive(next);
+      console.info(`[ui] immersive mode: ${next ? "on" : "off"}`);
     } catch (err) {
       this.ui.showToast(`沉浸模式切换失败：${String(err)}`);
     } finally {
@@ -65,6 +66,7 @@ export class WindowState {
       await this.appWindow.setAlwaysOnTop(next);
       this.pinned = next;
       this.ui.setToolbarActive("pin", next);
+      console.info(`[ui] pin window: ${next ? "on" : "off"}`);
     } catch (err) {
       this.ui.showToast(`置顶切换失败：${String(err)}`);
     } finally {
