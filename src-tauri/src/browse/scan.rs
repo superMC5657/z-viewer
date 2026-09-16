@@ -7,6 +7,14 @@ use std::sync::Arc;
 
 use super::{canonical, is_image_file, BrowseModel, Folder, InnerData, ModelInner, OnReady};
 
+/// 日志用 basename：只记文件名/夹名，不记全路径（打开拒绝原因码用）
+fn scan_basename_of(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 impl BrowseModel {
     /// 以某张图片为起点建立浏览模型（完整功能：跨文件夹扫描）
     /// 等价于 open_gated(..., cross_folder=true)；仅测试使用
@@ -21,10 +29,13 @@ impl BrowseModel {
     /// 付费解锁（专业版）后调用方传入 true 恢复跨文件夹无缝浏览。
     pub fn open_gated(path: &Path, on_ready: Option<OnReady>, cross_folder: bool) -> Option<Self> {
         if !path.is_file() || !is_image_file(&path.file_name()?.to_string_lossy()) {
+            // 打开拒绝（低频）：原因码 + basename，不记全路径
+            log::info!("browse open gated reject not-image {}", scan_basename_of(path));
             return None;
         }
         let parent = path.parent()?;
         if !parent.is_dir() {
+            log::info!("browse open gated reject no-parent {}", scan_basename_of(path));
             return None;
         }
         let current_images = Self::list_images(parent);
@@ -98,7 +109,14 @@ impl BrowseModel {
                     .to_string_lossy()
                     .eq_ignore_ascii_case(file_name_lossy.as_ref()),
                 None => false,
-            })?;
+            });
+        let Some(image_index) = image_index else {
+            log::info!(
+                "browse open gated reject unknown-image {}",
+                scan_basename_of(path)
+            );
+            return None;
+        };
 
         // 构建 folders：当前文件夹已填充，其余 None（后台填充）
         // 定位当前文件夹：先按名字比较（大小写不敏感，与 Windows 文件系统语义
@@ -130,7 +148,13 @@ impl BrowseModel {
                 images: (folder_index == Some(i)).then(|| current_images.clone()),
             });
         }
-        let folder_index = folder_index?;
+        let Some(folder_index) = folder_index else {
+            log::info!(
+                "browse open gated reject unknown-folder {}",
+                scan_basename_of(path)
+            );
+            return None;
+        };
         let pending_total = folders.len();
         // 免费版（cross_folder=false）无待填充文件夹，loading=false
         let loading = cross_folder && pending_total > 1;
@@ -170,7 +194,13 @@ impl BrowseModel {
         cross_folder: bool,
     ) -> Option<Self> {
         let current_images = Self::list_images(dir);
-        let first = current_images.first().cloned()?;
+        let Some(first) = current_images.first().cloned() else {
+            log::info!(
+                "browse open gated reject empty-dir {}",
+                scan_basename_of(dir)
+            );
+            return None;
+        };
         Self::open_with_current_images(&first, current_images, on_ready, cross_folder)
     }
 
@@ -271,6 +301,11 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
     if all_empty {
         d.folders = old_folders;
         d.loading = false;
+        log::debug!(
+            "browse scan done folders {} total {} (all-empty)",
+            d.folders.len(),
+            d.global_total
+        );
         drop(d);
         let state = BrowseModel::state_from_inner(&scan_inner);
         if let Some(cb) = on_ready {
@@ -322,6 +357,12 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
     }
     d.global_total = total;
     d.global_index = prefix + d.image_index;
+    // 扫描计数（debug：release 不落盘）：文件夹数 + 图片总数，只记数量不记路径
+    log::debug!(
+        "browse scan done folders {} total {}",
+        d.folders.len(),
+        d.global_total
+    );
     drop(d); // 先释放锁，state_from_inner 会再次加锁
     let state = BrowseModel::state_from_inner(&scan_inner);
     if let Some(cb) = on_ready {

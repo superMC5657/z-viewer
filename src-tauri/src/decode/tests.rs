@@ -114,7 +114,7 @@ fn preview_tiff_walk_finds_embedded_jpeg() {
     jpeg.push(0xFF);
     jpeg.push(0xD9);
     let ifd_off = 8u32;
-    let jpeg_off = ifd_off + 2 + 12 * 1 + 4;
+    let jpeg_off = ifd_off + 2 + 12 + 4;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"II*\x00");
     bytes.extend_from_slice(&ifd_off.to_le_bytes());

@@ -135,25 +135,70 @@ pub(crate) fn ext_of(path: &str) -> String {
 
 /// 统一入口：按扩展名与内容分发到各通道
 /// `full=false`：RAW 优先返回内嵌预览（快），全量由后续 full=true 请求完成
+///
+/// 通道失败在此记一次 warn（basename + 原因首行 + 通道后缀）：命令层 `load_image`
+/// 的通用 `decode failed` 与此按通道后缀去重（`[raw]`/`[tiff]`/`[anim]`），只看
+/// 通道维度时无需翻命令层日志。
 pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
     let ext = ext_of(path);
 
     if is_raw_ext(&ext) {
-        return raw::decode_raw(path, full);
+        return raw::decode_raw(path, full).inspect_err(|e| {
+            log::warn!(
+                "decode failed {} [raw]: {}",
+                decode_basename_of(path),
+                decode_first_line_of(e)
+            );
+        });
     }
 
     if TIFF_EXTS.contains(&ext.as_str()) {
-        return tiff::decode_static(path);
+        return tiff::decode_static(path).inspect_err(|e| {
+            log::warn!(
+                "decode failed {} [tiff]: {}",
+                decode_basename_of(path),
+                decode_first_line_of(e)
+            );
+        });
     }
 
     if ANIM_EXTS.contains(&ext.as_str()) {
-        if let Some(frames) = animation::decode_animation(path)? {
+        let frames = animation::decode_animation(path).inspect_err(|e| {
+            log::warn!(
+                "decode failed {} [anim]: {}",
+                decode_basename_of(path),
+                decode_first_line_of(e)
+            );
+        })?;
+        if let Some(frames) = frames {
             return Ok(frames);
         }
         // 单帧：降级为静态，走 asset 协议直读
     }
 
     Ok(LoadResult::asset())
+}
+
+/// 日志用 basename：只记文件名，不记全路径（与 commands 侧同规则，解码侧本地实现）
+///
+/// 与 `commands::basename_of` 同语义：`Path::file_name`，无文件名回退 `unknown`。
+fn decode_basename_of(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// 日志用原因摘要：取首行 + 200 字符截断（与 commands 侧同规则，解码侧本地实现）
+fn decode_first_line_of(s: &str) -> String {
+    const MAX_CHARS: usize = 200;
+    let line = s.lines().next().unwrap_or("").trim();
+    if line.chars().count() > MAX_CHARS {
+        line.chars().take(MAX_CHARS).collect()
+    } else {
+        line.to_string()
+    }
 }
 
 pub fn is_raw_ext(ext: &str) -> bool {

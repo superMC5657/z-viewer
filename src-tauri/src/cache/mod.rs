@@ -65,8 +65,14 @@ impl<V> LruQueue<V> {
                 q.remove(pos);
             }
             q.push_back((key, value));
-            while q.len() > self.capacity() {
-                q.pop_front();
+            let cap = self.capacity();
+            if q.len() > cap {
+                // 淘汰计数（debug：只记数量不记路径，热路径 release 不可见）
+                let dropped = q.len() - cap;
+                while q.len() > cap {
+                    q.pop_front();
+                }
+                log::debug!("cache evict dropped {dropped} (cap {cap})");
             }
         }
     }
@@ -80,8 +86,12 @@ impl<V> LruQueue<V> {
     pub(super) fn set_capacity(&self, capacity: usize) {
         self.capacity.store(capacity, Ordering::Relaxed);
         if let Ok(mut q) = self.inner.lock() {
-            while q.len() > self.capacity() {
-                q.pop_front();
+            if q.len() > capacity {
+                let dropped = q.len() - capacity;
+                while q.len() > capacity {
+                    q.pop_front();
+                }
+                log::debug!("cache evict dropped {dropped} (cap {capacity})");
             }
         }
     }

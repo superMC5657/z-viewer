@@ -39,6 +39,15 @@ impl CachedEntry {
     }
 }
 
+/// 日志用 basename：只记文件名，不记全路径（命中/未命中打点用）
+fn cache_basename_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 #[derive(Clone)]
 pub struct DecodeCache {
     lru: LruQueue<CachedEntry>,
@@ -88,15 +97,19 @@ impl DecodeCache {
     /// 命中返回完整条目（含惰性信封，供 load_image 复用打包结果）并移到末尾
     pub fn get_entry(&self, path: &str) -> Option<CachedEntry> {
         if let Some(e) = self.lru.get(path) {
+            // 命中（debug：只记 basename；参数在宏内求值，门槛关闭时零开销）
+            log::debug!("cache hit {}", cache_basename_of(path));
             return Some(e);
         }
         if let Ok(guard) = self.animated.lock() {
             if let Some((k, e)) = guard.as_ref() {
                 if k == path {
+                    log::debug!("cache hit {}", cache_basename_of(path));
                     return Some(e.clone());
                 }
             }
         }
+        log::debug!("cache miss {}", cache_basename_of(path));
         None
     }
 
