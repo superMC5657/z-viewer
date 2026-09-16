@@ -84,10 +84,10 @@ fn main() {
                 std::env::consts::ARCH
             );
 
-            // 启动时后台异步修剪日志（7天过期 / 20MB 水位保护，不阻塞冷启动）
+            // 启动时后台异步修剪日志（14天过期 / 25MB 水位保护，不阻塞冷启动）
             if let Ok(dir) = app.path().app_log_dir() {
                 tauri::async_runtime::spawn(async move {
-                    z_log::prune(&dir, 7, 20 * 1024 * 1024);
+                    z_log::prune(&dir, z_log::PRUNE_KEEP_DAYS, z_log::PRUNE_MAX_BYTES);
                 });
             }
 
@@ -105,6 +105,8 @@ fn main() {
                 let license = license.clone();
                 tauri::async_runtime::spawn(async move {
                     if let Some(status) = license.verify_online().await {
+                        // 授权状态变迁（吊销/失效）：只记目标状态，不记授权值
+                        log::info!("license status changed {}", status.status);
                         let _ = app_handle.emit(license::LICENSE_STATUS_CHANGED, status);
                     }
                 });

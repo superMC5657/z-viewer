@@ -25,6 +25,7 @@ export async function checkForUpdate(ui: UI): Promise<void> {
   }
   console.info(`[updater] update available: v${update.version}`);
   ui.showToast(`发现新版本 v${update.version}，开始下载…`);
+  console.info(`[updater] downloading update v${update.version}...`);
   try {
     let total = 0;
     let downloaded = 0;
@@ -48,6 +49,13 @@ export async function checkForUpdate(ui: UI): Promise<void> {
         ui.showToast("下载完成，正在安装…");
       }
     });
+  } catch (err) {
+    console.error(`[updater] download failed: ${String(err)}`);
+    ui.showToast(`更新失败：${String(err)}`);
+    return;
+  }
+  console.info(`[updater] download complete v${update.version}, installing...`);
+  try {
     await update.install();
   } catch (err) {
     console.error(`[updater] install failed: ${String(err)}`);
