@@ -11,10 +11,37 @@ use std::path::{Path, PathBuf};
 use log::LevelFilter;
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy, WEBVIEW_TARGET};
 
-const MAX_FILE_SIZE: u128 = 1024 * 1024; // 1MB
-const PRUNE_KEEP_DAYS: u64 = 7;
-const PRUNE_MAX_BYTES: u64 = 20 * 1024 * 1024; // viewer 本地盘小：20MB 上限
+const MAX_FILE_SIZE: u128 = 5 * 1024 * 1024; // 5MB
+const ROTATION_KEEP: usize = 5; // KeepSome(5)：最多保留 5 个轮转文件
+pub(crate) const PRUNE_KEEP_DAYS: u64 = 14;
+pub(crate) const PRUNE_MAX_BYTES: u64 = 25 * 1024 * 1024; // viewer 本地盘小：25MB 上限
 
+/// 日志门槛解析：`ZVIEWER_LOG` 优先，`RUST_LOG` 兜底，均未设置/非法时用默认。
+/// 取值（大小写不敏感）：trace/debug/info/warn(error)/off；非法值穿透为 None。
+fn parse_level(s: &str) -> Option<LevelFilter> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "trace" => Some(LevelFilter::Trace),
+        "debug" => Some(LevelFilter::Debug),
+        "info" => Some(LevelFilter::Info),
+        "warn" | "warning" => Some(LevelFilter::Warn),
+        "error" => Some(LevelFilter::Error),
+        "off" => Some(LevelFilter::Off),
+        _ => None,
+    }
+}
+
+/// 双分支门槛：先 `ZVIEWER_LOG` 后 `RUST_LOG`，均缺席/非法时回退到调用方默认
+/// （dev 默认 Debug，release 默认 Info）。
+pub(crate) fn resolve_level(default: LevelFilter) -> LevelFilter {
+    for key in ["ZVIEWER_LOG", "RUST_LOG"] {
+        if let Ok(v) = std::env::var(key) {
+            if let Some(l) = parse_level(&v) {
+                return l;
+            }
+        }
+    }
+    default
+}
 /// 从配置文件（tauri.conf.json）获取应用名称（productName，兜底为 Cargo 包名）
 pub fn app_name_from_config() -> String {
     let conf_str = include_str!("../tauri.conf.json");
@@ -67,7 +94,7 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     #[cfg(debug_assertions)]
     {
         tauri_plugin_log::Builder::new()
-            .level(LevelFilter::Debug)
+            .level(resolve_level(LevelFilter::Debug))
             .level_for("hyper", LevelFilter::Warn)
             .level_for("reqwest", LevelFilter::Warn)
             .level_for("wry", LevelFilter::Warn)
@@ -75,7 +102,7 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             .timezone_strategy(TimezoneStrategy::UseLocal)
             .format(fmt)
             .max_file_size(MAX_FILE_SIZE)
-            .rotation_strategy(RotationStrategy::KeepAll)
+            .rotation_strategy(RotationStrategy::KeepSome(ROTATION_KEEP))
             .targets([
                 Target::new(TargetKind::Stdout),
                 app_file,
@@ -91,7 +118,7 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     {
         // release：clear_targets 后只留 LogDir，零 Stdout/Webview 回显
         tauri_plugin_log::Builder::new()
-            .level(LevelFilter::Info)
+            .level(resolve_level(LevelFilter::Info))
             .level_for("hyper", LevelFilter::Warn)
             .level_for("reqwest", LevelFilter::Warn)
             .level_for("wry", LevelFilter::Warn)
@@ -99,7 +126,7 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             .timezone_strategy(TimezoneStrategy::UseLocal)
             .format(fmt)
             .max_file_size(MAX_FILE_SIZE)
-            .rotation_strategy(RotationStrategy::KeepAll)
+            .rotation_strategy(RotationStrategy::KeepSome(ROTATION_KEEP))
             .clear_targets()
             .targets([app_file])
             .build()
@@ -311,7 +338,7 @@ fn mask_license_keys(s: &str) -> String {
     res
 }
 
-/// 修剪日志目录：删 7 天前文件，总量超 20MB 时按 mtime 从旧到新删到预算内。
+/// 修剪日志目录：删 14 天前文件，总量超 25MB 时按 mtime 从旧到新删到预算内。
 /// 绝不向外抛 panic，失败只记 log。
 pub fn prune(dir: &Path, max_age_days: u64, max_total_bytes: u64) {
     let entries: Vec<(PathBuf, u64, std::time::SystemTime)> = match std::fs::read_dir(dir) {
@@ -339,7 +366,7 @@ pub fn prune(dir: &Path, max_age_days: u64, max_total_bytes: u64) {
         let age = now.duration_since(mtime).unwrap_or_default();
         if age > max_age {
             let _ = std::fs::remove_file(&p);
-            log::info!("zlog prune: 删除过期日志 {}", p.display());
+            log::debug!("zlog prune: 删除过期日志 {}", p.display());
         } else {
             kept.push((p, len, mtime));
         }
@@ -355,7 +382,7 @@ pub fn prune(dir: &Path, max_age_days: u64, max_total_bytes: u64) {
         }
         if std::fs::remove_file(&p).is_ok() {
             total = total.saturating_sub(len);
-            log::info!("zlog prune: 超预算删除 {}", p.display());
+            log::debug!("zlog prune: 超预算删除 {}", p.display());
         }
     }
 }
@@ -568,6 +595,94 @@ mod tests {
     fn test_redact_license_keys() {
         let input = "License key is ZV-PRO-ABCD-1234-EFGH";
         assert_eq!(redact(input), "License key is [redacted-key]");
+    }
+
+    #[test]
+    fn test_converged_waterline() {
+        // 收敛水位锁定：单文件 5MB / 保留 5 个轮转 / 14 天过期 / 总量 25MB
+        assert_eq!(MAX_FILE_SIZE, 5 * 1024 * 1024);
+        assert_eq!(ROTATION_KEEP, 5);
+        assert_eq!(PRUNE_KEEP_DAYS, 14);
+        assert_eq!(PRUNE_MAX_BYTES, 25 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_format_path_masks() {
+        // format 写盘前经 redact 二次脱敏：路径类载荷只留 basename 形态，
+        // 家目录/email/token/key 均被掩码（回归：format 逻辑不动，只锁掩码行为）
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_default();
+        if !home.is_empty() {
+            let input = format!("open {home}/photos/a.jpg done");
+            assert_eq!(redact(&input), "open ~/photos/a.jpg done");
+        }
+        assert_eq!(
+            redact("browse open failed secret-photo by adm@example.com"),
+            "browse open failed secret-photo by [redacted-email]"
+        );
+        assert_eq!(
+            redact("decode failed a.cr2: Bearer abcdef12345"),
+            "decode failed a.cr2: Bearer [redacted]"
+        );
+        assert_eq!(
+            redact("license ZV-PRO-ABCD-1234-EFGH checked"),
+            "license [redacted-key] checked"
+        );
+        // 全路径即使误入消息也不得原样落盘：家目录必被折叠
+        if !home.is_empty() {
+            let leaked = format!("cache miss {home}/x/b.jpg");
+            assert!(!redact(&leaked).contains(&home));
+        }
+    }
+
+    #[test]
+    fn test_resolve_level_dual_branch() {
+        // ZVIEWER_LOG / RUST_LOG 双分支：串行化 env 操作防并行测试串扰
+        static GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let old_z = std::env::var("ZVIEWER_LOG").ok();
+        let old_r = std::env::var("RUST_LOG").ok();
+        let restore = |zv: &Option<String>, rl: &Option<String>| {
+            match zv {
+                Some(v) => std::env::set_var("ZVIEWER_LOG", v),
+                None => std::env::remove_var("ZVIEWER_LOG"),
+            }
+            match rl {
+                Some(v) => std::env::set_var("RUST_LOG", v),
+                None => std::env::remove_var("RUST_LOG"),
+            }
+        };
+        let set = |zv: Option<&str>, rl: Option<&str>| {
+            match zv {
+                Some(v) => std::env::set_var("ZVIEWER_LOG", v),
+                None => std::env::remove_var("ZVIEWER_LOG"),
+            }
+            match rl {
+                Some(v) => std::env::set_var("RUST_LOG", v),
+                None => std::env::remove_var("RUST_LOG"),
+            }
+        };
+        // 双缺席 → 默认穿透
+        set(None, None);
+        assert_eq!(resolve_level(LevelFilter::Debug), LevelFilter::Debug);
+        assert_eq!(resolve_level(LevelFilter::Info), LevelFilter::Info);
+        // ZVIEWER_LOG 优先于 RUST_LOG
+        set(Some("warn"), Some("error"));
+        assert_eq!(resolve_level(LevelFilter::Debug), LevelFilter::Warn);
+        // 仅 RUST_LOG 生效
+        set(None, Some("debug"));
+        assert_eq!(resolve_level(LevelFilter::Info), LevelFilter::Debug);
+        // 大小写不敏感
+        set(Some("WARN"), None);
+        assert_eq!(resolve_level(LevelFilter::Debug), LevelFilter::Warn);
+        // ZVIEWER 非法时穿透到 RUST_LOG
+        set(Some("verbose"), Some("error"));
+        assert_eq!(resolve_level(LevelFilter::Debug), LevelFilter::Error);
+        // 双非法 → 默认
+        set(Some("verbose"), Some("nope"));
+        assert_eq!(resolve_level(LevelFilter::Debug), LevelFilter::Debug);
+        restore(&old_z, &old_r);
     }
 
     #[test]

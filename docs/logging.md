@@ -24,15 +24,19 @@ panic hook 拿不到 `AppHandle`，用 `resolve_log_dir_fallback()` 按同样规
 | `crash-<ts>.txt` | panic hook | 版本/identifier/时间/线程/位置/payload/Backtrace，写盘前已脱敏 |
 | `<productName>-logs-<ts>.zip` | `zlog_export_bundle` | 诊断包（见下），下次导出时不被重复打包（只收 `*.log` + `crash-*.txt`） |
 
-单文件 1MB 轮转（`max_file_size`），策略 `KeepAll`（靠 prune 封顶）；
-`prune`：删 7 天前文件，总量超 20MB 时按 mtime 从旧到新删到预算内，
+单文件 5MB 轮转（`max_file_size`），策略 `KeepSome(5)`（插件层只留 5 个轮转兄弟）；
+`prune`：删 14 天前文件，总量超 25MB 时按 mtime 从旧到新删到预算内，
 只处理 `*.log` 与 `crash-*.txt`，失败只记 `log` 不抛 panic。
+prune 内两条打点均为 `debug`（过期删除 / 超预算删除，release 不落盘）。
+水位由 `z_log.rs` 常量锁定（`MAX_FILE_SIZE`/`ROTATION_KEEP`/`PRUNE_KEEP_DAYS`/`PRUNE_MAX_BYTES`），
+`test_converged_waterline` 回归锁定；`main.rs` 启动修剪复用同一常量。
 
 ## dev / release 矩阵
 
 | | dev（`debug_assertions` / `vite dev`） | release |
 | --- | --- | --- |
 | Rust 门槛 | `Debug`（hyper/reqwest/wry/tao 压到 `Warn`） | `Info`（同上压到 `Warn`，`debug` 不落盘） |
+| 门槛覆盖 | `ZVIEWER_LOG` 优先、`RUST_LOG` 兜底（`resolve_level`，双 cfg 分支均接入；非法值穿透到默认） | 同左 |
 | Stdout | 有 | 无（`clear_targets` 后只留 LogDir） |
 | Webview 回显 | 有，但**只回显 Rust 日志**（前端日志不二次广播，无回声循环） | 无 |
 | 前端回显 | `attachLogger` + `echoGuard` 把 Rust 日志打印到 devtools，回显输出不再二次转发 | 不 attach |
@@ -84,6 +88,8 @@ void initZLog().catch(() => undefined);
 - `info` zviewer startup: version {ver} (os: {os}, arch: {arch})（应用启动与运行环境）
 - `info` zviewer exit: session duration {dur}s, images viewed: {v}, unique: {u}, folders: {f}（正常退出时会话统计小结）
 - `info` browse open ok {basename} (folder: {folder_name}, total: {total})（打开图片成功，包含所属文件夹与总图片数）
+- `info` browse open gated reject {not-image|no-parent|unknown-image|unknown-folder|empty-dir} {basename}（门控拒绝原因码，只记 basename）
+- `debug` browse scan done folders {n} total {m}（后台兄弟扫描完成计数，只记数量；全空防御分支另带 `(all-empty)` 后缀）
 - `warn` browse open failed {basename}（启动路径打不开：非图片/空目录）
 - `error` browse open failed {basename}（`open_path` 模型建立失败，直接返回前端错误）
 - `info` browse jump folder {target} ok {folder_name}（文件夹级跳转成功）
@@ -100,25 +106,30 @@ void initZLog().catch(() => undefined);
 - `info` [view] fit mode: fit / actual（适应窗口 / 1:1 像素实际大小模式切换）
 - `info` [view] rotate: +90° / -90° (current: ...)（图片旋转）
 - `info` [view] flip: horizontal / vertical（图片翻转）
-- `info` [updater] checking for updates... / up to date / update available / update installed（更新检查生命周期）
+- `info` [updater] checking for updates... / check complete: already up to date / update available / downloading ... / download complete ..., installing... / update installed（更新检查→下载→安装生命周期）
+- `error` [updater] download failed / install failed / relaunch failed（下载与安装失败分流，原文截断由各调用点控制）
 - `info` [slideshow] started (interval: {ms}ms) / paused / interval changed / finished / exited（幻灯片生命周期）
 - `error` window.onerror / unhandledrejection（全局未捕获异常）
 - `error` [render] failed: {err}（DOM 原生图片加载失败）
 - `debug` [app] frontend initialized（开发环境启动心跳）
 
-## 解码（`commands/mod.rs` → `decode/*.rs`）
+## 解码（`decode/mod.rs` 分发 + `commands/mod.rs` 命令层）
 
+- `warn` decode failed {basename} [raw|tiff|anim]: {原因首行}（通道侧：`decode/mod.rs` 分发点按通道记一次，通道后缀与命令层去重）
 - `warn` decode failed {basename}: {原因首行}（`load_image` 实时路径：RAW/TIFF/动画全通道收敛于此；
   预取后台调用走 `cache prefetch failed` 的 debug，见下）
 - 解码器内部（`raw.rs`/`tiff.rs`/`animation.rs`）零 log：底层错误（io/ImageError/rawler `Display`）
-  均不含路径，只在命令层记一次。
+  均不含路径，只在分发点 + 命令层各记一次（后缀区分）。
 
-## 缓存（`commands/mod.rs` + `commands/prefetch.rs`）
+## 缓存（`commands/mod.rs` + `commands/prefetch.rs` + `cache/*.rs`）
 
 - `info` cache level set {level}（缓存等级切换：0=关闭、1=开启、2=高，配置变迁留痕）
-- `debug` cache prefetch failed {basename}: {原因首行}（队列 B 上下文预取 + 队列 A 首图预取；
+- `debug` cache prefetch failed (ctx) {basename}: {原因首行}（队列 B 上下文预取；
   低价值后台优化，release 不可见）
-- LRU 本体（`cache/*.rs`）热路径零 log：锁失败/未命中是常态，不记。
+- `debug` cache prefetch failed (first) {basename}: {原因首行}（队列 A 首图预取；同上）
+- `debug` cache hit {basename} / cache miss {basename}（`DecodeCache::get_entry`，热路径只 debug）
+- `debug` cache evict dropped {n} (cap {cap})（`LruQueue::put`/`set_capacity` 淘汰计数，只记数量不记路径）
+- LRU 本体其他路径零 log：锁失败/未命中是常态，只在上述三处记 debug。
 
 ## 授权（`license.rs`，只记事件不记值）
 
@@ -131,16 +142,17 @@ void initZLog().catch(() => undefined);
   服务端自由文本不参与分流）
 - `debug` license verify ok（在线续验成功，release 不可见）
 - `warn` license verify offline, using grace period（网络失败走离线宽限期）
-- `warn` license revoked, credentials removed（吊销删凭证，3 处：HTTP 非 2xx 吊销码/body 错误码/valid=false）
-- `debug` license verify deferred（其他服务端错误/响应解析异常，保留凭证等重验）
+- `warn` license revoked, credentials removed (http-status) / (body-error) / (valid-flag)（吊销删凭证，3 处按分支后缀区分：HTTP 非 2xx 吊销码/body 错误码/valid=false）
+- `debug` license verify deferred (http-status) / (body)（其他服务端错误/响应解析异常，保留凭证等重验）
+- `info` license status changed {pro|free}（启动后台续验发现吊销/失效并广播事件时，只记目标状态；`main.rs`）
 - `info` license deactivated（注销成功）/ `warn` license deactivate failed（注销失败，静态文案）
 - `debug` license load invalid fallback to free（启动 `load()` 文件存在但解析/验签失败回退免费版；
   静态文案，不记路径不记内容；`license.rs:238`；文件不存在正常回退不记）
 
 ## 埋点（`analytics.rs`）
 
-- `debug` analytics report failed ×3（client 构造失败/请求构造失败（非法 URL）/发送失败；
-  静态文案，不记负载内容；未配置 apiBase/analyticsPath 时静默不上报，不记）
+- `debug` analytics report failed (client) / (request) / (send)（client 构造失败/请求构造失败（非法 URL）/发送失败；
+  按分支后缀区分，静态文案，不记负载内容；未配置 apiBase/analyticsPath 时静默不上报，不记）
 - `record_view` 高频计数点零 log；上报负载只含聚合统计（见 `analytics.rs` 隐私边界）。
 
 ## 导出诊断包（供 UI 按钮接线）
@@ -159,15 +171,19 @@ void initZLog().catch(() => undefined);
 
 ## 相关文件（行号索引）
 
-- `src-tauri/src/z_log.rs`（插件构建、prune、redact、panic hook、导出命令；不动）
-- `src-tauri/src/main.rs`（启动参数跳过 debug：62；启动打开打点：128/135）
+- `src-tauri/src/z_log.rs`（插件构建、门槛覆盖 `resolve_level`、prune、redact、panic hook、导出命令；
+  回归：`test_converged_waterline` 锁水位、`test_format_path_masks` 锁脱敏、`test_resolve_level_dual_branch` 锁双分支）
+- `src-tauri/src/main.rs`（启动参数跳过 debug：62；启动打开打点：128/135；授权状态变迁 info；启动修剪复用水位常量）
 - `src-tauri/src/commands/mod.rs`（摘要辅助 + 打开/边界/跳转/解码打点：
   `basename_of`/`first_line_of` 定义、边界 134、打开失败 169/成功 172、
   未知跳转目标 237、解码失败 291/298）
-- `src-tauri/src/commands/prefetch.rs`（预取失败 debug：40/116）
+- `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[anim]` 后缀，本地摘要辅助与命令层去重）
+- `src-tauri/src/browse/scan.rs`（门控拒绝原因码 info + 后台扫描计数 debug）
+- `src-tauri/src/cache/*.rs`（`DecodeCache::get_entry` hit/miss debug + `LruQueue` 淘汰计数 debug）
+- `src-tauri/src/commands/prefetch.rs`（预取失败 debug：`(ctx)`/`(first)` 分支后缀）
 - `src-tauri/src/license.rs`（授权事件打点：启动加载回退 238、离线降级 402、吊销 416/433/439、
   推迟 421/425、续验成功 458、激活 701/707/709、注销 721/725）
-- `src-tauri/src/analytics.rs`（上报失败 debug：138/145/148）
+- `src-tauri/src/analytics.rs`（上报失败 debug：154/161/164；退出小结 info：133）
 - `src-tauri/src/browse/*.rs`、`src-tauri/src/decode/*.rs`、`src-tauri/src/cache/*.rs`
   （零 log：错误上浮到命令层记一次，热路径不记）
 - `src/lib/z-log.ts`、`src/main.ts`（前端接入；业务不加打点）
