@@ -33,8 +33,8 @@
     </filter>
   </defs>
 
-  <!-- 图标底座 (白瓷 Squircle) -->
-  <rect x="20" y="20" width="472" height="472" rx="108" fill="url(#lightBgGrad2)" stroke="rgba(0,0,0,0.06)" stroke-width="1.5" filter="url(#softShadow2)" />
+  <!-- 图标底座 (白瓷 Squircle，对齐套件标准规范：24px 边距，464x464 底座，rx 108，相当于 1024 下 48px 边距与 928 尺寸) -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#lightBgGrad2)" stroke="rgba(0,0,0,0.08)" stroke-width="1.5" />
 
   <!-- 镜头外圈精密微型刻度环与沉头槽 -->
   <circle cx="256" cy="256" r="182" fill="none" stroke="rgba(0,0,0,0.08)" stroke-width="1.5" stroke-dasharray="3 7" />
