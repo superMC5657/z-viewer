@@ -1,18 +1,18 @@
 import { defineConfig } from "vite";
 
-// https://vitejs.dev/config/
+// 参考配置文档：https://vitejs.dev/config/
 export default defineConfig({
   // 前端源码根目录：index.html 位于 src/ 下
   root: "src",
   // 公共静态资源仍在项目根 public/（不随 root 移动）
   publicDir: "../public",
-  // Vite options tailored for Tauri development.
+  // 专为 Tauri 开发定制的 Vite 选项。
   clearScreen: false,
   server: {
     port: 1425,
     strictPort: true,
     watch: {
-      // Tell vite to ignore watching `src-tauri`
+      // 忽略对 `src-tauri` 目录的监听
       ignored: ["**/src-tauri/**"],
     },
   },

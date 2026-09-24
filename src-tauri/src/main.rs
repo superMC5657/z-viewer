@@ -1,4 +1,4 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+// 在 release 模式下的 Windows 平台隐藏额外的控制台窗口，请勿删除！
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod analytics;

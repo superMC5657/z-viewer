@@ -15,7 +15,7 @@ export interface BrowseState {
 }
 
 export interface NavResult {
-  /** "first-image" | "last-image" | "first-folder" | "last-folder" | null */
+  /** 边界类型："first-image" | "last-image" | "first-folder" | "last-folder" | null */
   boundary: string | null;
   state: BrowseState | null;
 }
@@ -30,7 +30,7 @@ export interface AppSettings {
 
 /** Rust 端 license::LicenseInfo */
 export interface LicenseInfo {
-  /** "pro" | "free" */
+  /** 授权状态："pro"（专业版）| "free"（免费版） */
   status: string;
   /** 当前设备指纹 */
   device_id?: string | null;
@@ -54,7 +54,7 @@ export interface StoreInfo {
 
 /** Rust 端二进制信封头（load_image 返回 ArrayBuffer，parseLoadEnvelope 解析） */
 export interface LoadEnvelope {
-  /** "asset" | "raw" | "static"(TIFF) | "animated" */
+  /** 加载模式："asset"（原生通道）| "raw"（RAW格式）| "static"（TIFF静态图）| "animated"（动画） */
   mode: string;
   /** payload 的 MIME（raw/static: image/jpeg；animated: image/png） */
   mime: string | null;

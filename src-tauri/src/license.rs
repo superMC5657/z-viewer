@@ -208,7 +208,7 @@ pub struct LicenseInfo {
     pub email: Option<String>,
 }
 
-/// 授权管理器（Tauri managed state；Clone 供后台任务移动）
+/// 授权管理器（Tauri 托管状态；Clone 供后台任务移动）
 #[derive(Clone)]
 pub struct LicenseManager {
     license: Arc<Mutex<Option<License>>>,

@@ -124,7 +124,7 @@ fn preview_tiff_walk_finds_embedded_jpeg() {
     bytes.extend_from_slice(&4u16.to_le_bytes());
     bytes.extend_from_slice(&(jpeg.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&jpeg_off.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // next IFD = 0
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // 下一个 IFD 指针 = 0
     bytes.extend_from_slice(&jpeg);
     let dir = std::env::temp_dir().join("iv_preview_test.tif");
     std::fs::write(&dir, &bytes).unwrap();
@@ -169,12 +169,12 @@ fn preview_isobmff_cr3_extracts_embedded_jpeg() {
     jpeg.push(0xD9);
 
     let mut data = Vec::new();
-    // ftyp box
+    // ftyp 数据盒
     data.extend_from_slice(&16u32.to_be_bytes());
     data.extend_from_slice(b"ftyp");
     data.extend_from_slice(b"crx \x00\x00\x00\x00");
 
-    // uuid box (PRVW)
+    // uuid 数据盒 (PRVW 预览)
     let uuid_box_len = (8 + 16 + jpeg.len()) as u32;
     data.extend_from_slice(&uuid_box_len.to_be_bytes());
     data.extend_from_slice(b"uuid");

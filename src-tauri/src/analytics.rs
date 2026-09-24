@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 
-/// 会话统计（Tauri managed state；record 在 load_image 命令中调用）
+/// 会话统计（Tauri 托管状态；record 在 load_image 命令中调用）
 pub struct SessionStats(Mutex<SessionStatsInner>);
 
 #[derive(Default)]

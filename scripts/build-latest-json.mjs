@@ -30,6 +30,10 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a.startsWith('--')) {
+      if (i + 1 >= argv.length) {
+        console.error(`错误: 参数 ${a} 缺少取值`)
+        process.exit(1)
+      }
       args[a.slice(2)] = argv[++i]
     }
   }

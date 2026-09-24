@@ -23,7 +23,7 @@ pub(super) struct Preview {
 const TAG_JPG_OFFSET: u16 = 0x0201; // JPEGInterchangeFormat（NEF/ARW 等）
 const TAG_JPG_LENGTH: u16 = 0x0202;
 const TAG_JPG_FROM_RAW: u16 = 0x002E; // CR2
-const TAG_PREVIEW_IMAGE: u16 = 0x0111; // DNG
+const TAG_PREVIEW_IMAGE: u16 = 0x0111; // DNG 预览图
 
 /// 提取内嵌 JPEG 预览（best-effort；支持 TIFF/CR2/NEF/ARW/DNG、富士 RAF 及佳能 CR3/ISOBMFF）
 pub(super) fn extract_preview(path: &str) -> Option<Preview> {
@@ -144,7 +144,7 @@ fn extract_tiff_preview(f: &mut File, hdr: &[u8]) -> Option<Preview> {
     };
     let file_len = f.metadata().ok()?.len();
     let mut ifd_off = rd_u32(&hdr[4..8], little);
-    let mut candidates: Vec<(u32, u32)> = Vec::new(); // (offset, length)
+    let mut candidates: Vec<(u32, u32)> = Vec::new(); // (偏移量, 长度)
     let mut pending_offset: Option<u32> = None;
     for _ in 0..8 {
         if ifd_off == 0 || (ifd_off as u64) + 2 > file_len {
