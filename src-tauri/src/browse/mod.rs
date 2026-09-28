@@ -42,6 +42,27 @@ fn is_image_file(name: &str) -> bool {
     COMMON_EXTS.contains(&ext.as_str()) || crate::decode::is_raw_ext(&ext)
 }
 
+/// 目录项 → (文件名, 路径)：仅接受常规图片文件。
+/// list_images 与 first_image_of 共用的单条目判定（过滤行为唯一来源）。
+/// 快路径：DirEntry::file_type 直接来自目录枚举元数据（Windows 零额外系统调用）；
+/// 常规文件短路通过，符号链接/未知类型回退 Path::is_file()（stat 语义，跟随链接）。
+pub(super) fn image_entry(entry: &std::fs::DirEntry) -> Option<(String, PathBuf)> {
+    let p = entry.path();
+    let is_file = match entry.file_type() {
+        Ok(ft) => ft.is_file() || p.is_file(),
+        Err(_) => p.is_file(),
+    };
+    if !is_file {
+        return None;
+    }
+    let name = entry.file_name().to_string_lossy().to_string();
+    if is_image_file(&name) {
+        Some((name, p))
+    } else {
+        None
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Boundary {
     /// 图片级：已到全局第一张（再往前）

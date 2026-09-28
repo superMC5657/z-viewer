@@ -107,6 +107,9 @@ src-tauri/            # Rust 后端
   src/decode/         # 解码服务：RAW（预览快显 + rawler 全量）、TIFF、动画拆帧、EXIF 方向
   src/cache/          # LRU 解码缓存 + 文件夹首图队列（专业版）
   src/commands/       # Tauri IPC commands（含付费门控）
+  src/util.rs         # 日志/时间小工具单一实现（basename_of / first_line_of / now）
+  src/z_log.rs        # 统一日志：级别门槛、轮转修剪、脱敏、panic hook、导出诊断包
+  src/analytics.rs    # 会话统计埋点：正常退出时上报聚合负载（不含路径）
   src/license.rs      # 专业版授权：设备指纹、验签、在线验证、激活
   src/main.rs         # 入口、启动参数、授权初始化
 scripts/              # 图标 / 测试图片 / 版本号 / 发布 JSON 生成脚本

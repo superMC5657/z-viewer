@@ -7,13 +7,8 @@ use std::sync::Arc;
 
 use super::{canonical, is_image_file, BrowseModel, Folder, InnerData, ModelInner, OnReady};
 
-/// 日志用 basename：只记文件名/夹名，不记全路径（打开拒绝原因码用）
-fn scan_basename_of(p: &Path) -> String {
-    p.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
+/// 日志用 basename：单实现位于 crate::util（此处按原本地名转发，调用点不变）
+use crate::util::basename_of as scan_basename_of;
 
 impl BrowseModel {
     /// 以某张图片为起点建立浏览模型（完整功能：跨文件夹扫描）
@@ -209,22 +204,8 @@ impl BrowseModel {
         let mut imgs: Vec<(String, PathBuf)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(dir) {
             for entry in rd.flatten() {
-                let p = entry.path();
-                // 快路径：DirEntry::file_type 直接来自目录枚举元数据（Windows 零额外
-                // 系统调用）；常规文件短路通过，符号链接/未知类型回退 Path::is_file()
-                // （stat 语义，跟随链接），与原行为一致。
-                let is_file = match entry.file_type() {
-                    Ok(ft) => ft.is_file() || p.is_file(),
-                    Err(_) => p.is_file(),
-                };
-                if !is_file {
-                    continue;
-                }
-                if let Some(name) = p.file_name() {
-                    let name = name.to_string_lossy().to_string();
-                    if is_image_file(&name) {
-                        imgs.push((name, p));
-                    }
+                if let Some(e) = super::image_entry(&entry) {
+                    imgs.push(e);
                 }
             }
         }

@@ -333,13 +333,13 @@ Authorization: Bearer <analyticsToken>   # 产品配置了 token 后必填
 ```
 
 请求体为**任意 JSON 对象（非数组）**，单次不超过 **1MB**。以下为已实测的 z-viewer
-（看图王）会话统计负载（客户端版本 0.5.0），字段结构仅供参考，各应用自定义：
+（看图王）会话统计负载（客户端版本 0.3.0），字段结构仅供参考，各应用自定义：
 
 ```json
 {
   "deviceId": "b8bb5843-a257-4519-8860-2e4dfe0801fe",
   "licenseStatus": "pro",
-  "version": "0.5.0",
+  "version": "0.3.0",
   "os": "Windows 11 Pro (build 26100)",
   "arch": "x86_64",
   "sessionStart": 1750000000,

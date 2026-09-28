@@ -39,14 +39,8 @@ impl CachedEntry {
     }
 }
 
-/// 日志用 basename：只记文件名，不记全路径（命中/未命中打点用）
-fn cache_basename_of(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
+/// 日志用 basename：单实现位于 crate::util（此处按原本地名转发，调用点不变）
+use crate::util::basename_of as cache_basename_of;
 
 #[derive(Clone)]
 pub struct DecodeCache {

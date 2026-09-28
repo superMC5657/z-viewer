@@ -64,57 +64,34 @@ impl BrowseModel {
             .m
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match target {
-            FolderTarget::First => {
-                if let Some((f0, _len, mut d)) = Self::find_nonempty_folder(&self.inner, d, 0, true)
-                {
-                    Self::move_to_folder(&mut d, f0, 0);
-                    Nav::Ok
-                } else {
-                    Nav::Boundary(Boundary::FirstFolder)
-                }
-            }
-            FolderTarget::Last => {
-                let last = d.folders.len().saturating_sub(1);
-                if let Some((lf, _len, mut d)) =
-                    Self::find_nonempty_folder(&self.inner, d, last, false)
-                {
-                    Self::move_to_folder(&mut d, lf, 0);
-                    Nav::Ok
-                } else {
-                    Nav::Boundary(Boundary::LastFolder)
-                }
-            }
+        // 四分支统一映射为 (start_idx, forward, boundary)，走同一执行路径
+        let (start_idx, forward, boundary) = match target {
+            FolderTarget::First => (0, true, Boundary::FirstFolder),
+            FolderTarget::Last => (
+                d.folders.len().saturating_sub(1),
+                false,
+                Boundary::LastFolder,
+            ),
             FolderTarget::Prev => {
-                let cur = d.folder_index;
-                if cur > 0 {
-                    if let Some((pf, _len, mut d)) =
-                        Self::find_nonempty_folder(&self.inner, d, cur - 1, false)
-                    {
-                        Self::move_to_folder(&mut d, pf, 0);
-                        Nav::Ok
-                    } else {
-                        Nav::Boundary(Boundary::FirstFolder)
-                    }
-                } else {
-                    Nav::Boundary(Boundary::FirstFolder)
+                if d.folder_index == 0 {
+                    return Nav::Boundary(Boundary::FirstFolder);
                 }
+                (d.folder_index - 1, false, Boundary::FirstFolder)
             }
             FolderTarget::Next => {
-                let cur = d.folder_index;
-                if cur + 1 < d.folders.len() {
-                    if let Some((nf, _len, mut d)) =
-                        Self::find_nonempty_folder(&self.inner, d, cur + 1, true)
-                    {
-                        Self::move_to_folder(&mut d, nf, 0);
-                        Nav::Ok
-                    } else {
-                        Nav::Boundary(Boundary::LastFolder)
-                    }
-                } else {
-                    Nav::Boundary(Boundary::LastFolder)
+                if d.folder_index + 1 >= d.folders.len() {
+                    return Nav::Boundary(Boundary::LastFolder);
                 }
+                (d.folder_index + 1, true, Boundary::LastFolder)
             }
+        };
+        if let Some((f, _len, mut d)) =
+            Self::find_nonempty_folder(&self.inner, d, start_idx, forward)
+        {
+            Self::move_to_folder(&mut d, f, 0);
+            Nav::Ok
+        } else {
+            Nav::Boundary(boundary)
         }
     }
 

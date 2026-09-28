@@ -64,9 +64,10 @@ void initZLog().catch(() => undefined);
   注册 `window.onerror` + `unhandledrejection`；仅 `import.meta.env.DEV` 时回显后端日志。
 - `detachZLog()`：取消回显（测试清理用）。
 - 后端直接用 `log::*`，无私有宏封装，调用点即日志点（文件行号准确）。
-- 摘要辅助（`commands/mod.rs`，纯函数无日志）：`basename_of`（`Path::file_name`，
+- 摘要辅助（`util.rs`，纯函数无日志）：`basename_of`（`Path::file_name`，
   无文件名时回退 `unknown`）、`first_line_of`（首行 + 200 字符截断，`chars()` 字符边界安全）；
-  `commands/prefetch.rs` 复用同一实现。
+  原各调用点本地副本（`commands/mod.rs`、`browse/scan.rs`、`cache/decode_cache.rs`、
+  `decode/mod.rs`）已删除，调用方一律 `use` 转发。
 
 ## 级别语义
 
@@ -173,11 +174,12 @@ void initZLog().catch(() => undefined);
 
 - `src-tauri/src/z_log.rs`（插件构建、门槛覆盖 `resolve_level`、prune、redact、panic hook、导出命令；
   回归：`test_converged_waterline` 锁水位、`test_format_path_masks` 锁脱敏、`test_resolve_level_dual_branch` 锁双分支）
-- `src-tauri/src/main.rs`（启动参数跳过 debug：62；启动打开打点：128/135；授权状态变迁 info；启动修剪复用水位常量）
-- `src-tauri/src/commands/mod.rs`（摘要辅助 + 打开/边界/跳转/解码打点：
-  `basename_of`/`first_line_of` 定义、边界 134、打开失败 169/成功 172、
-  未知跳转目标 237、解码失败 291/298）
-- `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[anim]` 后缀，本地摘要辅助与命令层去重）
+- `src-tauri/src/main.rs`（启动参数跳过 debug：62；启动打开打点；授权状态变迁 info；启动修剪复用水位常量）
+- `src-tauri/src/util.rs`（日志摘要辅助单一实现：`basename_of`/`first_line_of`/`now`；
+  原各调用点本地副本已删，调用方 `use` 转发）
+- `src-tauri/src/commands/mod.rs`（打开/边界/跳转/解码打点：
+  边界 134、打开失败/成功、未知跳转目标、解码失败）
+- `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[anim]` 后缀，摘要辅助转发自 `util`，与命令层后缀去重）
 - `src-tauri/src/browse/scan.rs`（门控拒绝原因码 info + 后台扫描计数 debug）
 - `src-tauri/src/cache/*.rs`（`DecodeCache::get_entry` hit/miss debug + `LruQueue` 淘汰计数 debug）
 - `src-tauri/src/commands/prefetch.rs`（预取失败 debug：`(ctx)`/`(first)` 分支后缀）

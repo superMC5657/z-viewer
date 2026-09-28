@@ -7,12 +7,12 @@ mod cache;
 mod commands;
 mod decode;
 mod license;
+mod util;
 mod z_log;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use browse::BrowseModel;
 use cache::{DecodeCache, FolderFirstCache};
 use commands::{AppSettings, AppState, SettingsState};
 use tauri::{Emitter, Manager};
@@ -127,17 +127,9 @@ fn main() {
             // 双击图片打开 / 命令行传参（文件或目录）：初始化浏览模型
             if let Some(path) = startup_image_path() {
                 let p = Path::new(&path);
-                let base = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or_else(|| "unknown".to_string());
+                let base = util::basename_of(p);
                 let on_ready = Some(commands::on_ready_callback(app.handle().clone()));
-                let model = if p.is_dir() {
-                    BrowseModel::open_first_in_dir_gated(p, on_ready, pro)
-                } else {
-                    BrowseModel::open_gated(p, on_ready, pro)
-                };
+                let model = commands::open_model_from_path(p, on_ready, pro);
                 match model {
                     // 启动打开结果：成功 info / 失败 warn，只记 basename
                     Some(model) => {

@@ -3,8 +3,7 @@
 //! 默认动画由浏览器原生 <img> 播放（零 Rust 开销、首帧即时）；本通道仅在
 //! 用户需要逐帧控制（暂停/步进）时被调用，结果缓存于 DecodeCache。
 
-use std::fs::File;
-use std::io::{BufReader, Cursor, Seek};
+use std::io::{BufReader, Cursor};
 
 use image::AnimationDecoder;
 
@@ -12,13 +11,11 @@ use super::LoadResult;
 
 pub(super) fn decode_animation(path: &str) -> Result<Option<LoadResult>, String> {
     let ext = super::ext_of(path);
-    let mut file = File::open(path).map_err(|e| e.to_string())?;
     // 拆帧重编码会丢 EXIF 方向标记（原生播放由浏览器自动应用方向），
     // 必须在编码前按 EXIF 回正（WebP EXIF / PNG eXIf；GIF 无 EXIF → 1）。
-    // 复用同一文件句柄：EXIF 头在文件前部，读方向后 seek 回开头再拆帧（省一次 open）
-    let orientation = super::preview::read_orientation(&file).unwrap_or(1);
-    file.seek(std::io::SeekFrom::Start(0))
-        .map_err(|e| e.to_string())?;
+    // EXIF 头在文件前部：open_with_orientation 读方向后已 seek 回开头（省一次 open）
+    let (file, orientation) =
+        super::preview::open_with_orientation(path).map_err(|e| e.to_string())?;
     let reader = BufReader::new(&file);
 
     match ext.as_str() {

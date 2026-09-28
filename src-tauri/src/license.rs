@@ -226,6 +226,19 @@ fn http_client() -> reqwest::Client {
         .unwrap_or_else(|_| reqwest::Client::new())
 }
 
+/// 解析授权服务器错误响应：body 中 `error` 为字符串时返回用户可读错误信息
+/// （有 `message` 用 `{msg}（{code}）`，否则用 `{action}失败（{code}）`）；
+/// 无 `error` 字段返回 None。网络/JSON 层错误由调用方自行处理。
+fn server_error(body: &serde_json::Value, action: &str) -> Option<String> {
+    if let Some(code) = body.get("error").and_then(|v| v.as_str()) {
+        if let Some(msg) = body.get("message").and_then(|v| v.as_str()) {
+            return Some(format!("{msg}（{code}）"));
+        }
+        return Some(format!("{action}失败（{code}）"));
+    }
+    None
+}
+
 impl LicenseManager {
     /// 从磁盘加载许可证（不存在/验签失败 = 免费版）；store 为编译期配置。
     pub fn load(storage: PathBuf, store: StoreConfig) -> Self {
@@ -349,11 +362,8 @@ impl LicenseManager {
             .json()
             .await
             .map_err(|e| format!("授权服务器响应异常：{e}"))?;
-        if let Some(code) = body.get("error").and_then(|v| v.as_str()) {
-            if let Some(msg) = body.get("message").and_then(|v| v.as_str()) {
-                return Err(format!("{msg}（{code}）"));
-            }
-            return Err(format!("激活失败（{code}）"));
+        if let Some(e) = server_error(&body, "激活") {
+            return Err(e);
         }
 
         let token = body
@@ -493,11 +503,8 @@ impl LicenseManager {
             .json()
             .await
             .map_err(|e| format!("授权服务器响应异常：{e}"))?;
-        if let Some(code) = body.get("error").and_then(|v| v.as_str()) {
-            if let Some(msg) = body.get("message").and_then(|v| v.as_str()) {
-                return Err(format!("{msg}（{code}）"));
-            }
-            return Err(format!("注销激活失败（{code}）"));
+        if let Some(e) = server_error(&body, "注销激活") {
+            return Err(e);
         }
         if body.get("unbound").and_then(|v| v.as_bool()) != Some(true) {
             return Err("注销激活失败".to_string());
@@ -600,13 +607,8 @@ fn decode_public_key(input: &str) -> Result<Vec<u8>, String> {
     Err("公钥必须是 raw 32 字节 base64、完整 Ed25519 SPKI DER 或 PEM".to_string())
 }
 
-/// 当前 Unix 秒
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+// 当前 Unix 秒：单实现位于 crate::util（此处按原本地名转发，调用点不变）
+use crate::util::now;
 
 /// 设备指纹：激活/验证/存储共用。
 /// - Windows：注册表 MachineGuid，系统级唯一且重装系统才变化

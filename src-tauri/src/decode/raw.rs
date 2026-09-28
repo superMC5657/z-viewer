@@ -5,7 +5,7 @@
 
 use rawler::Orientation;
 
-use super::{cap_dimensions, LoadResult};
+use super::{finalize_rgba, LoadResult};
 
 pub(super) fn decode_raw(path: &str, full: bool) -> Result<LoadResult, String> {
     // 非全量拍：优先返回内嵌 JPEG 预览；提取失败回退全量 develop
@@ -25,11 +25,7 @@ pub(super) fn decode_raw(path: &str, full: bool) -> Result<LoadResult, String> {
         .to_dynamic_image()
         .ok_or_else(|| "RAW 图像转换失败".to_string())?;
 
-    let img = cap_dimensions(super::preview::apply_orientation(img, orientation));
-    let (w, h) = (img.width(), img.height());
-    let rgba = img.to_rgba8();
-
-    Ok(LoadResult::rgba("raw", rgba.into_raw(), w, h, false))
+    Ok(finalize_rgba(img, orientation, "raw"))
 }
 
 /// rawler Orientation → EXIF 1-8（Unknown 按 1 正常处理）

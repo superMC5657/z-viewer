@@ -19,7 +19,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 
@@ -196,13 +195,8 @@ fn normalize_key(path: &str) -> String {
     }
 }
 
-/// 当前 Unix 秒
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+// 当前 Unix 秒：单实现位于 crate::util（此处按原本地名转发，调用点不变）
+use crate::util::now;
 
 /// 操作系统版本描述（Windows 读注册表 ProductName + CurrentBuild，其他平台给系统名）
 fn os_version() -> String {

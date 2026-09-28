@@ -113,27 +113,15 @@ impl BrowseModel {
         let rd = std::fs::read_dir(dir).ok()?;
         let mut best: Option<(String, PathBuf)> = None;
         for entry in rd.flatten() {
-            let p = entry.path();
-            // 与 list_images 相同的文件判定（file_type 快路径 + is_file 兜底）
-            let is_file = match entry.file_type() {
-                Ok(ft) => ft.is_file() || p.is_file(),
-                Err(_) => p.is_file(),
-            };
-            if !is_file {
+            let Some((name, p)) = super::image_entry(&entry) else {
                 continue;
-            }
-            if let Some(name) = p.file_name() {
-                let name = name.to_string_lossy().to_string();
-                if !super::is_image_file(&name) {
-                    continue;
-                }
-                let replace = match &best {
-                    Some((bn, _)) => natord::compare(&name, bn) == std::cmp::Ordering::Less,
-                    None => true,
-                };
-                if replace {
-                    best = Some((name, p));
-                }
+            };
+            let replace = match &best {
+                Some((bn, _)) => natord::compare(&name, bn) == std::cmp::Ordering::Less,
+                None => true,
+            };
+            if replace {
+                best = Some((name, p));
             }
         }
         best.map(|(_, p)| p)

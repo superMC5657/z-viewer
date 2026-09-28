@@ -228,6 +228,15 @@ pub(super) fn read_orientation(file: &std::fs::File) -> Option<u8> {
     }
 }
 
+/// 打开文件 → 读取 EXIF Orientation（无 EXIF 按 1）→ seek 回开头，返回句柄与方向。
+/// EXIF 头在文件前部，读取后必须回卷（调用方在同一句柄上继续解码/拆帧，省一次 open）。
+pub(super) fn open_with_orientation(path: &str) -> Result<(File, u8), std::io::Error> {
+    let mut file = File::open(path)?;
+    let orientation = read_orientation(&file).unwrap_or(1);
+    file.seek(SeekFrom::Start(0))?;
+    Ok((file, orientation))
+}
+
 /// 按 EXIF Orientation（1-8）旋转/翻转回正；1/0/>8 原样返回
 /// 旋转语义（EXIF 规范）：2=水平镜像 3=180° 4=垂直镜像 5=主对角线镜像
 /// 6=顺时针90° 7=副对角线镜像 8=逆时针90°（image crate rotate90 为顺时针）

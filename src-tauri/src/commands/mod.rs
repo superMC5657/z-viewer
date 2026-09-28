@@ -83,25 +83,9 @@ fn nav_ok_or_none(model: &BrowseModel, nav: Nav) -> NavResult {
     }
 }
 
-/// 日志用 basename：只记文件名，不记全路径（用户名/目录结构不出日志）
-pub(super) fn basename_of(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// 日志用原因摘要：取首行 + 字符截断封顶，不记大段文本/服务端原文全文
-pub(super) fn first_line_of(s: &str) -> String {
-    const MAX_CHARS: usize = 200;
-    let line = s.lines().next().unwrap_or("").trim();
-    if line.chars().count() > MAX_CHARS {
-        line.chars().take(MAX_CHARS).collect()
-    } else {
-        line.to_string()
-    }
-}
+/// 日志用 basename / 原因摘要：单实现位于 crate::util（此处按原可见性转发，
+/// commands 内部与 prefetch 调用点保持不变）
+pub(super) use crate::util::{basename_of, first_line_of};
 
 /// 构造后台扫描完成回调：emit BROWSE_SCAN_READY 供前端刷新位置计数
 /// （main.rs 启动注入与 open_path 共用同一实现）
@@ -109,6 +93,21 @@ pub fn on_ready_callback(app: tauri::AppHandle) -> crate::browse::OnReady {
     Box::new(move |st: BrowseState| {
         let _ = app.emit(BROWSE_SCAN_READY, st);
     })
+}
+
+/// 按路径形态分发打开浏览模型：目录 → open_first_in_dir_gated（取首图），
+/// 文件 → open_gated（定位到该文件）；main.rs 启动注入与 open_path 共用。
+/// 只做分发：日志、advance_generation、prefetch、缓存代次保持在调用点各自处理。
+pub fn open_model_from_path(
+    p: &Path,
+    on_ready: Option<crate::browse::OnReady>,
+    pro: bool,
+) -> Option<BrowseModel> {
+    if p.is_dir() {
+        BrowseModel::open_first_in_dir_gated(p, on_ready, pro)
+    } else {
+        BrowseModel::open_gated(p, on_ready, pro)
+    }
 }
 
 /// 执行导航并处理后置动作（首图 promote + 邻居预取）；三个导航命令共用。
@@ -170,11 +169,7 @@ pub fn open_path(
     let p = Path::new(&path);
     let pro = license.is_pro();
     let on_ready = Some(on_ready_callback(app.clone()));
-    let model = if p.is_dir() {
-        BrowseModel::open_first_in_dir_gated(p, on_ready, pro)
-    } else {
-        BrowseModel::open_gated(p, on_ready, pro)
-    };
+    let model = open_model_from_path(p, on_ready, pro);
     let Some(model) = model else {
         // 浏览模型打开失败：error，只记 basename
         log::error!("browse open failed {}", basename_of(&path));

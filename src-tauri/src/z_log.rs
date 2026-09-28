@@ -42,32 +42,29 @@ pub(crate) fn resolve_level(default: LevelFilter) -> LevelFilter {
     }
     default
 }
-/// 从配置文件（tauri.conf.json）获取应用名称（productName，兜底为 Cargo 包名）
-pub fn app_name_from_config() -> String {
+/// 从配置文件（tauri.conf.json）读取字符串字段：每次调用重新 parse，
+/// 取 trim 后非空值，字段缺失/为空时回退 fallback。
+fn config_str_field(key: &str, fallback: &str) -> String {
     let conf_str = include_str!("../tauri.conf.json");
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(conf_str) {
-        if let Some(name) = val.get("productName").and_then(|v| v.as_str()) {
-            let name = name.trim();
-            if !name.is_empty() {
-                return name.to_string();
+        if let Some(v) = val.get(key).and_then(|v| v.as_str()) {
+            let v = v.trim();
+            if !v.is_empty() {
+                return v.to_string();
             }
         }
     }
-    env!("CARGO_PKG_NAME").to_string()
+    fallback.to_string()
+}
+
+/// 从配置文件（tauri.conf.json）获取应用名称（productName，兜底为 Cargo 包名）
+pub fn app_name_from_config() -> String {
+    config_str_field("productName", env!("CARGO_PKG_NAME"))
 }
 
 /// 从配置文件（tauri.conf.json）获取应用标识（identifier）
 pub fn app_identifier_from_config() -> String {
-    let conf_str = include_str!("../tauri.conf.json");
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(conf_str) {
-        if let Some(id) = val.get("identifier").and_then(|v| v.as_str()) {
-            let id = id.trim();
-            if !id.is_empty() {
-                return id.to_string();
-            }
-        }
-    }
-    "com.zviewer.app".to_string()
+    config_str_field("identifier", "com.zviewer.app")
 }
 
 /// 日志插件工厂：dev=Debug+Stdout+LogDir+Webview，release=Info+仅LogDir。
@@ -338,6 +335,14 @@ fn mask_license_keys(s: &str) -> String {
     res
 }
 
+/// 判定路径是否为日志或崩溃文件（仅看文件名/扩展名，不做 is_file 检查）。
+fn is_log_or_crash_file(p: &Path) -> bool {
+    p.extension().is_some_and(|x| x == "log")
+        || (p.file_name().is_some_and(|n| {
+            n.to_string_lossy().starts_with("crash-")
+        }) && p.extension().is_some_and(|x| x == "txt"))
+}
+
 /// 修剪日志目录：删 14 天前文件，总量超 25MB 时按 mtime 从旧到新删到预算内。
 /// 绝不向外抛 panic，失败只记 log。
 pub fn prune(dir: &Path, max_age_days: u64, max_total_bytes: u64) {
@@ -345,13 +350,7 @@ pub fn prune(dir: &Path, max_age_days: u64, max_total_bytes: u64) {
         Ok(rd) => rd
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension().is_some_and(|x| x == "log")
-                    || p.file_name().is_some_and(|n| {
-                        n.to_string_lossy().starts_with("crash-")
-                            && p.extension().is_some_and(|x| x == "txt")
-                    })
-            })
+            .filter(|p| is_log_or_crash_file(p))
             .filter_map(|p| {
                 let md = std::fs::metadata(&p).ok()?;
                 Some((p, md.len(), md.modified().ok()?))
@@ -511,13 +510,7 @@ fn export_bundle_inner(dir: &Path, out_path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| {
-            p.is_file()
-                && (p.extension().is_some_and(|x| x == "log")
-                    || (p.file_name().is_some_and(|n| {
-                        n.to_string_lossy().starts_with("crash-")
-                    }) && p.extension().is_some_and(|x| x == "txt")))
-        })
+        .filter(|p| p.is_file() && is_log_or_crash_file(p))
         .collect();
     files.sort();
 

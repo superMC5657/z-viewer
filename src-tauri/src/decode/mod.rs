@@ -179,27 +179,11 @@ pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
     Ok(LoadResult::asset())
 }
 
-/// 日志用 basename：只记文件名，不记全路径（与 commands 侧同规则，解码侧本地实现）
-///
-/// 与 `commands::basename_of` 同语义：`Path::file_name`，无文件名回退 `unknown`。
-fn decode_basename_of(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// 日志用原因摘要：取首行 + 200 字符截断（与 commands 侧同规则，解码侧本地实现）
-fn decode_first_line_of(s: &str) -> String {
-    const MAX_CHARS: usize = 200;
-    let line = s.lines().next().unwrap_or("").trim();
-    if line.chars().count() > MAX_CHARS {
-        line.chars().take(MAX_CHARS).collect()
-    } else {
-        line.to_string()
-    }
-}
+// 日志用 basename / 原因摘要：单实现位于 crate::util（此处按原本地名转发，
+// 解码侧调用点保持不变）
+use crate::util::{
+    basename_of as decode_basename_of, first_line_of as decode_first_line_of,
+};
 
 pub fn is_raw_ext(ext: &str) -> bool {
     RAW_EXTS.iter().any(|r| r.eq_ignore_ascii_case(ext))
@@ -305,6 +289,15 @@ pub fn pack_envelope(result: &LoadResult) -> Vec<u8> {
 
 /// 长边降采样上限（覆盖 4K 超清 3840×2160，保证高分屏 1:1 清晰呈现同时严格防爆显存）
 pub(super) const MAX_DIM: u32 = 3840;
+
+/// 解码通道收尾：先按 EXIF 方向回正，再超限降采样，最后输出原始 RGBA8
+/// （raw/static 共用；mode 由调用方指定：raw="raw"、tiff="static"）
+pub(super) fn finalize_rgba(img: image::DynamicImage, orientation: u8, mode: &str) -> LoadResult {
+    let img = cap_dimensions(preview::apply_orientation(img, orientation));
+    let (w, h) = (img.width(), img.height());
+    let rgba = img.to_rgba8().into_raw();
+    LoadResult::rgba(mode, rgba, w, h, false)
+}
 
 /// 超限降采样：长边 > MAX_DIM 时按比例缩到上限（Triangle 滤波）
 pub(super) fn cap_dimensions(mut img: image::DynamicImage) -> image::DynamicImage {
