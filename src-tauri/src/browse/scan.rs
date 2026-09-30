@@ -47,7 +47,13 @@ impl BrowseModel {
     ) -> Option<Self> {
         let parent = path.parent()?;
 
-        let current_folder_canon = canonical(parent);
+        // 快路径用传入路径的文件夹名（零系统调用）；canonicalize 仅在名字全不匹配
+        // （junction/符号链接目标名与链接名完全不同等罕见情况）时兜底触发。
+        let current_folder_name = parent
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
         // 同级文件夹（含自身）：免费版仅当前文件夹；专业版枚举兄弟目录
         // （免费版不枚举兄弟：既不泄露功能存在，也省一次目录遍历）
@@ -119,11 +125,6 @@ impl BrowseModel {
         // dirs 名来自用户传入路径（大小写可能任意），经 junction/符号链接打开时
         // canonicalize 会解析到目标路径，名字可能与 read_dir 条目完全不同。
         // 快路径零额外系统调用；canonicalize 兜底仅在名字全不匹配时触发（罕见）。
-        let current_folder_name = current_folder_canon
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
         let folder_index = dirs
             .iter()
             .position(|d| {
@@ -133,6 +134,7 @@ impl BrowseModel {
                     .eq_ignore_ascii_case(&current_folder_name)
             })
             .or_else(|| {
+                let current_folder_canon = canonical(parent);
                 dirs.iter()
                     .position(|d| canonical(d) == current_folder_canon)
             });

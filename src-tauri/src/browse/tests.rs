@@ -226,9 +226,12 @@ fn async_open_large_library_is_immediate() {
     let start = std::time::Instant::now();
     let m = BrowseModel::open(&base.join("D05/img_010.png"), None).unwrap();
     let open_elapsed = start.elapsed();
+    // 主要回归 guard 是下面的结构断言（global_total == 当前文件夹数，证明未同步
+    // 全量扫描）；耗时仅防病态阻塞，阈值放宽：CI 并行跑 66 个测试时 IO 争用，
+    // 50ms 在 Windows 共享 runner 上抖动误报。
     assert!(
-        open_elapsed < std::time::Duration::from_millis(50),
-        "open 应 <50ms（仅枚举当前文件夹），实际 {open_elapsed:?}"
+        open_elapsed < std::time::Duration::from_millis(1000),
+        "open 应立即可用（仅枚举当前文件夹），实际 {open_elapsed:?}"
     );
     assert_eq!(m.state().file_name, "img_010.png", "首图立即可用");
     assert_eq!(

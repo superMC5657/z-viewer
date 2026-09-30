@@ -1,11 +1,6 @@
-# CD: Tauri 双平台 (Windows/Linux) 打包与发布
+# CD: Tauri 双平台(Windows/Linux)打包与双清单发布
 #
-# 架构设计:
-#   1. 门禁先行: 先调用 ci.yml 全量检查，通过后才进入打包发布
-#   2. 矩阵并行: Windows/Linux 两台机器并行构建，产物签名后经 artifacts 中转
-#   3. 统一发布: 单一 publish 任务合并全部产物，一次生成双平台 latest.json 并原子发布
-#   4. 彻底解耦: 本文件为 100% 静态通用模版，无任何硬编码 env
-#   5. 严格外置: 严格依赖 .github/release.env 提供 APP_NAME 与 RELEASES_REPO (无隐式兜底)
+# 架构: 矩阵并行打包经 artifacts 中转后统一发布;配置严格外置于 release.env,门禁先行调用 ci.yml。
 #
 # 需要配置的 repository secrets:
 #   TAURI_SIGNING_PRIVATE_KEY          = 私钥(base64)
@@ -51,18 +46,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-
-      # 严格校验 Tag (无兜底，不合法直接报错中断)
-      - name: Validate tag
-        shell: bash
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::发布 tag 必须符合 SemVer 格式 (如 v0.1.0 或 v1.0.0-rc.1, 当前: $TAG)"
-            exit 1
-          fi
-
-          echo "TAG=$TAG" >> "$GITHUB_ENV"
 
       # Tauri v2 Linux 打包所需系统依赖
       - name: Install Tauri Linux system dependencies
@@ -154,7 +137,6 @@ jobs:
           merge-multiple: true
           path: artifacts
 
-      # 1. 严格读取配置与 Tag 校验 (无兜底，缺配置直接报错中断)
       - name: Load config & validate tag
         shell: bash
         run: |
@@ -180,7 +162,6 @@ jobs:
           echo "RELEASES_REPO=$RELEASES_REPO" >> "$GITHUB_ENV"
           echo "已加载配置: APP_NAME=$APP_NAME, RELEASES_REPO=$RELEASES_REPO"
 
-      # 2. 生成双平台 latest.json (windows-x86_64 = EXE, linux-x86_64 = AppImage)
       - name: Generate latest.json
         shell: bash
         run: |
@@ -191,23 +172,35 @@ jobs:
             echo "::error::产物不完整: windows-x86_64=$EXE, linux-x86_64=$APPIMAGE"
             exit 1
           fi
+          ASSETS_JSON="[{\"target\":\"windows-x86_64\",\"file\":\"$EXE\"},{\"target\":\"linux-x86_64\",\"file\":\"$APPIMAGE\"}]"
 
-          # 生成带有 gh-proxy 加速前缀的 latest.json
+          # 双区清单(均带扩展字段,updater 忽略未知字段;仅 URL 前缀不同):海外直链 latest.json / 镜像加速 latest-cn.json
           node scripts/build-latest-json.mjs \
             --name "$APP_NAME" \
             --repo "$RELEASES_REPO" \
             --tag "$TAG" \
-            --assets "[{\"target\":\"windows-x86_64\",\"file\":\"$EXE\"},{\"target\":\"linux-x86_64\",\"file\":\"$APPIMAGE\"}]" \
+            --assets "$ASSETS_JSON" \
             --dir artifacts \
+            --proxy-prefix "" \
+            --extended \
             --output artifacts/latest.json
 
-      # 3. 原子增量发布到公开产物仓库 (支持原地更新)
+          node scripts/build-latest-json.mjs \
+            --name "$APP_NAME" \
+            --repo "$RELEASES_REPO" \
+            --tag "$TAG" \
+            --assets "$ASSETS_JSON" \
+            --dir artifacts \
+            --extended \
+            --output artifacts/latest-cn.json
+
       - name: Publish to Release Repo
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.RELEASES_PAT }}
         run: |
           set -e
+          NOTES="$APP_NAME $TAG 安装包与双区更新清单（latest.json 海外直链 / latest-cn.json 镜像加速）。客户端 updater 按端点顺序自动回落检测。"
           cd artifacts
           FILES=()
           while IFS= read -r -d '' f; do FILES+=("$f"); done < <(find . -type f -print0)
@@ -218,13 +211,13 @@ jobs:
             gh release edit "$TAG" \
               --repo "$RELEASES_REPO" \
               --title "$APP_NAME $TAG" \
-              --notes "$APP_NAME $TAG 安装包与更新元数据。更新走 gh-proxy.com 镜像加速，客户端 updater 自动检查。" \
+              --notes "$NOTES" \
               --latest
           else
             echo "创建全新 Release $TAG..."
             gh release create "$TAG" "${FILES[@]}" \
               --repo "$RELEASES_REPO" \
               --title "$APP_NAME $TAG" \
-              --notes "$APP_NAME $TAG 安装包与更新元数据。更新走 gh-proxy.com 镜像加速，客户端 updater 自动检查。" \
+              --notes "$NOTES" \
               --latest
           fi

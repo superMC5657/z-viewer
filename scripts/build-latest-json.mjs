@@ -1,40 +1,39 @@
 #!/usr/bin/env node
 /**
- * 生成 Tauri updater 用的 latest.json(多平台合并 + gh-proxy.com 加速前缀)。
+ * 生成 Tauri updater 版本清单(双区:海外直链 latest.json + 镜像加速 latest-cn.json)。
  *
- * 用法:
- *   node scripts/build-latest-json.mjs \
- *     --name <appName> \
- *     --repo <owner>/<releases-repo> \
- *     --tag <vX.Y.Z> \
- *     --assets '[{"target":"windows-x86_64","file":"<appName>_0.1.0_x64-setup.exe"}, ...]' \
- *     --dir artifacts \
- *     --output latest.json
+ * 用法示例(连续调用两次,仅 --proxy-prefix 不同):
+ *   node scripts/build-latest-json.mjs --name <app> --repo <owner/repo> --tag <vX.Y.Z> \
+ *     --assets '[{"target":"windows-x86_64","file":"<setup>.exe"}]' --dir artifacts \
+ *     --proxy-prefix "" --extended --output artifacts/latest.json
+ *   node scripts/build-latest-json.mjs --name <app> --repo <owner/repo> --tag <vX.Y.Z> \
+ *     --assets '[{"target":"windows-x86_64","file":"<setup>.exe"}]' --dir artifacts \
+ *     --extended --output artifacts/latest-cn.json
  *
- * 说明:
- *   - --name 为应用显示名,写入更新说明(notes);脚本与项目解耦,可跨项目直接迁移。
- *   - file 为安装包文件名(basename,即 release 资产名);实际文件与同名 .sig
- *     位于 <dir>/<target>/ 下(由 `tauri signer sign` 生成)。
- *   - url 默认加 gh-proxy.com 前缀加速国内下载,可用 --proxy-prefix 覆盖
- *     (传空字符串则不加前缀):
- *     https://gh-proxy.com/https://github.com/<repo>/releases/download/<tag>/<file>
- *   - 平台 key 遵循 Tauri updater 约定:windows-x86_64 / darwin-aarch64 /
- *     darwin-x86_64 / linux-x86_64。
- *   - 产物统一命名为 latest.json(不带 -cn 之类后缀)。
+ * 说明: --extended 为各平台附加 name/size/sha256(缺文件报错)。
+ * 平台 key: windows-x86_64 / darwin-aarch64 / darwin-x86_64 / linux-x86_64。
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
+
+const BOOLEAN_FLAGS = new Set(['extended'])
 
 function parseArgs(argv) {
   const args = {}
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a.startsWith('--')) {
+      const name = a.slice(2)
+      if (BOOLEAN_FLAGS.has(name)) {
+        args[name] = 'true'
+        continue
+      }
       if (i + 1 >= argv.length) {
         console.error(`错误: 参数 ${a} 缺少取值`)
         process.exit(1)
       }
-      args[a.slice(2)] = argv[++i]
+      args[name] = argv[++i]
     }
   }
   return args
@@ -48,11 +47,14 @@ const {
   dir = '.',
   output = 'latest.json',
   'proxy-prefix': proxyPrefix,
+  extended,
 } = parseArgs(process.argv.slice(2))
+
+const isExtended = extended === 'true'
 
 if (!name || !repo || !tag || !assetsJson) {
   console.error(
-    '用法: node scripts/build-latest-json.mjs --name <appName> --repo <owner/repo> --tag <vX.Y.Z> --assets <json> [--dir artifacts] [--output latest.json] [--proxy-prefix <url>]',
+    '用法: node scripts/build-latest-json.mjs --name <appName> --repo <owner/repo> --tag <vX.Y.Z> --assets <json> [--dir artifacts] [--output latest.json] [--proxy-prefix <url>] [--extended]',
   )
   process.exit(1)
 }
@@ -86,11 +88,38 @@ for (const { target, file } of assets) {
     console.error(`错误: 找不到签名文件 ${sigPath}（需先对产物执行 tauri signer sign）`)
     process.exit(1)
   }
-  platforms[target] = {
-    signature,
-    // 文件名可能含空格,URL 必须百分号编码,
-    // 否则 Tauri updater 解析 URL 会失败
-    url: `${urlPrefix}https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(file)}`,
+
+  const url = `${urlPrefix}https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(file)}`
+
+  if (isExtended) {
+    const filePath = resolve(dir, target, file)
+    let size
+    let sha256
+    try {
+      const fileStat = statSync(filePath)
+      if (!fileStat.isFile()) {
+        throw new Error('Not a file')
+      }
+      size = fileStat.size
+      const buffer = readFileSync(filePath)
+      sha256 = createHash('sha256').update(buffer).digest('hex')
+    } catch {
+      console.error(`错误: 找不到产物文件 ${filePath}`)
+      process.exit(1)
+    }
+
+    platforms[target] = {
+      signature,
+      url,
+      name: file,
+      size,
+      sha256,
+    }
+  } else {
+    platforms[target] = {
+      signature,
+      url,
+    }
   }
 }
 
