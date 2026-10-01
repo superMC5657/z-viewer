@@ -39,8 +39,7 @@ impl CachedEntry {
     }
 }
 
-/// 日志用 basename：单实现位于 crate::util（此处按原本地名转发，调用点不变）
-use crate::util::basename_of as cache_basename_of;
+use crate::util::basename_of;
 
 #[derive(Clone)]
 pub struct DecodeCache {
@@ -92,18 +91,18 @@ impl DecodeCache {
     pub fn get_entry(&self, path: &str) -> Option<CachedEntry> {
         if let Some(e) = self.lru.get(path) {
             // 命中（debug：只记 basename；参数在宏内求值，门槛关闭时零开销）
-            log::debug!("cache hit {}", cache_basename_of(path));
+            log::debug!("cache hit {}", basename_of(path));
             return Some(e);
         }
         if let Ok(guard) = self.animated.lock() {
             if let Some((k, e)) = guard.as_ref() {
                 if k == path {
-                    log::debug!("cache hit {}", cache_basename_of(path));
+                    log::debug!("cache hit {}", basename_of(path));
                     return Some(e.clone());
                 }
             }
         }
-        log::debug!("cache miss {}", cache_basename_of(path));
+        log::debug!("cache miss {}", basename_of(path));
         None
     }
 

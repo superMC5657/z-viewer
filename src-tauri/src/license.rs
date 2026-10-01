@@ -293,6 +293,13 @@ impl LicenseManager {
         self.license.lock().ok()?.clone()
     }
 
+    /// setup→manage 缓存的商店配置复用入口：analytics 上报等调用方优先
+    /// 从已托管的本实例取配置，避免重复解析 tauri::Config（Top2 收口；
+    /// 未托管等极端回退路径仍走 StoreConfig::from_config）。
+    pub fn store_config(&self) -> StoreConfig {
+        self.store.clone()
+    }
+
     /// 是否已解锁专业版
     /// - debug 构建恒为 true（开发调试用；`pnpm tauri build --debug` 亦解锁）
     /// - release 构建：本地 JWT 验签有效 && 产品/设备/功能位匹配 && 未过期

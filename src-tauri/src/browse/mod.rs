@@ -28,19 +28,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
-/// 常见格式（asset 通道浏览器原生解码；RAW 由 decode::RAW_EXTS 单一来源维护）
-const COMMON_EXTS: &[&str] = &[
-    "jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "svg", "avif", "tif", "tiff",
-];
-
-fn is_image_file(name: &str) -> bool {
-    // Path::extension 语义：无扩展名文件返回 None（不再把整个文件名当扩展名）
-    let ext = std::path::Path::new(name)
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    COMMON_EXTS.contains(&ext.as_str()) || crate::decode::is_raw_ext(&ext)
-}
+pub(super) use crate::decode::is_image_file;
 
 /// 目录项 → (文件名, 路径)：仅接受常规图片文件。
 /// list_images 与 first_image_of 共用的单条目判定（过滤行为唯一来源）。
@@ -56,7 +44,7 @@ pub(super) fn image_entry(entry: &std::fs::DirEntry) -> Option<(String, PathBuf)
         return None;
     }
     let name = entry.file_name().to_string_lossy().to_string();
-    if is_image_file(&name) {
+    if crate::decode::is_image_file(&name) {
         Some((name, p))
     } else {
         None

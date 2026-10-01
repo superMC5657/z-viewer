@@ -6,7 +6,7 @@ use crate::browse::BrowseModel;
 use crate::cache::{DecodeCache, FolderFirst, FolderFirstCache};
 
 use super::settings::AppSettings;
-use super::{basename_of, first_line_of};
+use crate::util::{basename_of, first_line_of};
 
 /// 导航成功后后台预取上下文图片（按缓存强度），填充解码缓存（8.2）
 /// 仅缓存 RAW/动画（asset 通道由 WebView 自身缓存）；失败静默忽略

@@ -42,16 +42,27 @@ pub(crate) fn resolve_level(default: LevelFilter) -> LevelFilter {
     }
     default
 }
-/// 从配置文件（tauri.conf.json）读取字符串字段：每次调用重新 parse，
+/// 编译期配置解析缓存：tauri.conf.json 在进程内只解析一次（OnceLock）。
+/// app_name/identifier 在日志 init、panic hook、修剪、导出等多处调用，
+/// 每次重新 include_str + serde 解析纯属浪费（Top2 收口）。
+fn parsed_tauri_config() -> &'static serde_json::Value {
+    static CACHE: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| {
+        serde_json::from_str(include_str!("../tauri.conf.json"))
+            .unwrap_or(serde_json::Value::Null)
+    })
+}
+
+/// 从配置文件（tauri.conf.json）读取字符串字段：解析结果进程内缓存，
 /// 取 trim 后非空值，字段缺失/为空时回退 fallback。
 fn config_str_field(key: &str, fallback: &str) -> String {
-    let conf_str = include_str!("../tauri.conf.json");
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(conf_str) {
-        if let Some(v) = val.get(key).and_then(|v| v.as_str()) {
-            let v = v.trim();
-            if !v.is_empty() {
-                return v.to_string();
-            }
+    if let Some(v) = parsed_tauri_config()
+        .get(key)
+        .and_then(|v| v.as_str())
+    {
+        let v = v.trim();
+        if !v.is_empty() {
+            return v.to_string();
         }
     }
     fallback.to_string()

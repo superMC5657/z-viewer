@@ -17,6 +17,7 @@
 //! - animation.rs：动画拆帧通道（GIF/APNG/WebP）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
 
+pub mod format;
 mod animation;
 mod preview;
 mod raw;
@@ -24,19 +25,8 @@ mod raw;
 mod tests;
 mod tiff;
 
-use std::path::Path;
-
-/// 相机 RAW 扩展名（rawler 覆盖主流机型；供 browse.rs 浏览枚举复用）
-pub const RAW_EXTS: &[&str] = &[
-    "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
-    "3fr", "kdc", "dcr", "mrw", "mef", "mos", "iiq", "fff", "ari",
-];
-
-/// TIFF 扩展名（image crate 解码的静态通道）
-pub const TIFF_EXTS: &[&str] = &["tif", "tiff"];
-
-/// 潜在动画格式（默认原生 <img> 播放；帧控制按需拆帧）
-const ANIM_EXTS: &[&str] = &["gif", "png", "webp"];
+pub use format::*;
+use crate::util::{basename_of, first_line_of};
 
 /// IPC 二进制信封魔数（与前端 parseLoadEnvelope 对应）
 pub const ENVELOPE_MAGIC: &[u8; 4] = b"IMGV";
@@ -124,15 +114,6 @@ impl LoadResult {
     }
 }
 
-/// 小写扩展名（Path::extension 语义：无扩展名文件返回空串，
-/// 不像 `rsplit('.')` 会把整个文件名当扩展名）
-pub(crate) fn ext_of(path: &str) -> String {
-    Path::new(path)
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default()
-}
-
 /// 统一入口：按扩展名与内容分发到各通道
 /// `full=false`：RAW 优先返回内嵌预览（快），全量由后续 full=true 请求完成
 ///
@@ -142,127 +123,38 @@ pub(crate) fn ext_of(path: &str) -> String {
 pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
     let ext = ext_of(path);
 
-    if is_raw_ext(&ext) {
-        return raw::decode_raw(path, full).inspect_err(|e| {
+    match classify_ext(&ext) {
+        ImageFormatCategory::Raw => raw::decode_raw(path, full).inspect_err(|e| {
             log::warn!(
                 "decode failed {} [raw]: {}",
-                decode_basename_of(path),
-                decode_first_line_of(e)
+                basename_of(path),
+                first_line_of(e)
             );
-        });
-    }
-
-    if TIFF_EXTS.contains(&ext.as_str()) {
-        return tiff::decode_static(path).inspect_err(|e| {
+        }),
+        ImageFormatCategory::Tiff => tiff::decode_static(path).inspect_err(|e| {
             log::warn!(
                 "decode failed {} [tiff]: {}",
-                decode_basename_of(path),
-                decode_first_line_of(e)
+                basename_of(path),
+                first_line_of(e)
             );
-        });
-    }
-
-    if ANIM_EXTS.contains(&ext.as_str()) {
-        let frames = animation::decode_animation(path).inspect_err(|e| {
-            log::warn!(
-                "decode failed {} [anim]: {}",
-                decode_basename_of(path),
-                decode_first_line_of(e)
-            );
-        })?;
-        if let Some(frames) = frames {
-            return Ok(frames);
-        }
-        // 单帧：降级为静态，走 asset 协议直读
-    }
-
-    Ok(LoadResult::asset())
-}
-
-// 日志用 basename / 原因摘要：单实现位于 crate::util（此处按原本地名转发，
-// 解码侧调用点保持不变）
-use crate::util::{
-    basename_of as decode_basename_of, first_line_of as decode_first_line_of,
-};
-
-pub fn is_raw_ext(ext: &str) -> bool {
-    RAW_EXTS.iter().any(|r| r.eq_ignore_ascii_case(ext))
-}
-
-/// 浏览器原生解码的 asset 扩展名（前端 PrefetchPool 预热，Rust 预取跳过）。
-/// 含动画格式：默认由 <img> 原生播放，帧控制按需拆帧（不进 Rust 预取）。
-pub fn is_asset_ext(path: &str) -> bool {
-    let ext = ext_of(path);
-    matches!(
-        ext.as_str(),
-        "jpg" | "jpeg" | "bmp" | "ico" | "svg" | "avif" | "gif" | "png" | "webp"
-    )
-}
-
-/// 轻量判定是否多帧动画（不拆帧解码）：
-/// GIF 按魔数、WebP 扫 RIFF ANMF 块、PNG 扫 acTL 块；非动画格式/读取失败返回 false
-pub fn is_animated(path: &str) -> bool {
-    use std::io::{Read, Seek};
-    let ext = ext_of(path);
-    let mut f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return false,
-    };
-    match ext.as_str() {
-        "gif" => {
-            let mut magic = [0u8; 6];
-            f.read_exact(&mut magic).is_ok() && (&magic == b"GIF87a" || &magic == b"GIF89a")
-        }
-        "webp" => {
-            let mut hdr = [0u8; 12];
-            if f.read_exact(&mut hdr).is_err() || &hdr[0..4] != b"RIFF" || &hdr[8..12] != b"WEBP" {
-                return false;
+        }),
+        ImageFormatCategory::Asset => {
+            if is_potential_anim(&ext) {
+                let frames = animation::decode_animation(path).inspect_err(|e| {
+                    log::warn!(
+                        "decode failed {} [anim]: {}",
+                        basename_of(path),
+                        first_line_of(e)
+                    );
+                })?;
+                if let Some(frames) = frames {
+                    return Ok(frames);
+                }
+                // 单帧：降级为静态，走 asset 协议直读
             }
-            let mut buf = [0u8; 8];
-            for _ in 0..64 {
-                if f.read_exact(&mut buf).is_err() {
-                    break;
-                }
-                if &buf[0..4] == b"ANMF" {
-                    return true;
-                }
-                let size = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) as u64;
-                // 块数据 + 奇数长度对齐字节
-                if f.seek(std::io::SeekFrom::Current((size + (size & 1)) as i64))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            false
+            Ok(LoadResult::asset())
         }
-        "png" => {
-            let mut sig = [0u8; 8];
-            if f.read_exact(&mut sig).is_err()
-                || sig != [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]
-            {
-                return false;
-            }
-            let mut buf = [0u8; 8];
-            for _ in 0..128 {
-                if f.read_exact(&mut buf).is_err() {
-                    break;
-                }
-                let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64;
-                match &buf[4..8] {
-                    b"acTL" => return true,
-                    b"IEND" | b"IDAT" => break, // IDAT 之后不会再出现 acTL
-                    _ => {}
-                }
-                if f.seek(std::io::SeekFrom::Current((len + 4) as i64))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-            false
-        }
-        _ => false,
+        ImageFormatCategory::Unknown => Ok(LoadResult::asset()),
     }
 }
 

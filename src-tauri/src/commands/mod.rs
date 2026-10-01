@@ -34,6 +34,70 @@ pub struct AppState(pub Mutex<Option<Arc<BrowseModel>>>);
 /// 用户设置（缓存开关/深度）
 pub struct SettingsState(pub Mutex<AppSettings>);
 
+impl AppState {
+    /// 快照浏览模型：持锁克隆 Arc 后立即释放（Top4 锁收口）。
+    /// 导航/上下文读取可能在模型内部 Condvar 上等待慢盘填充，绝不能持本锁等待。
+    /// 锁中毒时返回 Err（与原 map_err 透传语义一致，前端契约不变）。
+    pub fn snapshot(&self) -> Result<Option<Arc<BrowseModel>>, String> {
+        self.0
+            .lock()
+            .map(|g| g.as_ref().cloned())
+            .map_err(|e| e.to_string())
+    }
+
+    /// 有模型时执行 f，无模型时返回 default()（未打开/空模型契约保持不变）。
+    /// navigate / get_initial_state / get_context 共用，消除重复的 lock 模板。
+    pub fn with_model<T>(
+        &self,
+        default: impl FnOnce() -> T,
+        f: impl FnOnce(&BrowseModel) -> T,
+    ) -> Result<T, String> {
+        match self.snapshot()? {
+            Some(m) => Ok(f(&m)),
+            None => Ok(default()),
+        }
+    }
+
+    /// 替换全局模型（open_path 共用；启动注入走 manage 前直接构造不经此）。
+    pub fn replace(&self, model: BrowseModel) -> Result<(), String> {
+        *self.0.lock().map_err(|e| e.to_string())? = Some(Arc::new(model));
+        Ok(())
+    }
+}
+
+impl SettingsState {
+    /// 只读快照：单次加锁，闭包内读取所需字段后释放（navigate / load_image 共用）。
+    pub fn read<T>(&self, f: impl FnOnce(&AppSettings) -> T) -> Result<T, String> {
+        self.0.lock().map(|g| f(&g)).map_err(|e| e.to_string())
+    }
+
+    /// 可写更新：闭包内修改设置后返回快照（set_cache_level 共用）。
+    pub fn update<T>(&self, f: impl FnOnce(&mut AppSettings) -> T) -> Result<T, String> {
+        self.0.lock().map(|mut g| f(&mut g)).map_err(|e| e.to_string())
+    }
+
+    /// 快照缓存等级：analytics 上报等只读方复用；锁中毒回退 0（关闭）。
+    pub fn cache_level_or_closed(&self) -> usize {
+        self.0.lock().ok().map(|g| g.cache_level).unwrap_or(0)
+    }
+}
+
+/// 专业版门控唯一入口（Top4 收口）：pro 则执行 pro()，否则返回 free。
+/// 各命令的 free 契约保持不变：
+/// - jump_folder → Ok(pro-required)、get_context → Ok(空)
+/// - set_cache_level → Err(解锁提示)、get_settings/load_image → 降级值
+pub(crate) fn require_pro<T>(
+    license: &crate::license::LicenseManager,
+    free: T,
+    pro: impl FnOnce() -> T,
+) -> T {
+    if license.is_pro() {
+        pro()
+    } else {
+        free
+    }
+}
+
 /// 导航结果：boundary 为 Some 时表示撞到全局边界（前端弹 Toast），state 不变
 /// boundary 取值："first-image" | "last-image" | "first-folder" | "last-folder" | "pro-required"
 #[derive(serde::Serialize)]
@@ -83,9 +147,7 @@ fn nav_ok_or_none(model: &BrowseModel, nav: Nav) -> NavResult {
     }
 }
 
-/// 日志用 basename / 原因摘要：单实现位于 crate::util（此处按原可见性转发，
-/// commands 内部与 prefetch 调用点保持不变）
-pub(super) use crate::util::{basename_of, first_line_of};
+use crate::util::{basename_of, first_line_of};
 
 /// 构造后台扫描完成回调：emit BROWSE_SCAN_READY 供前端刷新位置计数
 /// （main.rs 启动注入与 open_path 共用同一实现）
@@ -119,12 +181,8 @@ fn navigate(
     settings: &SettingsState,
     nav: impl FnOnce(&BrowseModel) -> Nav,
 ) -> Result<NavResult, String> {
-    let model = {
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        match guard.as_ref() {
-            Some(m) => Arc::clone(m),
-            None => return Ok(NavResult::none()),
-        }
+    let Some(model) = state.snapshot()? else {
+        return Ok(NavResult::none());
     };
     let prev_folder = model.state().folder_name;
     let nav = nav(&model);
@@ -147,9 +205,10 @@ fn navigate(
         cache.advance_generation();
         // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
         promote_folder_first(&model, cache, first_cache);
-        let s = settings.0.lock().map_err(|e| e.to_string())?;
-        prefetch_context(&model, cache, &s);
-        prefetch_folder_firsts(&model, cache, first_cache, &s);
+        settings.read(|s| {
+            prefetch_context(&model, cache, s);
+            prefetch_folder_firsts(&model, cache, first_cache, s);
+        })?;
     }
     Ok(r)
 }
@@ -167,7 +226,7 @@ pub fn open_path(
     path: String,
 ) -> Result<NavResult, String> {
     let p = Path::new(&path);
-    let pro = license.is_pro();
+    let pro = require_pro(&license, false, || true);
     let on_ready = Some(on_ready_callback(app.clone()));
     let model = open_model_from_path(p, on_ready, pro);
     let Some(model) = model else {
@@ -183,12 +242,11 @@ pub fn open_path(
         st.global_total
     );
     cache.advance_generation();
-    {
-        let s = settings.0.lock().map_err(|e| e.to_string())?;
-        prefetch_context(&model, cache.inner(), &s);
-        prefetch_folder_firsts(&model, cache.inner(), first_cache.inner(), &s);
-    }
-    *state.0.lock().map_err(|e| e.to_string())? = Some(Arc::new(model));
+    settings.read(|s| {
+        prefetch_context(&model, cache.inner(), s);
+        prefetch_folder_firsts(&model, cache.inner(), first_cache.inner(), s);
+    })?;
+    state.replace(model)?;
     Ok(NavResult::ok(st))
 }
 
@@ -236,39 +294,40 @@ pub fn jump_folder(
     license: State<'_, crate::license::LicenseManager>,
     target: String,
 ) -> Result<NavResult, String> {
-    if !license.is_pro() {
-        return Ok(NavResult::pro_required());
-    }
-    let t = match target.as_str() {
-        "first" => FolderTarget::First,
-        "prev" => FolderTarget::Prev,
-        "next" => FolderTarget::Next,
-        "last" => FolderTarget::Last,
-        _ => {
-            log::warn!("browse jump failed: unknown target");
-            return Err(format!("未知跳转目标: {target}"));
+    require_pro(&license, Ok(NavResult::pro_required()), || {
+        let t = match target.as_str() {
+            "first" => FolderTarget::First,
+            "prev" => FolderTarget::Prev,
+            "next" => FolderTarget::Next,
+            "last" => FolderTarget::Last,
+            _ => {
+                log::warn!("browse jump failed: unknown target");
+                return Err(format!("未知跳转目标: {target}"));
+            }
+        };
+        let r = navigate(
+            state.inner(),
+            cache.inner(),
+            first_cache.inner(),
+            settings.inner(),
+            |m| m.jump_folder(t),
+        )?;
+        if let Some(st) = r.state.as_ref() {
+            // 文件夹级跳转成功：低频关键定位变更，记 info
+            log::info!("browse jump folder {target} ok {}", st.folder_name);
         }
-    };
-    let r = navigate(
-        state.inner(),
-        cache.inner(),
-        first_cache.inner(),
-        settings.inner(),
-        |m| m.jump_folder(t),
-    )?;
-    if let Some(st) = r.state.as_ref() {
-        // 文件夹级跳转成功：低频关键定位变更，记 info
-        log::info!("browse jump folder {target} ok {}", st.folder_name);
-    }
-    Ok(r)
+        Ok(r)
+    })
 }
 
 /// 启动时查询初始状态（命令行参数已由 main.rs 注入模型）
 /// 快照 Arc 后释放锁再读状态（state 可能等待后台填充，不能占着 AppState 锁等）
 #[tauri::command]
 pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
-    let model = state.0.lock().ok()?.as_ref().cloned()?;
-    Some(model.state())
+    state
+        .with_model(|| None, |m| Some(m.state()))
+        .ok()
+        .flatten()
 }
 
 /// 图片加载通道分发：常见格式 → asset（前端直读）；RAW/静态 → JPEG 字节；
@@ -286,7 +345,8 @@ pub async fn load_image(
     license: State<'_, crate::license::LicenseManager>,
 ) -> Result<tauri::ipc::Response, String> {
     crate::z_log::set_last_viewed(&path);
-    let caching = settings.0.lock().map_err(|e| e.to_string())?.is_enabled() && license.is_pro();
+    let enabled = settings.read(|s| s.is_enabled())?;
+    let caching = enabled && require_pro(&license, false, || true);
     if caching {
         // 命中：信封已打包一次缓存于条目内，这里只做一次缓冲拷贝进 IPC 响应
         if let Some(hit) = cache.get_entry(&path) {
@@ -356,24 +416,28 @@ pub fn set_cache_level(
     license: State<'_, crate::license::LicenseManager>,
     level: usize,
 ) -> Result<AppSettings, String> {
-    if !license.is_pro() {
-        return Err("预取缓存是专业版功能，请解锁后使用".to_string());
-    }
-    let level = level.min(2);
-    let mut g = settings.0.lock().map_err(|e| e.to_string())?;
-    g.cache_level = level;
-    if level == 0 {
-        // 关闭时清空队列
-        cache.set_capacity(0);
-        first_cache.set_capacity(0);
-    } else {
-        // 开启/高等级：容量覆盖窗口（高等级前1后3=4张 + 当前 + 余量）
-        cache.set_capacity(if level >= 2 { 8 } else { 4 });
-        first_cache.set_capacity(4);
-    }
-    // 缓存等级变更：核心配置变迁，记 info
-    log::info!("cache level set {level}");
-    Ok(*g)
+    require_pro(
+        &license,
+        Err("预取缓存是专业版功能，请解锁后使用".to_string()),
+        || {
+            let level = level.min(2);
+            settings.update(|g| {
+                g.cache_level = level;
+                if level == 0 {
+                    // 关闭时清空队列
+                    cache.set_capacity(0);
+                    first_cache.set_capacity(0);
+                } else {
+                    // 开启/高等级：容量覆盖窗口（高等级前1后3=4张 + 当前 + 余量）
+                    cache.set_capacity(if level >= 2 { 8 } else { 4 });
+                    first_cache.set_capacity(4);
+                }
+                // 缓存等级变更：核心配置变迁，记 info
+                log::info!("cache level set {level}");
+                *g
+            })
+        },
+    )
 }
 
 /// 查询当前设置（免费版强制返回 cache_level=0，防前端本地存储恢复付费等级）
@@ -383,9 +447,8 @@ pub fn get_settings(
     license: State<'_, crate::license::LicenseManager>,
 ) -> AppSettings {
     let mut s = *settings.0.lock().unwrap_or_else(|e| e.into_inner());
-    if !license.is_pro() {
-        s.cache_level = 0;
-    }
+    let level = s.cache_level;
+    s.cache_level = require_pro(&license, 0, || level);
     s
 }
 
@@ -406,23 +469,18 @@ pub async fn get_context(
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
 ) -> Result<Vec<String>, String> {
-    if !license.is_pro() {
+    if !require_pro(&license, false, || true) {
         return Ok(Vec::new());
     }
     // 快照模型后释放 AppState 锁（context_paths/neighbor_folders 走模型内部锁，均快速）
-    let model = {
-        let guard = state.0.lock().map_err(|e| e.to_string())?;
-        guard.as_ref().cloned()
-    };
-    let Some(model) = model else {
+    let Some(model) = state.snapshot()? else {
         return Ok(Vec::new());
     };
     // 单次锁读取设置（预取窗口 + 首图队列深度）
-    let (prev_n, next_n, folder_depth, enabled) = {
-        let s = settings.0.lock().map_err(|e| e.to_string())?;
+    let (prev_n, next_n, folder_depth, enabled) = settings.read(|s| {
         let (p, n) = s.neighbor_window();
         (p, n, s.folder_first_depth, s.is_enabled())
-    };
+    })?;
     let mut paths: Vec<String> = model
         .context_paths(prev_n, next_n)
         .into_iter()

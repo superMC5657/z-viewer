@@ -53,11 +53,8 @@ impl SessionStats {
         if let Ok(mut g) = self.0.lock() {
             g.images_viewed += 1;
             g.unique_images.insert(normalize_key(path));
-            if let Some(ext) = Path::new(path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase())
-            {
+            let ext = crate::decode::ext_of(path);
+            if !ext.is_empty() {
                 *g.formats.entry(ext).or_default() += 1;
             }
             if let Some(dir) = Path::new(path)
@@ -87,7 +84,7 @@ impl SessionStats {
         // 缓存等级（0=关闭 1=开启 2=高；免费版恒 0）
         let cache_level = app
             .try_state::<crate::commands::SettingsState>()
-            .map(|s| s.0.lock().ok().map(|g| g.cache_level).unwrap_or(0))
+            .map(|s| s.cache_level_or_closed())
             .unwrap_or(0);
 
         build_payload(&g, &license_status, cache_level)
@@ -136,7 +133,10 @@ pub fn report_exit(app: &tauri::AppHandle) {
         unique,
         folders
     );
-    let store = crate::license::StoreConfig::from_config(app.config());
+    let store = app
+        .try_state::<crate::license::LicenseManager>()
+        .map(|l| l.store_config())
+        .unwrap_or_else(|| crate::license::StoreConfig::from_config(app.config()));
     if store.api_base.is_empty() || store.analytics_path.is_empty() {
         return;
     }

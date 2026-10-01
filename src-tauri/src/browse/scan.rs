@@ -6,9 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{canonical, is_image_file, BrowseModel, Folder, InnerData, ModelInner, OnReady};
-
-/// 日志用 basename：单实现位于 crate::util（此处按原本地名转发，调用点不变）
-use crate::util::basename_of as scan_basename_of;
+use crate::util::basename_of;
 
 impl BrowseModel {
     /// 以某张图片为起点建立浏览模型（完整功能：跨文件夹扫描）
@@ -23,14 +21,14 @@ impl BrowseModel {
     /// next/prev 自然停在文件夹边界，jump_folder 亦无目标可跳。
     /// 付费解锁（专业版）后调用方传入 true 恢复跨文件夹无缝浏览。
     pub fn open_gated(path: &Path, on_ready: Option<OnReady>, cross_folder: bool) -> Option<Self> {
-        if !path.is_file() || !is_image_file(&path.file_name()?.to_string_lossy()) {
+        if !path.is_file() || !is_image_file(path) {
             // 打开拒绝（低频）：原因码 + basename，不记全路径
-            log::info!("browse open gated reject not-image {}", scan_basename_of(path));
+            log::info!("browse open gated reject not-image {}", basename_of(path));
             return None;
         }
         let parent = path.parent()?;
         if !parent.is_dir() {
-            log::info!("browse open gated reject no-parent {}", scan_basename_of(path));
+            log::info!("browse open gated reject no-parent {}", basename_of(path));
             return None;
         }
         let current_images = Self::list_images(parent);
@@ -114,7 +112,7 @@ impl BrowseModel {
         let Some(image_index) = image_index else {
             log::info!(
                 "browse open gated reject unknown-image {}",
-                scan_basename_of(path)
+                basename_of(path)
             );
             return None;
         };
@@ -148,7 +146,7 @@ impl BrowseModel {
         let Some(folder_index) = folder_index else {
             log::info!(
                 "browse open gated reject unknown-folder {}",
-                scan_basename_of(path)
+                basename_of(path)
             );
             return None;
         };
@@ -194,7 +192,7 @@ impl BrowseModel {
         let Some(first) = current_images.first().cloned() else {
             log::info!(
                 "browse open gated reject empty-dir {}",
-                scan_basename_of(dir)
+                basename_of(dir)
             );
             return None;
         };
