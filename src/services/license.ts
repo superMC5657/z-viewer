@@ -22,7 +22,9 @@ export class LicenseService {
   constructor(
     private ui: UI,
     private callbacks: LicenseCallbacks
-  ) {}
+  ) {
+    this.ui.licenseDialog.onClose(() => this.resetDeactivateConfirm());
+  }
 
   get isPro(): boolean {
     return this.pro;
@@ -132,7 +134,7 @@ export class LicenseService {
     }
   }
 
-  /** 绑定解锁弹窗所有事件（含遮罩点击 Light-Dismiss） */
+  /** 绑定解锁弹窗表单交互事件 */
   bindDialogEvents(): void {
     const dialogMask = document.getElementById("unlock-dialog")!;
     const cancelBtn = document.getElementById("unlock-cancel")!;
@@ -140,13 +142,6 @@ export class LicenseService {
     const buyBtn = document.getElementById("unlock-buy")!;
     const codeInput = document.getElementById("unlock-code") as HTMLInputElement;
     const emailInput = document.getElementById("unlock-email") as HTMLInputElement;
-
-    // 点击遮罩空白区域（Light-Dismiss）自动关闭弹窗
-    dialogMask.addEventListener("click", (e) => {
-      if (e.target === dialogMask) {
-        this.hideDialog();
-      }
-    });
 
     cancelBtn.addEventListener("click", () => this.hideDialog());
 

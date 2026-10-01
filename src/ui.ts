@@ -5,8 +5,10 @@
 
 import { ICONS, TOOLBAR_GROUPS, type ToolbarButton } from "./icons";
 import type { BrowseState, LicenseInfo } from "./types";
+import { OverlayManager } from "./components/overlay-manager";
+import { Dialog } from "./components/dialog";
+import { formatSize, truncateMiddle, formatPosition, formatFrame } from "./utils/format";
 
-const IDLE_HIDE_MS = 2000; // 闲置 2s 浮层自动隐藏
 const TOAST_MS = 1500; // 边界 Toast 持续 1.5s
 const FILENAME_MAX = 26; // 文件名中间截断长度（近似）
 const DECODE_SHOW_DELAY_MS = 300; // 解码指示防抖：短于此时长的解码不显示（防闪烁）
@@ -16,6 +18,8 @@ export interface ToolbarHandlers {
 }
 
 export class UI {
+  private overlayManager: OverlayManager;
+  readonly licenseDialog: Dialog;
   private infoBar: HTMLElement;
   private toolbar: HTMLElement;
   private frameBar: HTMLElement;
@@ -36,13 +40,10 @@ export class UI {
   private framePlayBtn: HTMLElement;
   private frameCountEl: HTMLElement;
 
-  private idleTimer: number | undefined;
   private toastTimer: number | undefined;
   /** 解码指示：进行中的 IPC 加载计数（并发加载各自 begin/end） */
   private decodingCount = 0;
   private decodingTimer: number | undefined;
-  /** 鼠标是否悬停在某个可见浮层上（悬停期间浮层永不闲置隐藏） */
-  private hoveringOverlay = false;
 
   constructor() {
     this.infoBar = document.getElementById("info-bar")!;
@@ -59,30 +60,24 @@ export class UI {
     this.ssProgress = document.getElementById("ss-progress")!;
     this.framePlayBtn = document.getElementById("frame-play")!;
     this.frameCountEl = document.getElementById("frame-count")!;
-    this.bindOverlayHover();
-  }
 
-  /** 鼠标悬停浮层不隐藏：enter 取消闲置计时，leave 重启（移出后才按闲置规则隐藏） */
-  private bindOverlayHover(): void {
-    for (const el of [this.infoBar, this.toolbar, this.frameBar, this.slideshowBar]) {
-      el.addEventListener("mouseenter", () => {
-        if (el.classList.contains("hidden")) return;
-        this.hoveringOverlay = true;
-        window.clearTimeout(this.idleTimer);
-      });
-      el.addEventListener("mouseleave", () => {
-        this.hoveringOverlay = false;
-        if (!el.classList.contains("hidden")) this.wake();
-      });
-    }
+    this.overlayManager = new OverlayManager();
+    this.overlayManager.register({ id: "info-bar", element: this.infoBar, group: "normal" });
+    this.overlayManager.register({ id: "toolbar", element: this.toolbar, group: "normal" });
+    this.overlayManager.register({
+      id: "frame-bar",
+      element: this.frameBar,
+      group: "normal",
+      condition: () => this.frameBarVisible,
+    });
+    this.overlayManager.register({ id: "slideshow-bar", element: this.slideshowBar, group: "slideshow" });
+    this.licenseDialog = new Dialog({ mask: "unlock-dialog" });
   }
 
   /** 工具栏按钮 Map 缓存（消除高频 DOM 查询） */
   private toolbarButtons = new Map<string, HTMLElement>();
   /** 幻灯片控制栏全屏按钮缓存 */
   private ssFullscreenBtn: HTMLElement | null = null;
-  /** 上次 wake 触发时间（用于高频 mousemove 节流） */
-  private lastWakeAt = 0;
 
   /** 构建工具栏 DOM（按钮定义见 icons.ts，布局按草图 3.2） */
   buildToolbar(handlers: ToolbarHandlers): void {
@@ -152,7 +147,7 @@ export class UI {
     setText("info-file", truncateMiddle(state.file_name, FILENAME_MAX));
     setText("info-dims", dims ? `${dims.w}×${dims.h}` : "…");
     setText("info-size", formatSize(state.file_size));
-    setText("info-pos", state.loading ? `${state.global_index + 1}/…` : `${state.global_index + 1}/${state.global_total}`);
+    setText("info-pos", formatPosition(state.global_index + 1, state.global_total, state.loading));
     setText("info-folder-name", truncateMiddle(state.folder_name, 24));
     // 幻灯片模式（播放/暂停）下 ss-progress 与 info-pos 保持同步：
     // showImage 开头 updateInfo 即刷新（含 loading 态），成功后再由 setSlideshowProgress 补全
@@ -181,12 +176,10 @@ export class UI {
   setFrameBarVisible(visible: boolean): void {
     this.frameBarVisible = visible;
     if (!visible) {
-      this.frameBar.classList.add("hidden");
-      this.frameBar.setAttribute("aria-hidden", "true");
-    } else if (!this.infoBar.classList.contains("hidden")) {
+      this.overlayManager.hide("frame-bar");
+    } else if (this.overlayManager.isVisible("info-bar")) {
       // 浮层当前可见时同步显示（闲置隐藏期间保持隐藏，等 wake 唤醒）
-      this.frameBar.classList.remove("hidden");
-      this.frameBar.setAttribute("aria-hidden", "false");
+      this.overlayManager.show("frame-bar");
     }
   }
 
@@ -198,17 +191,17 @@ export class UI {
 
   /** 帧计数：帧 12/48 */
   updateFrameCount(index: number, total: number): void {
-    this.frameCountEl.textContent = `帧 ${index}/${total}`;
+    this.frameCountEl.textContent = formatFrame(index, total);
   }
 
   /** 帧计数未知态：原生 <img> 播放中，帧未按需拆帧（"帧 …"） */
   setFrameCountUnknown(): void {
-    this.frameCountEl.textContent = "帧 …";
+    this.frameCountEl.textContent = formatFrame();
   }
 
   /** 帧条加载态：按需拆帧中显示"正在加载帧…"，完成后恢复未知态 */
   setFrameLoading(loading: boolean): void {
-    this.frameCountEl.textContent = loading ? "正在加载帧…" : "帧 …";
+    this.frameCountEl.textContent = loading ? "正在加载帧…" : formatFrame();
   }
 
   // ---------- 幻灯片（草图 3.6） ----------
@@ -222,7 +215,7 @@ export class UI {
 
   /** 进度计数：3/128（全局位置） */
   setSlideshowProgress(index: number, total: number): void {
-    this.ssProgress.textContent = `${index}/${total}`;
+    this.ssProgress.textContent = formatPosition(index, total);
   }
 
   /** 幻灯片启动：直接复用正常模式信息条的当前位置（含加载中 `3/…` 形态） */
@@ -233,18 +226,17 @@ export class UI {
   /** 幻灯片模式切换：播放时只显示控制浮条（信息条/工具栏/帧条隐藏） */
   setSlideshowMode(on: boolean): void {
     this.slideshowMode = on;
+    this.overlayManager.setActiveGroup(on ? "slideshow" : "normal");
     if (on) {
-      this.hideAll();
-      this.slideshowBar.classList.remove("hidden");
-      this.slideshowBar.setAttribute("aria-hidden", "false");
+      this.overlayManager.hideAll();
+      this.overlayManager.show("slideshow-bar");
       // 切换瞬间即与正常模式信息条的当前位置匹配（复用 #info-pos 文本），
       // 不依赖外部调用时序，保证进入模式的第一帧显示就是正确的
       this.syncSlideshowProgressFromInfo();
-      this.wake(); // 启动闲置计时
+      this.overlayManager.wake(); // 启动闲置计时
     } else {
-      this.slideshowBar.classList.add("hidden");
-      this.slideshowBar.setAttribute("aria-hidden", "true");
-      this.wake();
+      this.overlayManager.hide("slideshow-bar");
+      this.overlayManager.wake();
     }
   }
 
@@ -294,71 +286,17 @@ export class UI {
 
   /** 立即隐藏所有浮层（进入沉浸模式时调用） */
   hideAll(): void {
-    this.infoBar.classList.add("hidden");
-    this.toolbar.classList.add("hidden");
-    this.frameBar.classList.add("hidden");
-    this.slideshowBar.classList.add("hidden");
-    this.infoBar.setAttribute("aria-hidden", "true");
-    this.toolbar.setAttribute("aria-hidden", "true");
-    this.frameBar.setAttribute("aria-hidden", "true");
-    this.slideshowBar.setAttribute("aria-hidden", "true");
-    window.clearTimeout(this.idleTimer);
+    this.overlayManager.hideAll();
   }
 
   // ---------- 浮层闲置隐藏（设计语言「用完即走」） ----------
 
   /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1）
    *  帧条与普通工具栏同步；幻灯片模式下只唤醒控制浮条。
-   *  鼠标悬停在浮层上（hoveringOverlay）时不设隐藏计时 —— 主动使用工具栏时不被隐藏。
+   *  鼠标悬停在浮层上时不设隐藏计时 —— 主动使用工具栏时不被隐藏。
    *  幂等短路：浮层已可见时跳过 class 写入（高频 mousemove 150ms 节流，降低定时器负担） */
   wake(): void {
-    const now = performance.now();
-    const isVisible = this.slideshowMode
-      ? !this.slideshowBar.classList.contains("hidden")
-      : !this.infoBar.classList.contains("hidden");
-
-    if (isVisible && now - this.lastWakeAt < 150) {
-      return;
-    }
-    this.lastWakeAt = now;
-
-    if (this.slideshowMode) {
-      // 播放中：仅控制浮条随鼠标唤醒，信息条/工具栏保持隐藏
-      if (this.slideshowBar.classList.contains("hidden")) {
-        this.slideshowBar.classList.remove("hidden");
-        this.slideshowBar.setAttribute("aria-hidden", "false");
-      }
-      this.scheduleIdleHide(this.slideshowBar);
-      return;
-    }
-    if (this.infoBar.classList.contains("hidden")) {
-      this.infoBar.classList.remove("hidden");
-      this.toolbar.classList.remove("hidden");
-      if (this.frameBarVisible) this.frameBar.classList.remove("hidden");
-      this.infoBar.setAttribute("aria-hidden", "false");
-      this.toolbar.setAttribute("aria-hidden", "false");
-      if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "false");
-    }
-    this.scheduleIdleHide(null);
-  }
-
-  /** 排定闲置隐藏：鼠标悬停浮层时不设计时（保持显示）；否则 IDLE_HIDE_MS 后隐藏 */
-  private scheduleIdleHide(ssBar: HTMLElement | null): void {
-    window.clearTimeout(this.idleTimer);
-    if (this.hoveringOverlay) return;
-    this.idleTimer = window.setTimeout(() => {
-      if (this.slideshowMode && ssBar) {
-        ssBar.classList.add("hidden");
-        ssBar.setAttribute("aria-hidden", "true");
-        return;
-      }
-      this.infoBar.classList.add("hidden");
-      this.toolbar.classList.add("hidden");
-      if (this.frameBarVisible) this.frameBar.classList.add("hidden");
-      this.infoBar.setAttribute("aria-hidden", "true");
-      this.toolbar.setAttribute("aria-hidden", "true");
-      if (this.frameBarVisible) this.frameBar.setAttribute("aria-hidden", "true");
-    }, IDLE_HIDE_MS);
+    this.overlayManager.wake();
   }
 
   /** 帧条当前是否可见（由 main.ts 随图片类型设置） */
@@ -370,15 +308,12 @@ export class UI {
 
   /** 专业版解锁对话框当前是否处于显示状态 */
   isLicenseDialogOpen(): boolean {
-    const mask = document.getElementById("unlock-dialog");
-    return Boolean(mask && !mask.classList.contains("hidden"));
+    return this.licenseDialog.isOpen;
   }
 
-  /** 激活/管理对话框显隐 */
+  /** 激活/管理对话框显隐（渲染内容并调用 Dialog 基类打开） */
   showLicenseDialog(info: LicenseInfo): void {
-    const mask = document.getElementById("unlock-dialog")!;
-    mask.classList.remove("hidden");
-    mask.setAttribute("aria-hidden", "false");
+    const mask = this.licenseDialog.mask;
     const hasLocal = info.status === "pro" && Boolean(info.code && info.email);
     mask.dataset.mode = hasLocal ? "active" : "inactive";
     const title = document.getElementById("unlock-title")!;
@@ -414,16 +349,12 @@ export class UI {
       form.classList.remove("hidden");
       buyRow.classList.remove("hidden");
     }
-    window.setTimeout(() => {
-      if (hasLocal) confirm.focus();
-      else emailInput.focus();
-    }, 50);
+
+    this.licenseDialog.showModal(hasLocal ? confirm : emailInput);
   }
 
   hideLicenseDialog(): void {
-    const mask = document.getElementById("unlock-dialog")!;
-    mask.classList.add("hidden");
-    mask.setAttribute("aria-hidden", "true");
+    this.licenseDialog.hideModal();
   }
 
   /** 免费版锁定态：禁用文件夹跳转与缓存按钮（点击仍触发解锁引导，见 main.ts 拦截） */
@@ -453,22 +384,4 @@ function setText(id: string, text: string): void {
   if (el) el.textContent = text;
 }
 
-/** 文件名过长时中间截断：photo_very_long…name.jpg（草图 3.3） */
-export function truncateMiddle(name: string, maxLen: number): string {
-  if (name.length <= maxLen) return name;
-  const keep = Math.floor((maxLen - 1) / 2);
-  return name.slice(0, keep) + "…" + name.slice(name.length - keep);
-}
-
-/** 文件大小格式化（草图样例：4.2 MB） */
-export function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = bytes / 1024;
-  let u = 0;
-  while (v >= 1024 && u < units.length - 1) {
-    v /= 1024;
-    u++;
-  }
-  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[u]}`;
-}
+export { formatSize, truncateMiddle, formatPosition, formatFrame } from "./utils/format";

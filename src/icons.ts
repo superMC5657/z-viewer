@@ -5,10 +5,30 @@
 
 /** 生成单个 SVG 图标字符串 */
 export function svgIcon(d: string, size = 18): string {
-  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 }
 
 export const ICONS: Record<string, string> = {
+  // —— 文件夹与顶部信息 ——
+  folder: svgIcon(
+    '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+    13
+  ),
+
+  // —— 提示与 Toast ——
+  toast: svgIcon(
+    '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    18
+  ),
+  "alert-triangle": svgIcon(
+    '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+    18
+  ),
+
+  // —— 下拉框箭头 ——
+  "chevron-down": svgIcon('<path d="m6 9 6 6 6-6"/>', 10),
+  "select-arrow": svgIcon('<path d="m6 9 6 6 6-6"/>', 10),
+
   // —— 文件夹跳转 ——
   "skip-back": svgIcon('<path d="M19 20 9 12l10-8v16Z"/><path d="M5 19V5"/>'),
   "chevron-left": svgIcon('<path d="m15 18-6-6 6-6"/>'),
@@ -138,3 +158,45 @@ export const TOOLBAR_GROUPS: ToolbarGroup[] = [
     ],
   },
 ];
+
+/**
+ * 挂载 HTML 静态图标与 CSS 下拉箭头变量（Top2 收口进 icons.ts，统一 Lucide 1.8 规范）
+ */
+if (typeof document !== "undefined") {
+  const mountStaticIcons = (): void => {
+    // 顶部信息条文件夹图标
+    const folderEl = document.getElementById("info-folder");
+    if (folderEl && !folderEl.querySelector("svg")) {
+      folderEl.insertAdjacentHTML("afterbegin", ICONS.folder);
+    }
+
+    // 边界 Toast 三角警告图标
+    const toastEl = document.getElementById("toast");
+    if (toastEl && !toastEl.querySelector("svg")) {
+      const textEl = document.getElementById("toast-text");
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = ICONS.toast;
+      const svg = wrapper.firstElementChild as SVGElement | null;
+      if (svg) {
+        svg.classList.add("toast-icon");
+        if (textEl) {
+          toastEl.insertBefore(svg, textEl);
+        } else {
+          toastEl.appendChild(svg);
+        }
+      }
+    }
+
+    // select 下拉箭头收口（从 ICONS 规范派生为 CSS 变量，统一 Lucide 1.8 描边风格）
+    const chevronSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="5 8 14 8" width="10" height="6" fill="none" stroke="rgba(255,255,255,0.6)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`;
+    const arrowUri = `url("data:image/svg+xml,${encodeURIComponent(chevronSvg)}")`;
+    document.documentElement.style.setProperty("--select-arrow", arrowUri);
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", mountStaticIcons);
+  } else {
+    mountStaticIcons();
+  }
+}
+

@@ -46,7 +46,6 @@
       <span id="info-pos" class="info-pos">0/0</span>
       <span class="info-sep">·</span>
       <span id="info-folder" class="info-folder">
-        <svg viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2.5h8A2 2 0 0 1 21 8.5V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z" fill="currentColor"/></svg>
         <span id="info-folder-name">—</span>
       </span>
     </div>
@@ -56,11 +55,11 @@
 
     <!-- ===== 帧控制浮条（仅动画图片显示，草图 3.7） ===== -->
     <div id="frame-bar" class="glass hidden" aria-hidden="true">
-      <button id="frame-first" class="tb-btn-icon" data-tip="第一帧"></button>
-      <button id="frame-prev" class="tb-btn-icon" data-tip="上一帧"></button>
-      <button id="frame-play" class="tb-btn-icon" data-tip="播放/暂停"></button>
-      <button id="frame-next" class="tb-btn-icon" data-tip="下一帧"></button>
-      <button id="frame-last" class="tb-btn-icon" data-tip="最后一帧"></button>
+      <button id="frame-first" class="btn-icon" data-tip="第一帧"></button>
+      <button id="frame-prev" class="btn-icon" data-tip="上一帧"></button>
+      <button id="frame-play" class="btn-icon" data-tip="播放/暂停"></button>
+      <button id="frame-next" class="btn-icon" data-tip="下一帧"></button>
+      <button id="frame-last" class="btn-icon" data-tip="最后一帧"></button>
       <div class="tb-sep"></div>
       <span id="frame-count" class="frame-count">帧 0/0</span>
     </div>
@@ -68,7 +67,7 @@
     <!-- ===== 幻灯片控制浮条（播放中鼠标移动显示，草图 3.6） ===== -->
     <div id="slideshow-bar" class="hidden" aria-hidden="true">
       <div class="bar-inner glass">
-        <button id="ss-play" class="tb-btn-icon" data-tip="暂停/继续"></button>
+        <button id="ss-play" class="btn-icon" data-tip="暂停/继续"></button>
         <div class="tb-sep"></div>
         <label class="ss-interval">
           间隔
@@ -82,8 +81,8 @@
         <div class="tb-sep"></div>
         <span id="ss-progress" class="ss-progress">0/0</span>
         <div class="tb-sep"></div>
-        <button id="ss-fullscreen" class="tb-btn-icon" data-id="fullscreen" data-tip="沉浸模式 · F"></button>
-        <button id="ss-exit" class="tb-btn-icon" data-tip="返回图片浏览"></button>
+        <button id="ss-fullscreen" class="btn-icon" data-id="fullscreen" data-tip="沉浸模式 · F"></button>
+        <button id="ss-exit" class="btn-icon" data-tip="返回图片浏览"></button>
       </div>
     </div>
 
@@ -95,11 +94,6 @@
 
     <!-- ===== 边界提醒 Toast ===== -->
     <div id="toast" class="glass" role="status">
-      <svg class="toast-icon" viewBox="0 0 24 24">
-        <path d="M12 3 1.8 20.2h20.4L12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-        <path d="M12 10.2v4.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-        <circle cx="12" cy="17" r="1.1" fill="currentColor"/>
-      </svg>
       <span id="toast-text">已经是最后一张了</span>
     </div>
 
@@ -125,8 +119,8 @@
                  autocomplete="off" spellcheck="false" />
         </div>
         <div class="unlock-actions">
-          <button id="unlock-cancel" class="tb-btn-icon btn-text-plain">取消</button>
-          <button id="unlock-confirm" class="tb-btn-icon btn-text-accent">激活</button>
+          <button id="unlock-cancel" class="btn-text btn-plain">取消</button>
+          <button id="unlock-confirm" class="btn-text btn-accent">激活</button>
         </div>
         <div id="unlock-buy-row" class="unlock-buy-row">
           <button id="unlock-buy" class="unlock-buy" type="button">没有激活码？在线购买专业版 →</button>
