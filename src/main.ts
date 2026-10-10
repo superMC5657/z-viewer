@@ -16,9 +16,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Viewer } from "./viewer";
 import { UI } from "./ui";
 import { ImagePresenter } from "./presenter";
-import { WindowState } from "./window-state";
-import { Slideshow } from "./slideshow";
-import { attachInput } from "./input";
+import { Presence, type InputIntent, type NavigateKind } from "./presence";
 import { ICONS } from "./icons";
 import { setRawExts } from "./types";
 import type { AppSettings, BrowseState, LicenseInfo, NavResult } from "./types";
@@ -37,15 +35,100 @@ const frameCanvas = document.getElementById("frame-canvas") as HTMLCanvasElement
 const dropOverlay = document.getElementById("drop-overlay")!;
 
 const viewer = new Viewer(stage, imgA, imgB, frameCanvas);
-const ui = new UI();
+const appWindow = getCurrentWindow();
+// Presence 先行：查询浮层容器并注入 UI；host 闭包延迟求值（presenter/license 后建亦可）
+const presence: Presence = new Presence(
+  {
+    applyView: (intent, anchor) => {
+      switch (intent) {
+        case "mode-fit":
+          presenter.setFitMode("fit");
+          break;
+        case "mode-actual":
+          presenter.setFitMode("actual", anchor?.x, anchor?.y);
+          break;
+        case "zoom-in":
+          viewer.zoomByCenter(1.2);
+          break;
+        case "zoom-out":
+          viewer.zoomByCenter(1 / 1.2);
+          break;
+        case "rotate-cw":
+          viewer.rotate(90);
+          break;
+        case "rotate-ccw":
+          viewer.rotate(-90);
+          break;
+        case "flip-h":
+          viewer.flip("h");
+          break;
+        case "flip-v":
+          viewer.flip("v");
+          break;
+        default:
+          break;
+      }
+    },
+    navigate: (kind: NavigateKind) => {
+      if (kind === "prev") {
+        void presenter.navigate(() => invoke("prev_image"));
+        return;
+      }
+      if (kind === "next") {
+        void presenter.navigate(() => invoke("next_image"));
+        return;
+      }
+      if (!requirePro()) return;
+      const target = kind === "folder-first" ? "first" : kind === "folder-last" ? "last" : kind === "folder-prev" ? "prev" : "next";
+      void presenter.navigate(() => invoke("jump_folder", { target }));
+    },
+    notify: (msg) => ui.showToast(msg),
+    onSlideshowMode: (active) => {
+      if (active) ui.syncSlideshowProgressFromInfo();
+    },
+    onCacheElevation: (active) => {
+      if (active) {
+        // 首次进入记录播放前等级（暂停→继续不覆盖，恢复仍用最初的等级）
+        slideshowPrevCacheLevel = cacheLevel;
+        // 自动提级到高等级缓存（专业版功能）；免费版跳过（Rust 会拒绝，避免误弹错误）
+        if (licenseService.isPro && cacheLevel !== 2) void setCacheLevel(2);
+      } else {
+        // 恢复播放前的缓存等级
+        if (licenseService.isPro && slideshowPrevCacheLevel !== null && (slideshowPrevCacheLevel !== 2 || cacheLevel !== 2)) {
+          void setCacheLevel(slideshowPrevCacheLevel, undefined, true);
+        }
+        slideshowPrevCacheLevel = null;
+      }
+    },
+    onImmersiveChange: (active) => {
+      viewer.setImmersive(active);
+      ui.setImmersive(active);
+      ui.setToolbarActive("fullscreen", active);
+    },
+    onPinChange: (active) => {
+      ui.setToolbarActive("pin", active);
+    },
+    onDialogClose: () => {
+      if (ui.isLicenseDialogOpen()) {
+        licenseService.hideDialog();
+        return true;
+      }
+      return false;
+    },
+    window: {
+      setFullscreen: (b) => appWindow.setFullscreen(b),
+      setAlwaysOnTop: (b) => appWindow.setAlwaysOnTop(b),
+    },
+  },
+  { isPro: () => licenseService.isPro },
+);
+const ui: UI = new UI(presence.bars);
+ui.onFrameAvailability = (v) => presence.setFrameAvailable(v);
 ui.buildToolbar({ onAction: handleToolbarAction });
-const presenter = new ImagePresenter(viewer, ui, {
-  onShown: () => slideshow.resetTimer(),
+const presenter: ImagePresenter = new ImagePresenter(viewer, ui, {
+  onShown: () => presence.notifyManualNav(),
   onProRequired: () => void licenseService.openDialog(),
 });
-const appWindow = getCurrentWindow();
-const windowState = new WindowState(appWindow, viewer, ui);
-const slideshow = new Slideshow();
 
 const LICENSE_STATUS_CHANGED = "license://status-changed";
 let cacheLevel = 1;
@@ -53,8 +136,6 @@ let cacheLevel = 1;
 let cacheLevelGen = 0;
 /** 幻灯片播放前的缓存等级（退出模式时恢复） */
 let slideshowPrevCacheLevel: number | null = null;
-/** 是否处于幻灯片模式（true=隐藏普通浮层只显示控制条；暂停不退出，返回按钮才退出） */
-let slideshowMode = false;
 
 // ---------- 薄接线：呈现策略归 ImagePresenter，本文件只留 window/input/slideshow/cache/license ----------
 
@@ -69,7 +150,7 @@ async function openPath(path: string): Promise<void> {
   }
 }
 
-const licenseService = new LicenseService(ui, {
+const licenseService: LicenseService = new LicenseService(ui, {
   onUnlocked: () => {
     const saved = Number(localStorage.getItem("cache-level"));
     if (Number.isFinite(saved) && saved >= 1 && saved <= 2) {
@@ -89,8 +170,43 @@ const licenseService = new LicenseService(ui, {
     const p = presenter.lastPath;
     if (p) void openPath(p);
   },
+  onDialogVisibility: (open) => presence.setDialogOpen(open),
 });
-// ---------- 工具栏动作（呈现经 presenter，窗口/幻灯片/缓存/license 直连） ----------
+// ---------- 工具栏动作（意图经 Presence.dispatch；缓存/license/更新直连） ----------
+
+/** 工具栏 id → 输入意图（呈现词汇适配，模块只讲 InputIntent；null 走直连分支） */
+function toolbarIdToIntent(id: string): InputIntent | null {
+  switch (id) {
+    case "image-prev":
+      return "prev";
+    case "image-next":
+      return "next";
+    case "folder-prev":
+      return "folder-prev";
+    case "folder-next":
+      return "folder-next";
+    case "zoom-fit":
+      return "mode-fit";
+    case "zoom-actual":
+      return "mode-actual";
+    case "rotate-cw":
+      return "rotate-cw";
+    case "rotate-ccw":
+      return "rotate-ccw";
+    case "flip-h":
+      return "flip-h";
+    case "flip-v":
+      return "flip-v";
+    case "pin":
+      return "pin-toggle";
+    case "fullscreen":
+      return "immersive-toggle";
+    case "slideshow":
+      return "slideshow-toggle";
+    default:
+      return null;
+  }
+}
 
 /** 付费功能入口统一拦截：免费版弹出解锁引导（不发起 IPC） */
 function requirePro(): boolean {
@@ -103,57 +219,21 @@ function requirePro(): boolean {
 // ---------- 工具栏动作 ----------
 
 function handleToolbarAction(id: string): void {
+  const intent = toolbarIdToIntent(id);
+  if (intent) {
+    presence.dispatch(intent);
+    return;
+  }
   switch (id) {
-    case "folder-prev":
-      if (!requirePro()) return;
-      void presenter.navigate(() => invoke("jump_folder", { target: "prev" }));
-      break;
-    case "image-prev":
-      void presenter.navigate(() => invoke("prev_image"));
-      break;
-    case "image-next":
-      void presenter.navigate(() => invoke("next_image"));
-      break;
-    case "folder-next":
-      if (!requirePro()) return;
-      void presenter.navigate(() => invoke("jump_folder", { target: "next" }));
-      break;
-    case "rotate-cw":
-      viewer.rotate(90);
-      break;
-    case "rotate-ccw":
-      viewer.rotate(-90);
-      break;
-    case "flip-h":
-      viewer.flip("h");
-      break;
-    case "flip-v":
-      viewer.flip("v");
-      break;
-    case "zoom-actual":
-      presenter.setFitMode("actual");
-      break;
-    case "zoom-fit":
-      presenter.setFitMode("fit");
-      break;
-    case "pin":
-      void windowState.togglePin();
-      break;
-    case "fullscreen":
-      void windowState.toggleImmersive();
-      break;
     case "cache-toggle":
       if (!requirePro()) return;
       void toggleCache();
       break;
     case "update":
-      void checkForUpdate(ui);
+      void checkForUpdate((msg) => ui.showToast(msg));
       break;
     case "license":
       void licenseService.openDialog();
-      break;
-    case "slideshow":
-      slideshow.toggle();
       break;
   }
 }
@@ -173,13 +253,13 @@ function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
 function buildSlideshowBar(): void {
   ui.setSlideshowPlaying(false);
 
-  document.getElementById("ss-play")!.addEventListener("click", () => slideshow.toggle());
+  document.getElementById("ss-play")!.addEventListener("click", () => presence.dispatch("slideshow-toggle"));
   document.getElementById("ss-play")!.innerHTML = ICONS.play;
   document.getElementById("ss-exit")!.innerHTML = ICONS.exit;
   document.getElementById("ss-exit")!.addEventListener("click", () => exitSlideshow());
   // 沉浸模式（与普通工具栏 fullscreen 按钮同一功能/激活态）
   document.getElementById("ss-fullscreen")!.innerHTML = ICONS["maximize-2"];
-  document.getElementById("ss-fullscreen")!.addEventListener("click", () => void windowState.toggleImmersive());
+  document.getElementById("ss-fullscreen")!.addEventListener("click", () => presence.dispatch("immersive-toggle"));
 
   const intervalSel = document.getElementById("ss-interval") as HTMLSelectElement;
   // 下拉框初始显示持久化的间隔值（否则 select 显示默认 5s 但实际可能不是）
@@ -187,7 +267,7 @@ function buildSlideshowBar(): void {
   if (savedInterval !== null) intervalSel.value = String(savedInterval);
   intervalSel.addEventListener("change", () => {
     const ms = Number(intervalSel.value);
-    slideshow.setInterval(ms);
+    presence.setIntervalMs(ms);
     console.info(`[slideshow] interval changed to ${ms}ms`);
     try {
       localStorage.setItem("ss-interval", String(ms));
@@ -197,7 +277,7 @@ function buildSlideshowBar(): void {
   });
 
   // 播放器回调
-  slideshow.onAdvance = async () => {
+  presence.onAdvance = async () => {
     // IPC 超时兜底：next_image 3s 无响应按失败处理（避免 await 永久挂起杀死幻灯片）
     let result: NavResult | null = null;
     try {
@@ -226,43 +306,21 @@ function buildSlideshowBar(): void {
     return true;
   };
 
-  slideshow.onStateChange = (running) => {
-    // 播放/暂停只切换播放按钮图标与工具栏激活态；**不切换模式**
-    //（暂停是真正停住，仍停留在幻灯片模式；退出模式由 exitSlideshow 显式完成）
+  presence.onRunningChange = (running) => {
+    // 播放/暂停只切换播放按钮图标与工具栏激活态；模式与提级由 Presence 内部保证顺序
     console.info(running ? `[slideshow] started (interval: ${intervalSel.value}ms)` : "[slideshow] paused");
     ui.setSlideshowPlaying(running);
     ui.setToolbarActive("slideshow", running);
-    if (running) {
-      // 首次进入：切换为幻灯片模式（隐藏普通浮层，仅显示控制条；
-      // 模式切换由 UI 内部同步当前位置计数到 ss-progress，此处无需重复）
-      if (slideshowMode === false) {
-        slideshowMode = true;
-        ui.setSlideshowMode(true);
-        // 幻灯片模式自动启用高等级缓存（2=前1后3）：2s 短间隔下预取须提前 ≥2 拍
-        // 才能命中（解码耗时常见 2.5s+ > 2s 间隔，蓝色前1后1 提前 1 拍总 miss）
-        // 只在首次进入时记录播放前等级（暂停→继续不覆盖，恢复仍用最初的等级）
-        slideshowPrevCacheLevel = cacheLevel;
-        // 自动提级到高等级缓存（专业版功能）；免费版跳过（Rust 会拒绝，避免误弹错误）
-        if (licenseService.isPro && cacheLevel !== 2) void setCacheLevel(2);
-      }
-    }
     // running=false（暂停）：保持模式、保留进度计数、保留高等级缓存——随时可继续播放
   };
 }
 
 /** 退出幻灯片模式，返回图片浏览（返回按钮 / 播放完 / 打开新图） */
 function exitSlideshow(): void {
-  if (slideshowMode === false) return; // 幂等
+  if (presence.currentMode === "browse") return; // 幂等
   console.info("[slideshow] exited");
-  slideshow.stop();
-  slideshowMode = false;
-  ui.setSlideshowMode(false); // 恢复普通浮层（内部 wake）
+  presence.stopSlideshow();
   ui.setSlideshowProgress(0, 0);
-  // 恢复播放前的缓存等级。
-  if (licenseService.isPro && slideshowPrevCacheLevel !== null && (slideshowPrevCacheLevel !== 2 || cacheLevel !== 2)) {
-    void setCacheLevel(slideshowPrevCacheLevel, undefined, true);
-  }
-  slideshowPrevCacheLevel = null;
 }
 
 // ---------- 缓存开关（三态：关/开/高） ----------
@@ -308,6 +366,57 @@ function syncCacheButton(): void {
 
 // ---------- 事件装配 ----------
 
+/** 滚轮缩放与触控板手势（自 input.ts 迁移：连续手势保留 viewer 直连） */
+function onWheel(e: WheelEvent): void {
+  // 1. 位于表单、下拉菜单或弹窗内时不拦截滚轮，允许原生滚动
+  const target = e.target as HTMLElement | null;
+  if (target && target.closest("#slideshow-bar, #unlock-dialog, select, input, textarea")) {
+    return;
+  }
+  presence.wake();
+  if (!viewer.hasImage) return;
+  e.preventDefault();
+
+  // 2. 触控板双指捏合手势（Pinch-to-zoom）或 Ctrl + 滚轮
+  if (e.ctrlKey) {
+    const factor = Math.exp(-e.deltaY * 0.005);
+    viewer.zoomAt(e.clientX, e.clientY, factor);
+    return;
+  }
+
+  // 3. 图片放大超出视口时，双指滑动平移画布（支持水平 deltaX 与 Shift+垂直）
+  if (viewer.isPannable() && (Math.abs(e.deltaX) > 0 || (e.shiftKey && Math.abs(e.deltaY) > 0))) {
+    const dx = e.deltaX !== 0 ? -e.deltaX : e.shiftKey ? -e.deltaY : 0;
+    const dy = e.deltaX !== 0 ? -e.deltaY : 0;
+    viewer.panDelta(dx, dy);
+    return;
+  }
+
+  // 4. 常规鼠标滚轮：以鼠标指针为锚点缩放（草图 5.3）
+  const factor = Math.exp(-e.deltaY * 0.0016);
+  viewer.zoomAt(e.clientX, e.clientY, factor);
+}
+
+/** 鼠标侧键翻页意图 */
+function onSideButton(e: MouseEvent): void {
+  if (e.button === 3) {
+    e.preventDefault();
+    presence.dispatch("prev");
+  } else if (e.button === 4) {
+    e.preventDefault();
+    presence.dispatch("next");
+  }
+}
+
+function onAuxClick(e: MouseEvent): void {
+  if (e.button === 3 || e.button === 4) e.preventDefault();
+}
+
+/** 禁用网页默认右键菜单（防止弹出 Chromium 开发菜单） */
+function onContextMenu(e: MouseEvent): void {
+  e.preventDefault();
+}
+
 function bindEvents(): void {
   // 标题栏窗口控制与最大化/还原状态同步
   const syncMaximize = async () => {
@@ -337,29 +446,20 @@ function bindEvents(): void {
     void appWindow.toggleMaximize().then(() => syncMaximize());
   });
 
-  // 快捷键 + 滚轮
-  attachInput(viewer, {
-    onPrev: () => void presenter.navigate(() => invoke("prev_image")),
-    onNext: () => void presenter.navigate(() => invoke("next_image")),
-    onJumpFolder: (t) => void presenter.navigate(() => invoke("jump_folder", { target: t })),
-    onSetMode: (mode) => presenter.setFitMode(mode),
-    onToggleImmersive: () => void windowState.toggleImmersive(),
-    onExitImmersive: () => void windowState.exitImmersive(),
-    onTogglePin: () => void windowState.togglePin(),
-    onToggleSlideshow: () => slideshow.toggle(),
-    onWake: () => ui.wake(),
-    onCloseDialog: () => {
-      if (ui.isLicenseDialogOpen()) {
-        licenseService.hideDialog();
-        return true;
-      }
-      return false;
-    },
-  });
+  // 键盘意图统一经 Presence（repeat 限流/表单守卫/Esc 优先级收敛一处）
+  presence.attachKeyboard();
+
+  // 滚轮缩放与触控板手势（连续手势直连 viewer；同步与提全量经统一订阅收敛）
+  document.addEventListener("wheel", onWheel, { passive: false });
+  // 鼠标侧键翻页（看图软件标配）：XBUTTON1=上一张，XBUTTON2=下一张
+  // preventDefault 抑制 WebView2 潜在的前进/后退导航（单页应用无历史，防御性处理）
+  document.addEventListener("mousedown", onSideButton);
+  document.addEventListener("auxclick", onAuxClick);
+  window.addEventListener("contextmenu", onContextMenu);
 
   // 浮层唤醒 + 图片平移拖拽：合并为单个 mousemove 监听（panTo 无拖拽时零开销）
   window.addEventListener("mousemove", (e) => {
-    ui.wake();
+    presence.wake();
     viewer.panTo(e.clientX, e.clientY);
   });
   window.addEventListener("mouseup", () => viewer.endPan());
@@ -388,7 +488,7 @@ function bindEvents(): void {
   // 双击：以点击位置为锚点在实际大小 ↔ 适应窗口之间平滑切换（草图 5.4 体验升级）
   stage.addEventListener("dblclick", (e) => {
     if (!viewer.hasImage) return;
-    presenter.setFitMode(viewer.isFit ? "actual" : "fit", e.clientX, e.clientY);
+    presence.dispatch(viewer.isFit ? "mode-actual" : "mode-fit", { x: e.clientX, y: e.clientY });
   });
 
   // 窗口尺寸变化：rAF 合并并同步最大化按钮状态
@@ -413,7 +513,7 @@ async function init(): Promise<void> {
   buildSlideshowBar();
   // 应用持久化的幻灯片间隔（buildSlideshowBar 已同步下拉框显示）
   const savedInterval = loadSsInterval();
-  if (savedInterval !== null) slideshow.setInterval(savedInterval);
+  if (savedInterval !== null) presence.setIntervalMs(savedInterval);
   ui.setEmpty(true);
   // 空状态初始隐藏帧条（打开图片后由呈现层按需设置）
   ui.setFrameBarVisible(false);
@@ -458,7 +558,7 @@ async function init(): Promise<void> {
   } catch {
   }
   // 启动闲置计时：空状态或看图状态下浮层都会按时自动隐藏
-  ui.wake();
+  presence.wake();
 }
 
 // ---------- 工具 ----------

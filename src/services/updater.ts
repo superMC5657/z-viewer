@@ -5,26 +5,25 @@
 
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import type { UI } from "../ui";
 
-export async function checkForUpdate(ui: UI): Promise<void> {
-  ui.showToast("正在检查更新…");
+export async function checkForUpdate(notify: (msg: string) => void): Promise<void> {
+  notify("正在检查更新…");
   console.info("[updater] checking for updates...");
   let update;
   try {
     update = await check();
   } catch (err) {
     console.warn(`[updater] check failed: ${String(err)}`);
-    ui.showToast(`检查更新失败：${String(err)}`);
+    notify(`检查更新失败：${String(err)}`);
     return;
   }
   if (!update) {
     console.info("[updater] check complete: already up to date");
-    ui.showToast("已是最新版本");
+    notify("已是最新版本");
     return;
   }
   console.info(`[updater] update available: v${update.version}`);
-  ui.showToast(`发现新版本 v${update.version}，开始下载…`);
+  notify(`发现新版本 v${update.version}，开始下载…`);
   console.info(`[updater] downloading update v${update.version}...`);
   try {
     let total = 0;
@@ -42,16 +41,16 @@ export async function checkForUpdate(ui: UI): Promise<void> {
           const pct = Math.floor((downloaded / total) * 100);
           if (pct - lastPct >= 20) {
             lastPct = pct;
-            ui.showToast(`正在下载更新 ${pct}%…`);
+            notify(`正在下载更新 ${pct}%…`);
           }
         }
       } else if (event.event === "Finished") {
-        ui.showToast("下载完成，正在安装…");
+        notify("下载完成，正在安装…");
       }
     });
   } catch (err) {
     console.error(`[updater] download failed: ${String(err)}`);
-    ui.showToast(`更新失败：${String(err)}`);
+    notify(`更新失败：${String(err)}`);
     return;
   }
   console.info(`[updater] download complete v${update.version}, installing...`);
@@ -59,15 +58,15 @@ export async function checkForUpdate(ui: UI): Promise<void> {
     await update.install();
   } catch (err) {
     console.error(`[updater] install failed: ${String(err)}`);
-    ui.showToast(`更新失败：${String(err)}`);
+    notify(`更新失败：${String(err)}`);
     return;
   }
   console.info("[updater] update installed, restarting...");
-  ui.showToast("更新完成，正在重启…");
+  notify("更新完成，正在重启…");
   try {
     await relaunch();
   } catch (err) {
     console.error(`[updater] relaunch failed: ${String(err)}`);
-    ui.showToast(`重启失败，请手动重启应用：${String(err)}`);
+    notify(`重启失败，请手动重启应用：${String(err)}`);
   }
 }

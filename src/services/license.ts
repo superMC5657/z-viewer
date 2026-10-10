@@ -12,6 +12,8 @@ export interface LicenseCallbacks {
   onUnlocked: () => void;
   onDowngraded: () => void;
   onReloadRequested: () => void;
+  /** 对话框显隐打点（调用面转交 Presence 抑制闲置计时） */
+  onDialogVisibility?: (open: boolean) => void;
 }
 
 export class LicenseService {
@@ -23,7 +25,10 @@ export class LicenseService {
     private ui: UI,
     private callbacks: LicenseCallbacks
   ) {
-    this.ui.licenseDialog.onClose(() => this.resetDeactivateConfirm());
+    this.ui.licenseDialog.onClose(() => {
+      this.resetDeactivateConfirm();
+      this.callbacks.onDialogVisibility?.(false);
+    });
   }
 
   get isPro(): boolean {
@@ -56,6 +61,7 @@ export class LicenseService {
     try {
       const info = await invoke<LicenseInfo>("get_license_status");
       this.ui.showLicenseDialog(info);
+      this.callbacks.onDialogVisibility?.(true);
     } catch (err) {
       this.ui.showToast(String(err));
     }

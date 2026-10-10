@@ -5,7 +5,6 @@
 
 import { ICONS, TOOLBAR_GROUPS, type ToolbarButton } from "./icons";
 import type { BrowseState, LicenseInfo } from "./types";
-import { OverlayManager } from "./components/overlay-manager";
 import { Dialog } from "./components/dialog";
 import { formatSize, truncateMiddle, formatPosition, formatFrame } from "./utils/format";
 
@@ -18,11 +17,8 @@ export interface ToolbarHandlers {
 }
 
 export class UI {
-  private overlayManager: OverlayManager;
   readonly licenseDialog: Dialog;
-  private infoBar: HTMLElement;
   private toolbar: HTMLElement;
-  private frameBar: HTMLElement;
   private slideshowBar: HTMLElement;
   private toast: HTMLElement;
   private toastText: HTMLElement;
@@ -45,11 +41,10 @@ export class UI {
   private decodingCount = 0;
   private decodingTimer: number | undefined;
 
-  constructor() {
-    this.infoBar = document.getElementById("info-bar")!;
-    this.toolbar = document.getElementById("toolbar")!;
-    this.frameBar = document.getElementById("frame-bar")!;
-    this.slideshowBar = document.getElementById("slideshow-bar")!;
+  constructor(bars: { toolbar: HTMLElement; slideshowBar: HTMLElement }) {
+    // 浮层容器由 Presence 统一查询并注入（本文件零 overlay-bar 查找）
+    this.toolbar = bars.toolbar;
+    this.slideshowBar = bars.slideshowBar;
     this.toast = document.getElementById("toast")!;
     this.toastText = document.getElementById("toast-text")!;
     this.tbFile = document.getElementById("tb-file")!;
@@ -61,16 +56,6 @@ export class UI {
     this.framePlayBtn = document.getElementById("frame-play")!;
     this.frameCountEl = document.getElementById("frame-count")!;
 
-    this.overlayManager = new OverlayManager();
-    this.overlayManager.register({ id: "info-bar", element: this.infoBar, group: "normal" });
-    this.overlayManager.register({ id: "toolbar", element: this.toolbar, group: "normal" });
-    this.overlayManager.register({
-      id: "frame-bar",
-      element: this.frameBar,
-      group: "normal",
-      condition: () => this.frameBarVisible,
-    });
-    this.overlayManager.register({ id: "slideshow-bar", element: this.slideshowBar, group: "slideshow" });
     this.licenseDialog = new Dialog({ mask: "unlock-dialog" });
   }
 
@@ -149,9 +134,6 @@ export class UI {
     setText("info-size", formatSize(state.file_size));
     setText("info-pos", formatPosition(state.global_index + 1, state.global_total, state.loading));
     setText("info-folder-name", truncateMiddle(state.folder_name, 24));
-    // 幻灯片模式（播放/暂停）下 ss-progress 与 info-pos 保持同步：
-    // showImage 开头 updateInfo 即刷新（含 loading 态），成功后再由 setSlideshowProgress 补全
-    if (this.slideshowMode) this.syncSlideshowProgressFromInfo();
   }
 
   /** 标题栏当前文件名（草图 3.1） */
@@ -171,16 +153,12 @@ export class UI {
 
   // ---------- 帧控制浮条（草图 3.7） ----------
 
-  /** 帧条显隐：与普通浮层联动（唤醒一起显示、闲置一起隐藏）；
-   *  仅动画图片期间参与联动，静态图片强制隐藏 */
+  /** 帧可用性转发（presenter 调用；实际分组策略归 Presence，经回调路由） */
+  onFrameAvailability: ((available: boolean) => void) | null = null;
+
+  /** 帧条显隐意图：仅转发可用性，显隐决策与闲置联动归 Presence 分组表 */
   setFrameBarVisible(visible: boolean): void {
-    this.frameBarVisible = visible;
-    if (!visible) {
-      this.overlayManager.hide("frame-bar");
-    } else if (this.overlayManager.isVisible("info-bar")) {
-      // 浮层当前可见时同步显示（闲置隐藏期间保持隐藏，等 wake 唤醒）
-      this.overlayManager.show("frame-bar");
-    }
+    this.onFrameAvailability?.(visible);
   }
 
   /** 播放/暂停按钮图标与激活态 */
@@ -238,23 +216,6 @@ export class UI {
     this.ssProgress.textContent = this.infoPos.textContent;
   }
 
-  /** 幻灯片模式切换：播放时只显示控制浮条（信息条/工具栏/帧条隐藏） */
-  setSlideshowMode(on: boolean): void {
-    this.slideshowMode = on;
-    this.overlayManager.setActiveGroup(on ? "slideshow" : "normal");
-    if (on) {
-      this.overlayManager.hideAll();
-      this.overlayManager.show("slideshow-bar");
-      // 切换瞬间即与正常模式信息条的当前位置匹配（复用 #info-pos 文本），
-      // 不依赖外部调用时序，保证进入模式的第一帧显示就是正确的
-      this.syncSlideshowProgressFromInfo();
-      this.overlayManager.wake(); // 启动闲置计时
-    } else {
-      this.overlayManager.hide("slideshow-bar");
-      this.overlayManager.wake();
-    }
-  }
-
   // ---------- 解码中指示（RAW/动画 IPC 通道） ----------
 
   /** IPC 解码开始：计数 +1。首个开始时启动防抖计时（>300ms 才显示，快速解码不闪） */
@@ -288,36 +249,10 @@ export class UI {
     }, TOAST_MS);
   }
 
-  /** 沉浸模式切换：body.immersive 驱动 CSS（标题栏/浮层位置），进入时隐藏全部浮层 */
+  /** 沉浸 body 样式（浮层显隐与唤醒归 Presence，见沉浸切换扇出） */
   setImmersive(immersive: boolean): void {
     document.body.classList.toggle("immersive", immersive);
-    if (immersive) {
-      this.hideAll();
-    } else {
-      // 退出沉浸：唤醒浮层；帧条随 wake 联动显示
-      this.wake();
-    }
   }
-
-  /** 立即隐藏所有浮层（进入沉浸模式时调用） */
-  hideAll(): void {
-    this.overlayManager.hideAll();
-  }
-
-  // ---------- 浮层闲置隐藏（设计语言「用完即走」） ----------
-
-  /** 任何鼠标移动 / 按键都会唤醒浮层并重置闲置计时（草图 5.1）
-   *  帧条与普通工具栏同步；幻灯片模式下只唤醒控制浮条。
-   *  鼠标悬停在浮层上时不设隐藏计时 —— 主动使用工具栏时不被隐藏。
-   *  幂等短路：浮层已可见时跳过 class 写入（高频 mousemove 150ms 节流，降低定时器负担） */
-  wake(): void {
-    this.overlayManager.wake();
-  }
-
-  /** 帧条当前是否可见（由 main.ts 随图片类型设置） */
-  private frameBarVisible = false;
-  /** 幻灯片播放中（wake 只唤醒控制浮条） */
-  private slideshowMode = false;
 
   // ---------- 专业版解锁对话框 ----------
 
