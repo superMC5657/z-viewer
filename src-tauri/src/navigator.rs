@@ -299,7 +299,8 @@ impl Navigator {
     /// 前提：调用方已 `begin_prefetch` 登记；本函数保证每条退出路径
     /// 配对 `end_prefetch`（失活丢弃/解码失败/asset 跳过）。
     /// 学到的经验：peek 复查紧邻 put（实时加载可能已填充，跳过覆盖）。
-    pub(crate) fn prefetch_one(&self, path: &str, gen: usize) {
+    /// 私有：测试经 `super::*` 可见；外部调用方一律走派生循环（协议不可绕过）。
+    fn prefetch_one(&self, path: &str, gen: usize) {
         // 用户快速切图已远离当前上下文：直接放弃，不占 CPU。
         if self.cache.is_stale(gen, ABORT_LAG) {
             self.cache.end_prefetch(path);
@@ -336,7 +337,8 @@ impl Navigator {
 
     /// 单文件夹首图预取核心（同步）：spawn 闭包与测试共用同一实现。
     /// 每条退出路径配对 `end_prefetch`（失活/首图缺失/asset 跳过/解码失败）。
-    pub(crate) fn prefetch_first(&self, folder: PathBuf, folder_str: String, gen: usize) {
+    /// 私有：同 prefetch_one，协议不可绕过。
+    fn prefetch_first(&self, folder: PathBuf, folder_str: String, gen: usize) {
         if self.cache.is_stale(gen, ABORT_LAG) {
             self.cache.end_prefetch(&folder_str);
             return;
@@ -464,7 +466,8 @@ mod tests {
         let base = build_tree();
         let model = open_sync(&base.join("A/a1.png"));
         let cache = DecodeCache::new(8);
-        let nav = test_nav(cache.clone(), FolderFirstCache::new(4), fake_decoder);
+        let first_cache = FolderFirstCache::new(4);
+        let nav = test_nav(cache.clone(), first_cache.clone(), fake_decoder);
         let policy = enabled_policy();
 
         assert_eq!(cache.current_generation(), 0);
@@ -486,10 +489,23 @@ mod tests {
             "Boundary 零推进（之前 3 次 Ok 各 +1）"
         );
 
-        // 缓存关闭：Ok 也不推进。
+        // 缓存关闭：Ok 也不推进，且不提升（预置首图不得混入队列 B）。
+        let b_key = base.join("B").to_string_lossy().to_string();
+        let seeded = base.join("B").join("b1.jpg").to_string_lossy().to_string();
+        first_cache.put(
+            b_key,
+            Arc::new(FolderFirst {
+                path: seeded.clone(),
+                result: Arc::new(fake_decoder(&seeded, true).unwrap()),
+            }),
+        );
         let r = nav.navigate(&model, NavStep::Prev, &closed_policy());
         assert!(r.boundary.is_none());
         assert_eq!(cache.current_generation(), 3, "缓存关闭时 Ok 也不推进代次");
+        assert!(
+            cache.get_entry(&seeded).is_none(),
+            "缓存关闭时不得提升（防无条件 promote 回归）"
+        );
         cleanup(&base);
     }
 
@@ -611,6 +627,38 @@ mod tests {
             cache.end_prefetch(&key);
         }
         cleanup(&base);
+    }
+
+    /// 假扫描器：恒返回非 asset 首图路径（不断言枚举，只看是否入首图缓存）。
+    fn fake_scanner(_dir: &Path) -> Option<PathBuf> {
+        Some(std::env::temp_dir().join("z-viewer-nav-first/img.raw"))
+    }
+
+    /// 首图成功路径：非 asset 首图正常入队列 A，且登记配对释放。
+    #[test]
+    fn prefetch_first_success_puts_and_pairs() {
+        let cache = DecodeCache::new(8);
+        let first_cache = FolderFirstCache::new(4);
+        let nav = Navigator::with_seams(
+            cache.clone(),
+            first_cache.clone(),
+            fake_decoder,
+            fake_scanner,
+        );
+        let key = "some-folder".to_string();
+        assert!(cache.begin_prefetch(&key));
+        nav.prefetch_first(PathBuf::from(&key), key.clone(), cache.current_generation());
+        let hit = first_cache.get(&key).expect("首图成功路径应入队列 A");
+        assert_eq!(
+            hit.path,
+            std::env::temp_dir()
+                .join("z-viewer-nav-first/img.raw")
+                .to_string_lossy()
+                .to_string(),
+            "首图路径随缓存值保存（提升时免重枚举）"
+        );
+        assert!(cache.begin_prefetch(&key), "成功路径必须配对 end_prefetch");
+        cache.end_prefetch(&key);
     }
 
     /// (e) begin/end 在失活/失败路径下配对（无并发门控泄漏）。
