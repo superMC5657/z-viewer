@@ -1085,12 +1085,34 @@ mod tests {
 
     /// 最小 localhost HTTP mock（std-only，无新依赖）：按给定顺序 serving 既定响应。
     /// 非阻塞 accept + 总时限：manager 侧 10s 超时内必有结论，测试不会永久挂死。
-    /// 返回 (api_base, server_handle)；用例结束 join（需求满足后自行退出）。
-    fn mock_server(responses: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<()>) {
+    /// 返回 (api_base, stats, server_handle)；stats 永久区分三类故障：
+    /// served==0（服务端没见到连接：connect 被拒/代理干扰）vs served==期望值
+    /// （服务端已响应：客户端读侧故障）vs join 失败（服务端 panic：队列耗尽）。
+    /// 用例结束 join + 断言 served 计数（需求满足后自行退出）。
+    #[derive(Clone, Default)]
+    struct MockStats {
+        accepted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        served: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl MockStats {
+        fn accepted(&self) -> usize {
+            self.accepted.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn served(&self) -> usize {
+            self.served.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    fn mock_server(
+        responses: Vec<(u16, String)>,
+    ) -> (String, MockStats, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mock 绑定回环");
         let port = listener.local_addr().expect("取 mock 端口").port();
         listener.set_nonblocking(true).expect("mock 非阻塞");
         let total = responses.len();
+        let stats = MockStats::default();
+        let thread_stats = stats.clone();
         let handle = std::thread::spawn(move || {
             let mut responses = responses.into_iter();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -1098,20 +1120,31 @@ mod tests {
             while served < total && std::time::Instant::now() < deadline {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        if mock_respond(stream, &mut responses).is_ok() {
-                            served += 1;
-                        } else {
+                        thread_stats
+                            .accepted
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if let Err(e) = mock_respond(stream, &mut responses) {
+                            // 诊断性日志（测试输出）：服务端读/写失败即 announce，
+                            // 否则客户端断言背锅时无法区分是谁先掉线。
+                            eprintln!("MOCK[{port}] respond failed: {e:?}");
                             break;
                         }
+                        served += 1;
+                        thread_stats
+                            .served
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(5));
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        eprintln!("MOCK[{port}] accept failed: {e:?}");
+                        break;
+                    }
                 }
             }
         });
-        (format!("http://127.0.0.1:{port}"), handle)
+        (format!("http://127.0.0.1:{port}"), stats, handle)
     }
 
     /// 读完一个 POST 请求（头 + Content-Length 体），按序回一个既定响应。
@@ -1120,6 +1153,11 @@ mod tests {
         next: &mut impl Iterator<Item = (u16, String)>,
     ) -> std::io::Result<()> {
         use std::io::{Read, Write};
+        // accept 继承了监听器的非阻塞模式：逐连接改回阻塞——否则数据未到时
+        // read 报 WouldBlock， piecemeal 的客户端发送在高负载下必现此竞态
+        // （根因：WouldBlock 被 ? 传出，服务端掉线，客户端 send 失败）。
+        // 改回阻塞后读超时（10s）语义恢复正常，测试不会永久挂死。
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
         let mut buf = Vec::with_capacity(4096);
         let mut chunk = [0u8; 1024];
@@ -1168,6 +1206,19 @@ mod tests {
         buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
     }
 
+    /// 回收 mock 线程并断言服务计数：served!=期望值说明服务端没见到连接
+    /// （connect 被拒/代理干扰）或有多余连接；join 失败则是服务端 panic
+    /// （如响应队列耗尽）——三类故障在此分流，客户端断言不再背锅。
+    fn join_mock(server: std::thread::JoinHandle<()>, stats: &MockStats, expected: usize) {
+        server.join().expect("mock 线程不应 panic");
+        assert_eq!(
+            stats.served(),
+            expected,
+            "mock 服务计数异常（accepted={}）：服务端没见到足量连接=传输层故障",
+            stats.accepted()
+        );
+    }
+
     /// 激活成功：签名 JWT 落盘 → 重启读回 → LicenseInfo 载荷断言。
     #[test]
     fn activate_success_persists_and_roundtrips() {
@@ -1175,16 +1226,24 @@ mod tests {
         let dev = device_id();
         let c = claims(&dev, "pro", now() + 3600);
         let token = sign_jwt(&c, &signing);
-        let (api_base, server) = mock_server(vec![(200, format!(r#"{{"license":"{token}"}}"#))]);
+        let (api_base, stats, server) =
+            mock_server(vec![(200, format!(r#"{{"license":"{token}"}}"#))]);
         let dir = temp_dir_unique("activate");
         let storage = dir.join("license.json");
         let store = mock_store(&api_base, &pubkey);
         let m = LicenseManager::load(storage.clone(), store);
         // 大小写归一化也在覆盖内：小写 code + 大写邮箱仍能激活。
-        let lic = tauri::async_runtime::block_on(
+        // 失败时带 mock 计数：served==0 即服务端没见到连接（传输层故障）。
+        let lic = match tauri::async_runtime::block_on(
             m.activate("abcd-efgh-jkmn-pqrs".into(), "Buyer@Example.COM".into()),
-        )
-        .expect("激活应成功");
+        ) {
+            Ok(lic) => lic,
+            Err(e) => panic!(
+                "激活失败: {e:?} (mock accepted={} served={})",
+                stats.accepted(),
+                stats.served()
+            ),
+        };
         assert_eq!(lic.code, "ABCD-EFGH-JKMN-PQRS");
         assert_eq!(lic.email, "buyer@example.com");
         assert_eq!(lic.token, token);
@@ -1199,7 +1258,7 @@ mod tests {
         assert_eq!(info.code.as_deref(), Some("ABCD-EFGH-JKMN-PQRS"));
         assert_eq!(info.email.as_deref(), Some("buyer@example.com"));
         assert_eq!(info.device_id.as_deref(), Some(dev.as_str()));
-        server.join().expect("mock 应正常结束");
+        join_mock(server, &stats, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1213,19 +1272,25 @@ mod tests {
         let c2 = claims(&dev, "pro", now() + 7200);
         let token2 = sign_jwt(&c2, &signing);
         assert_ne!(token, token2);
-        let (api_base, server) = mock_server(vec![(200, format!(r#"{{"license":"{token2}"}}"#))]);
+        let (api_base, stats, server) =
+            mock_server(vec![(200, format!(r#"{{"license":"{token2}"}}"#))]);
         let dir = temp_dir_unique("refresh");
         let storage = dir.join("license.json");
         let m = LicenseManager::load(storage, mock_store(&api_base, &pubkey));
         *m.license.lock().unwrap() = Some(test_license(&c, token));
         let out = tauri::async_runtime::block_on(m.verify_online());
-        assert!(out.is_none(), "续验成功返回 None");
+        assert!(
+            out.is_none(),
+            "续验成功返回 None (mock accepted={} served={})",
+            stats.accepted(),
+            stats.served()
+        );
         assert_eq!(
             m.license().expect("凭证应保留").token,
             token2,
             "应换入服务端新 JWT"
         );
-        server.join().expect("mock 应正常结束");
+        join_mock(server, &stats, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1237,7 +1302,7 @@ mod tests {
         let dev = device_id();
         let c = claims(&dev, "pro", now() + 3600);
         let token = sign_jwt(&c, &signing);
-        let (api_base, server) = mock_server(vec![(
+        let (api_base, stats, server) = mock_server(vec![(
             401,
             r#"{"error":"CDK_REVOKED","message":"revoked"}"#.to_string(),
         )]);
@@ -1251,7 +1316,12 @@ mod tests {
         assert!(storage.is_file());
 
         let out = tauri::async_runtime::block_on(m.verify_online());
-        assert!(out.is_some(), "吊销应返回最新状态");
+        assert!(
+            out.is_some(),
+            "吊销应返回最新状态 (mock accepted={} served={})",
+            stats.accepted(),
+            stats.served()
+        );
         assert!(m.license().is_none(), "应清空内存授权");
         assert!(!storage.is_file(), "应删除磁盘授权");
         assert!(!is_pro_with(&m.license(), &store, &dev), "吊销后判 free");
@@ -1260,7 +1330,7 @@ mod tests {
             info.code.is_none() && info.email.is_none(),
             "清空后载荷无残留"
         );
-        server.join().expect("mock 应正常结束");
+        join_mock(server, &stats, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1296,17 +1366,23 @@ mod tests {
         let dev = device_id();
         let c = claims(&dev, "pro", now() + 3600);
         let token = sign_jwt(&c, &signing);
-        let (api_base, server) = mock_server(vec![(200, r#"{"unbound":true}"#.to_string())]);
+        let (api_base, stats, server) = mock_server(vec![(200, r#"{"unbound":true}"#.to_string())]);
         let dir = temp_dir_unique("deactivate");
         let storage = dir.join("license.json");
         let m = LicenseManager::load(storage.clone(), mock_store(&api_base, &pubkey));
         let lic = test_license(&c, token);
         *m.license.lock().unwrap() = Some(lic.clone());
         m.persist(&lic).expect("预置磁盘授权");
-        tauri::async_runtime::block_on(m.deactivate()).expect("注销应成功");
+        if let Err(e) = tauri::async_runtime::block_on(m.deactivate()) {
+            panic!(
+                "注销失败: {e:?} (mock accepted={} served={})",
+                stats.accepted(),
+                stats.served()
+            );
+        }
         assert!(m.license().is_none(), "应清空内存授权");
         assert!(!storage.is_file(), "应删除磁盘授权");
-        server.join().expect("mock 应正常结束");
+        join_mock(server, &stats, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
