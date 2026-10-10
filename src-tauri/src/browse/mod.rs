@@ -42,7 +42,7 @@ fn image_entry(entry: &std::fs::DirEntry) -> Option<(String, PathBuf)> {
         return None;
     }
     let name = entry.file_name().to_string_lossy().to_string();
-    if crate::decode::is_image_file(&name) {
+    if is_image_file(&name) {
         Some((name, p))
     } else {
         None
@@ -168,10 +168,15 @@ enum Found<'a> {
 
 impl Drop for BrowseModel {
     fn drop(&mut self) {
-        // 通知后台扫描线程尽快退出（与 wait_filled 紧邻：每次等待都能醒来见取消）
-        if let Ok(mut d) = self.inner.m.lock() {
-            d.cancelled = true;
-        }
+        // 通知后台扫描线程尽快退出（与 wait_filled 紧邻：每次等待都能醒来见取消）。
+        // 与等待者同法恢复中毒锁：静默跳过会让阻塞的 wait_filled 守着已死的
+        // 扫描线程空转（poison 后永不 notify）。
+        let mut d = self
+            .inner
+            .m
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        d.cancelled = true;
         self.inner.cv.notify_all();
     }
 }

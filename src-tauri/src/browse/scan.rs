@@ -272,8 +272,13 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
     d.loading = false;
     drop(d); // 先释放锁，state_from_inner 会再次加锁
     let state = BrowseModel::state_from_inner(&scan_inner);
-    if let Some(cb) = on_ready {
-        cb(state);
+    // 回调前复验取消：Drop 可能恰在压缩后、回调前发生——模型已死，
+    // on_ready 不得再投递（投递即 use-after-free 语义，回调方持废弃状态刷新）。
+    let cancelled = scan_inner.m.lock().map(|d| d.cancelled).unwrap_or(false);
+    if !cancelled {
+        if let Some(cb) = on_ready {
+            cb(state);
+        }
     }
     scan_inner.cv.notify_all();
 }
@@ -281,8 +286,9 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
 /// 压缩空文件夹（仅扫描线程在扫描末尾、持有同一把锁时调用一次）：
 /// 移除 images==Some(empty) 的文件夹，按 removed_before/cur_removed 调整
 /// folder_index，并重算 global_total/global_index 基准（此后增量维护）。
-/// 与任何 wait_filled 等待互斥：压缩运行时所有文件夹已填充，有等待者即有
-/// 未填充文件夹即扫描未结束——等待中索引不可能被压缩致失效。
+/// 睡眠中的等待者可能在压缩后醒来：wait_filled 以 entry_len 复验长度，
+/// 长度变化即判 Stale 由调用方整体重试——压缩单次运行且压缩后全填充，
+/// 重试必收敛（见 C5 跟踪结论，勿改回“互斥”假设）。
 fn compact_empty(d: &mut InnerData) {
     let old_folders = std::mem::take(&mut d.folders);
     let old_index = d.folder_index;
@@ -318,7 +324,9 @@ fn compact_empty(d: &mut InnerData) {
     }
     d.folders = new_folders;
     if cur_removed {
-        // 当前空文件夹被移除：指向其后最近的非空文件夹（新索引 = old_index - removed_before）；
+        // 防御性分支（正常不可达）：当前文件夹打开时必有图且内存图片列表
+        // 永不缩水，cur_removed 只为未来枚举语义变化兜底。当前空文件夹被移除时：
+        // 指向其后最近的非空文件夹（新索引 = old_index - removed_before）；
         // 若其后没有，指向前一个（末位）
         let after = old_index - removed_before;
         d.folder_index = if after < d.folders.len() {

@@ -483,7 +483,7 @@ fn drop_during_scan_no_on_ready_panic() {
 }
 
 #[test]
-fn compression_current_folder_removed() {
+fn disk_deletion_does_not_invalidate_snapshot() {
     let base = build_tree();
     // 不等待：打开后立即删除磁盘上的当前文件夹（内存列表不受影响）
     let m = BrowseModel::open(&base.join("A/a1.png"), None).unwrap();
@@ -515,5 +515,36 @@ fn empty_sibling_never_observed() {
     assert!(matches!(nav, Nav::Ok));
     assert_eq!(m.state().folder_name, "B");
     assert_eq!(m.state().file_name, "b1.jpg");
+    cleanup(&base);
+}
+
+#[test]
+fn stale_path_nav_during_compact() {
+    // 空 A0 夹在 A/B 之间：扫描完成前在线程上 next()，主线程等待压缩结束。
+    // 无论导航是否跨越压缩（Stale 整体重试与否），结果一致：B/b1 + 总数收缩。
+    // Stale 穿越本身是调度相关的，断言只钉可观测结果（join 无挂起即无死锁）。
+    let base = temp_base();
+    for n in ["a1", "a2"] {
+        touch(&base.join("A").join(format!("{n}.png")));
+    }
+    for n in ["b1", "b2"] {
+        touch(&base.join("B").join(format!("{n}.jpg")));
+    }
+    fs::create_dir_all(base.join("A0")).unwrap();
+    let m = BrowseModel::open(&base.join("A/a2.png"), None).unwrap();
+    // 作用域线程借用（不 move）：线程结束不触发 Drop 取消，主线程断言有效。
+    let (ok, folder, file) = std::thread::scope(|s| {
+        let h = s.spawn(|| {
+            let nav = m.next();
+            let st = m.state();
+            (matches!(nav, Nav::Ok), st.folder_name, st.file_name)
+        });
+        wait_ready(&m); // 主线程确保扫描 + 压缩结束
+        h.join().expect("导航线程不应 panic")
+    });
+    assert!(ok, "跨越压缩与否都应 Ok");
+    assert_eq!(folder, "B");
+    assert_eq!(file, "b1.jpg");
+    assert_eq!(m.state().folder_total, 2, "压缩后总数收缩");
     cleanup(&base);
 }
