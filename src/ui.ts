@@ -204,6 +204,21 @@ export class UI {
     this.frameCountEl.textContent = loading ? "正在加载帧…" : formatFrame();
   }
 
+  /** 帧条按钮统一接线（呈现层只传策略回调，按钮 DOM 细节收敛于此） */
+  onFrameAction(h: (op: "first" | "prev" | "toggle" | "next" | "last") => void): void {
+    const wire = (id: string, icon: string | null, op: "first" | "prev" | "toggle" | "next" | "last"): void => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (icon !== null) el.innerHTML = icon;
+      el.addEventListener("click", () => h(op));
+    };
+    wire("frame-first", ICONS["skip-back"], "first");
+    wire("frame-prev", ICONS["chevron-left"], "prev");
+    wire("frame-play", null, "toggle");
+    wire("frame-next", ICONS["chevron-right"], "next");
+    wire("frame-last", ICONS["skip-forward"], "last");
+  }
+
   // ---------- 幻灯片（草图 3.6） ----------
 
   /** 播放/暂停按钮图标与激活态（幻灯片控制条） */

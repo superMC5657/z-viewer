@@ -8,20 +8,20 @@
  * - animated：动画帧序列 → <canvas> 逐帧控制
  */
 
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { Viewer, type FitMode } from "./viewer";
+import { Viewer } from "./viewer";
 import { UI } from "./ui";
+import { ImagePresenter } from "./presenter";
 import { WindowState } from "./window-state";
 import { Slideshow } from "./slideshow";
-import { PrefetchPool } from "./prefetch";
 import { attachInput } from "./input";
 import { ICONS } from "./icons";
-import { needsIpc, setRawExts, parseLoadEnvelope } from "./types";
-import type { AppSettings, BrowseState, LicenseInfo, LoadEnvelope, NavResult } from "./types";
+import { setRawExts } from "./types";
+import type { AppSettings, BrowseState, LicenseInfo, NavResult } from "./types";
 import { checkForUpdate } from "./services/updater";
 import { LicenseService } from "./services/license";
 import { initZLog } from "./lib/z-log";
@@ -39,10 +39,13 @@ const dropOverlay = document.getElementById("drop-overlay")!;
 const viewer = new Viewer(stage, imgA, imgB, frameCanvas);
 const ui = new UI();
 ui.buildToolbar({ onAction: handleToolbarAction });
+const presenter = new ImagePresenter(viewer, ui, {
+  onShown: () => slideshow.resetTimer(),
+  onProRequired: () => void licenseService.openDialog(),
+});
 const appWindow = getCurrentWindow();
 const windowState = new WindowState(appWindow, viewer, ui);
 const slideshow = new Slideshow();
-const prefetch = new PrefetchPool();
 
 const LICENSE_STATUS_CHANGED = "license://status-changed";
 let cacheLevel = 1;
@@ -53,10 +56,18 @@ let slideshowPrevCacheLevel: number | null = null;
 /** 是否处于幻灯片模式（true=隐藏普通浮层只显示控制条；暂停不退出，返回按钮才退出） */
 let slideshowMode = false;
 
-// ---------- 状态 ----------
-let currentDims: { w: number; h: number } | null = null;
-/** 最近一次浏览状态（解锁后重开当前图片以启用跨文件夹扫描） */
-let lastState: BrowseState | null = null;
+// ---------- 薄接线：呈现策略归 ImagePresenter，本文件只留 window/input/slideshow/cache/license ----------
+
+async function openPath(path: string): Promise<void> {
+  exitSlideshow(); // 打开新图片：退出幻灯片模式回到浏览（含停止播放）
+  presenter.clearContext(); // 新上下文，清空旧预解码池
+  try {
+    const result = await invoke<NavResult>("open_path", { path });
+    if (result.state) await presenter.show(result.state);
+  } catch (err) {
+    ui.showToast(String(err));
+  }
+}
 
 const licenseService = new LicenseService(ui, {
   onUnlocked: () => {
@@ -75,207 +86,11 @@ const licenseService = new LicenseService(ui, {
     }
   },
   onReloadRequested: () => {
-    if (lastState) void openPath(lastState.path);
+    const p = presenter.lastPath;
+    if (p) void openPath(p);
   },
 });
-/** showImage 代次：播放中手动翻页等并发加载时，丢弃过期响应 */
-let showSeq = 0;
-/** 当前图片是否为原生 <img> 播放中的动画（帧未加载，帧条交互时按需拆帧） */
-let currentAnimCandidate = false;
-
-/** 潜在动画格式（原生 <img> 播放；仅这些格式需要 check_animation 判定） */
-const ANIM_EXTS = new Set(["gif", "png", "webp"]);
-
-/** check_animation 结果缓存：同路径重复显示（翻回上一张/重看）免重复 IPC + 文件扫描；
- *  会话内至多保留 1000 条（满时删最旧一条近似 LRU，防浏览大文件夹时无界增长） */
-const ANIM_CHECK_CACHE = new Map<string, boolean>();
-const ANIM_CHECK_CACHE_MAX = 1000;
-
-// ---------- 图片显示 ----------
-
-async function showImage(state: BrowseState): Promise<void> {
-  lastState = state;
-  const seq = ++showSeq;
-  ui.setEmpty(false);
-  ui.updateTitleFile(state.file_name);
-  const winTitle = `${state.file_name} - ZViewer`;
-  document.title = winTitle;
-  void appWindow.setTitle(winTitle).catch(() => undefined);
-  ui.updateInfo(state, null);
-  currentDims = null;
-  currentAnimCandidate = false;
-  window.clearTimeout(rawUpgradeTimer);
-  rawUpgradeTimer = undefined;
-  ui.setFrameBarVisible(false);
-  ui.setFramePlaying(false);
-
-  // 预取下一批上下文（asset 预热 + Rust 缓存）；防抖合并快速翻页
-  scheduleRefreshContext();
-
-  // asset 快速通道：浏览器原生解码直接 convertFileSrc，跳过 IPC
-  // （GIF/APNG/WebP 原生 <img> 播放；仅动画候选格式额外判定是否多帧）
-  if (!needsIpc(state.path)) {
-    const ext = state.path.split(".").pop()?.toLowerCase() ?? "";
-    // check_animation 按路径缓存：翻回同一张图时免重复 IPC + 后端文件扫描
-    const cached = ANIM_EXTS.has(ext) ? ANIM_CHECK_CACHE.get(state.path) : undefined;
-    const animCheck = cached !== undefined
-      ? Promise.resolve(cached)
-      : ANIM_EXTS.has(ext)
-        ? invoke<boolean>("check_animation", { path: state.path })
-            .then((v) => {
-              if (ANIM_CHECK_CACHE.size >= ANIM_CHECK_CACHE_MAX) {
-                const oldest = ANIM_CHECK_CACHE.keys().next().value;
-                if (oldest !== undefined) ANIM_CHECK_CACHE.delete(oldest);
-              }
-              ANIM_CHECK_CACHE.set(state.path, v);
-              return v;
-            })
-            .catch(() => false)
-        : Promise.resolve(false);
-    try {
-      await viewer.show({ kind: "url", url: convertFileSrc(state.path) });
-    } catch (err) {
-      console.error(`[render] failed: ${String(err)}`);
-      if (seq === showSeq) {
-        ui.showToast(`无法显示图片：${String(err)}`);
-      }
-      return;
-    }
-    if (seq !== showSeq) return;
-    currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
-    ui.updateInfo(state, currentDims);
-    // 动画文件：原生播放中，亮出帧条（计数未知，交互时按需拆帧）
-    if (await animCheck) {
-      if (seq !== showSeq) return; // await 期间被抢占
-      currentAnimCandidate = true;
-      ui.setFrameBarVisible(true);
-      ui.setFrameCountUnknown();
-      ui.setFramePlaying(true);
-    }
-    ui.setSlideshowProgress(state.global_index + 1, state.global_total);
-    // 埋点：asset 通道显示成功（浏览器原生解码不经 load_image，必须单独计数）
-    void invoke("record_view", { path: state.path }).catch(() => undefined);
-    return;
-  }
-
-  // IPC 通道：RAW/TIFF 由 Rust 解码（信封解析后经统一 seam 显示，分支内聚于 Viewer）
-  ui.beginDecoding();
-  try {
-    let header: LoadEnvelope;
-    let payload: Uint8Array;
-    try {
-      const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
-      ({ header, payload } = parseLoadEnvelope(buf));
-    } catch (err) {
-      if (seq === showSeq) ui.showToast(`无法加载图片：${String(err)}`);
-      return;
-    }
-    if (seq !== showSeq) return;
-
-    try {
-      await viewer.show({ kind: "envelope", header, payload });
-    } catch (err) {
-      if (seq === showSeq) {
-        ui.showToast(`无法显示图片：${String(err)}`);
-        ui.setFrameBarVisible(false);
-      }
-      return;
-    }
-    if (seq !== showSeq) return;
-
-    if (header.isPreview) {
-      scheduleRawUpgrade(state, seq);
-    }
-
-    currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
-    ui.updateInfo(state, currentDims);
-    // 动画分支已内聚：由 Viewer 状态派生帧条可见性（调用面不再解读信封）
-    if (viewer.isAnimation) {
-      ui.setFrameBarVisible(true);
-    }
-    ui.setFramePlaying(viewer.isPlaying);
-    // 幻灯片进度计数（播放中实时更新）
-    ui.setSlideshowProgress(state.global_index + 1, state.global_total);
-    // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身已不再计数）
-    void invoke("record_view", { path: state.path }).catch(() => undefined);
-  } finally {
-    ui.endDecoding();
-  }
-}
-
-let rawUpgradeTimer: number | undefined;
-
-/** 防抖调度 RAW 全量解码：快速翻页时只展示内嵌 JPEG 预览（毫秒级、单图 2~3MB、零 CPU 占用）；
- *  仅当用户在当前图停留 >350ms（判定停止翻页）或用户执行放大操作时，才向后台请求全量解码 */
-function scheduleRawUpgrade(state: BrowseState, seq: number, delay = 350): void {
-  window.clearTimeout(rawUpgradeTimer);
-  rawUpgradeTimer = window.setTimeout(() => {
-    if (seq === showSeq) {
-      void upgradeRawToFull(state, seq);
-    }
-  }, delay);
-}
-
-function triggerImmediateRawUpgrade(): void {
-  if (rawUpgradeTimer !== undefined && lastState) {
-    window.clearTimeout(rawUpgradeTimer);
-    rawUpgradeTimer = undefined;
-    void upgradeRawToFull(lastState, showSeq);
-  }
-}
-
-/** RAW 内嵌预览已显示：后台拉取全量解码结果并替换（seq 抢占安全；变换保持）。
- *  全量经统一 seam 以 keepTransform 显示；失败时预览由 Viewer 内部保留，不破碎。 */
-async function upgradeRawToFull(state: BrowseState, seq: number): Promise<void> {
-  ui.beginDecoding();
-  try {
-    const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: true });
-    if (seq !== showSeq) return;
-    const { header, payload } = parseLoadEnvelope(buf);
-    if (header.isPreview) return; // 防御：仍返回预览（异常路径），保持现有显示
-    if (seq !== showSeq) return;
-    try {
-      await viewer.show({ kind: "envelope", header, payload, keepTransform: true });
-    } catch {
-      // 全量失败：预览仍在（Viewer 在 keep 路径下不清空旧画面），静默保留，无需显式恢复
-      return;
-    }
-    if (seq !== showSeq) return;
-    // 信息条尺寸更新为全量尺寸
-    currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
-    ui.updateInfo(state, currentDims);
-  } finally {
-    ui.endDecoding();
-  }
-}
-
-/** 获取当前上下文路径并预热 */
-async function refreshContext(): Promise<void> {
-  try {
-    const paths = await invoke<string[]>("get_context");
-    // asset 图（含动画）：WebView2 预解码池
-    prefetch.warm(paths, needsIpc);
-    // needsIpc（RAW/TIFF）邻居已由 Rust prefetch_context（导航后自动触发）
-    // 预取进 DecodeCache —— 前端不再重复 load_image，避免并发冗余解码
-  } catch {
-  }
-}
-
-/** refreshContext 防抖：快速翻页时每张图都触发，100ms 内合并为一次 get_context */
-let refreshContextTimer: number | undefined;
-function scheduleRefreshContext(delay = 100): void {
-  window.clearTimeout(refreshContextTimer);
-  refreshContextTimer = window.setTimeout(() => void refreshContext(), delay);
-}
-
-/** 边界 Toast 文案（图片级 / 文件夹级，见《UI设计草图.md》第 6 节） */
-const BOUNDARY_TEXT: Record<string, string> = {
-  "first-image": "已经是第一张了",
-  "last-image": "已经是最后一张了",
-  "first-folder": "已经是第一个文件夹了",
-  "last-folder": "已经是最后一个文件夹了",
-  "pro-required": "跨文件夹浏览是专业版功能",
-};
+// ---------- 工具栏动作（呈现经 presenter，窗口/幻灯片/缓存/license 直连） ----------
 
 /** 付费功能入口统一拦截：免费版弹出解锁引导（不发起 IPC） */
 function requirePro(): boolean {
@@ -285,93 +100,23 @@ function requirePro(): boolean {
   return false;
 }
 
-/** 导航在飞合并：方向键连按/连点时不并发轰炸 IPC —— 导航进行中只记 pending，
- *  当前完成后补执行**最新**一次（中间态无意义）；结果乱序由 showSeq 兜底 */
-let navInFlight = false;
-let navPending: (() => Promise<NavResult>) | null = null;
-
-async function nav(fn: () => Promise<NavResult>): Promise<void> {
-  if (navInFlight) {
-    navPending = fn;
-    return;
-  }
-  navInFlight = true;
-  try {
-    await navApply(fn);
-    while (navPending) {
-      const next = navPending;
-      navPending = null;
-      await navApply(next);
-    }
-  } finally {
-    navInFlight = false;
-  }
-}
-
-/** 单次导航：IPC → 边界 Toast / showImage */
-async function navApply(fn: () => Promise<NavResult>): Promise<void> {
-  let result: NavResult;
-  try {
-    result = await fn();
-  } catch {
-    return;
-  }
-  if (result.boundary) {
-    // 撞边界：图片未变化，只弹 Toast，不重载图片（避免闪烁与变换重置）
-    ui.showToast(BOUNDARY_TEXT[result.boundary] ?? "已经到边界了");
-    // 专业版功能被锁定（jump_folder 拦截）：引导解锁
-    if (result.boundary === "pro-required") void licenseService.openDialog();
-    return;
-  }
-  if (result.state) {
-    await showImage(result.state);
-    // 手动翻页不中断幻灯片，但从当前图重置计时
-    slideshow.resetTimer();
-  }
-}
-
-async function openPath(path: string): Promise<void> {
-  exitSlideshow(); // 打开新图片：退出幻灯片模式回到浏览（含停止播放）
-  prefetch.clear(); // 新上下文，清空旧预解码池
-  try {
-    const result = await invoke<NavResult>("open_path", { path });
-    if (result.state) await showImage(result.state);
-  } catch (err) {
-    ui.showToast(String(err));
-  }
-}
-
-// ---------- 缩放模式（同步按钮激活态） ----------
-
-/** 同步缩放按钮状态与信息条缩放读数：适应窗口仅纯 fit 时激活，手动缩放后置灰 */
-function syncZoomButtons(): void {
-  ui.setZoomButtons(viewer.isFit, viewer.mode === "actual");
-  ui.setZoom(viewer.hasImage ? viewer.currentScale : null);
-}
-
-function setFitMode(mode: FitMode): void {
-  if (mode === "actual") triggerImmediateRawUpgrade();
-  viewer.setMode(mode);
-  syncZoomButtons();
-}
-
 // ---------- 工具栏动作 ----------
 
 function handleToolbarAction(id: string): void {
   switch (id) {
     case "folder-prev":
       if (!requirePro()) return;
-      void nav(() => invoke("jump_folder", { target: "prev" }));
+      void presenter.navigate(() => invoke("jump_folder", { target: "prev" }));
       break;
     case "image-prev":
-      void nav(() => invoke("prev_image"));
+      void presenter.navigate(() => invoke("prev_image"));
       break;
     case "image-next":
-      void nav(() => invoke("next_image"));
+      void presenter.navigate(() => invoke("next_image"));
       break;
     case "folder-next":
       if (!requirePro()) return;
-      void nav(() => invoke("jump_folder", { target: "next" }));
+      void presenter.navigate(() => invoke("jump_folder", { target: "next" }));
       break;
     case "rotate-cw":
       viewer.rotate(90);
@@ -386,10 +131,10 @@ function handleToolbarAction(id: string): void {
       viewer.flip("v");
       break;
     case "zoom-actual":
-      setFitMode("actual");
+      presenter.setFitMode("actual");
       break;
     case "zoom-fit":
-      setFitMode("fit");
+      presenter.setFitMode("fit");
       break;
     case "pin":
       void windowState.togglePin();
@@ -411,128 +156,6 @@ function handleToolbarAction(id: string): void {
       slideshow.toggle();
       break;
   }
-}
-
-// ---------- 帧控制浮条（草图 3.7） ----------
-
-/** 帧条按钮统一入口：帧已就绪（canvas 模式）直接控制；
- *  原生 <img> 播放中先按需拆帧，完成后执行动作（拆帧后自动播放，
- *  动作如 togglePlay 即暂停、stepFrame 即暂停并步进，语义自然） */
-function frameControl(action: () => void): void {
-  if (viewer.isAnimation) {
-    action();
-    ui.setFramePlaying(viewer.isPlaying);
-    return;
-  }
-  if (!currentAnimCandidate) return;
-  void loadAnimationOnDemand()
-    .then(() => {
-      if (viewer.isAnimation) {
-        action();
-        ui.setFramePlaying(viewer.isPlaying);
-      }
-    })
-    .catch((err) => ui.showToast(String(err)));
-}
-
-/** 按需拆帧：用户第一次点帧条时把原生播放切换为 canvas 逐帧模式（优先 Web 原生 ImageDecoder 秒出，支持 Rust 降级） */
-async function loadAnimationOnDemand(): Promise<void> {
-  const state = lastState;
-  if (!state) return;
-  const seq = showSeq; // 代次快照：await 期间切图则丢弃，防旧动画覆盖新图显示
-  ui.setFrameLoading(true);
-  try {
-    // 优先尝试 Web 原生 ImageDecoder（Chromium C++ 引擎硬件加速解码，免 Rust 端单帧 PNG 重编码）
-    if (typeof ImageDecoder !== "undefined") {
-      try {
-        const ext = state.path.split(".").pop()?.toLowerCase() ?? "";
-        const mime = ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/png";
-        if (await ImageDecoder.isTypeSupported(mime)) {
-          const resp = await fetch(convertFileSrc(state.path));
-          if (!resp.ok) throw new Error("无法读取动画文件");
-          const blob = await resp.blob();
-          if (seq !== showSeq) return;
-
-          const decoder = new ImageDecoder({ data: blob.stream(), type: mime });
-          await decoder.tracks.ready;
-          const track = decoder.tracks.selectedTrack;
-          const frameCount = track?.frameCount ?? 0;
-
-          if (frameCount <= 1) {
-            ui.setFrameBarVisible(false);
-            currentAnimCandidate = false;
-            ui.showToast("该文件不是多帧动画");
-            return;
-          }
-
-          const bitmaps: ImageBitmap[] = [];
-          const delays: number[] = [];
-          for (let i = 0; i < frameCount; i++) {
-            if (seq !== showSeq) {
-              for (const b of bitmaps) b.close();
-              return;
-            }
-            const res = await decoder.decode({ frameIndex: i });
-            const bmp = await createImageBitmap(res.image);
-            res.image.close();
-            bitmaps.push(bmp);
-            const d = res.image.duration ? Math.max(Math.round(res.image.duration / 1000), 10) : 100;
-            delays.push(d);
-          }
-
-          if (seq !== showSeq) {
-            for (const b of bitmaps) b.close();
-            return;
-          }
-
-          ui.setFrameBarVisible(true);
-          await viewer.show({ kind: "frames", bitmaps, delays });
-          return;
-        }
-      } catch {
-      }
-    }
-
-    // 回退通道：Rust 解码服务（信封经统一 seam 显示，单帧与否由 Viewer 状态派生）
-    const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
-    if (seq !== showSeq) return;
-    const { header, payload } = parseLoadEnvelope(buf);
-    if (seq !== showSeq) return;
-    ui.setFrameBarVisible(true);
-    if (seq !== showSeq) return; // await 期间被抢占：不覆盖新图
-    await viewer.show({ kind: "envelope", header, payload });
-    if (seq !== showSeq) return;
-    if (!viewer.isAnimation) {
-      // 单帧文件（如单帧 GIF / 静态 PNG）：收起帧条并提示
-      ui.setFrameBarVisible(false);
-      currentAnimCandidate = false;
-      ui.showToast("该文件不是多帧动画");
-      return;
-    }
-  } finally {
-    ui.setFrameLoading(false);
-  }
-}
-
-function buildFrameBar(): void {
-  const iconMap: Record<string, string> = {
-    "frame-first": ICONS["skip-back"],
-    "frame-prev": ICONS["chevron-left"],
-    "frame-next": ICONS["chevron-right"],
-    "frame-last": ICONS["skip-forward"],
-  };
-  for (const [id, icon] of Object.entries(iconMap)) {
-    document.getElementById(id)!.innerHTML = icon;
-  }
-  ui.setFramePlaying(false);
-
-  document.getElementById("frame-first")!.addEventListener("click", () => frameControl(() => viewer.seekFrame(0)));
-  document.getElementById("frame-prev")!.addEventListener("click", () => frameControl(() => viewer.stepFrame(-1)));
-  document.getElementById("frame-play")!.addEventListener("click", () => frameControl(() => viewer.togglePlay()));
-  document.getElementById("frame-next")!.addEventListener("click", () => frameControl(() => viewer.stepFrame(1)));
-  document.getElementById("frame-last")!.addEventListener("click", () => frameControl(() => viewer.seekFrame(Number.MAX_SAFE_INTEGER)));
-
-  viewer.onFrameChange = (index, total) => ui.updateFrameCount(index, total);
 }
 
 // ---------- 幻灯片（草图 3.6） ----------
@@ -598,8 +221,8 @@ function buildSlideshowBar(): void {
       exitSlideshow(); // 空模型（未打开图片）：停止空转并退出
       return false;
     }
-    // showImage 超时兜底：5s 未完成按成功处理（避免挂起杀死幻灯片）
-    await raceWithTimeout(showImage(result.state), 5000);
+    // 呈现超时兜底：5s 未完成按成功处理（避免挂起杀死幻灯片）
+    await raceWithTimeout(presenter.show(result.state), 5000);
     return true;
   };
 
@@ -664,7 +287,7 @@ async function setCacheLevel(level: number, toast?: string, force = false): Prom
     }
     syncCacheButton();
     if (toast) ui.showToast(toast);
-    if (lv > 0) void refreshContext(); // 开启后立即按当前上下文预取
+    if (lv > 0) presenter.refreshContext(); // 开启后立即按当前上下文预热
   } catch (err) {
     ui.showToast(`切换失败：${String(err)}`);
   }
@@ -686,14 +309,6 @@ function syncCacheButton(): void {
 // ---------- 事件装配 ----------
 
 function bindEvents(): void {
-  // 变换状态变化时同步缩放按钮；放大超过 100% 立即提升为原图全量清晰度
-  viewer.onStateChange = () => {
-    syncZoomButtons();
-    if (viewer.currentScale > 1) {
-      triggerImmediateRawUpgrade();
-    }
-  };
-
   // 标题栏窗口控制与最大化/还原状态同步
   const syncMaximize = async () => {
     try {
@@ -724,10 +339,10 @@ function bindEvents(): void {
 
   // 快捷键 + 滚轮
   attachInput(viewer, {
-    onPrev: () => void nav(() => invoke("prev_image")),
-    onNext: () => void nav(() => invoke("next_image")),
-    onJumpFolder: (t) => void nav(() => invoke("jump_folder", { target: t })),
-    onSetMode: setFitMode,
+    onPrev: () => void presenter.navigate(() => invoke("prev_image")),
+    onNext: () => void presenter.navigate(() => invoke("next_image")),
+    onJumpFolder: (t) => void presenter.navigate(() => invoke("jump_folder", { target: t })),
+    onSetMode: (mode) => presenter.setFitMode(mode),
     onToggleImmersive: () => void windowState.toggleImmersive(),
     onExitImmersive: () => void windowState.exitImmersive(),
     onTogglePin: () => void windowState.togglePin(),
@@ -773,8 +388,7 @@ function bindEvents(): void {
   // 双击：以点击位置为锚点在实际大小 ↔ 适应窗口之间平滑切换（草图 5.4 体验升级）
   stage.addEventListener("dblclick", (e) => {
     if (!viewer.hasImage) return;
-    viewer.toggleFitActual(e.clientX, e.clientY);
-    syncZoomButtons();
+    presenter.setFitMode(viewer.isFit ? "actual" : "fit", e.clientX, e.clientY);
   });
 
   // 窗口尺寸变化：rAF 合并并同步最大化按钮状态
@@ -796,24 +410,14 @@ function bindEvents(): void {
 async function init(): Promise<void> {
   bindEvents();
   licenseService.bindDialogEvents();
-  buildFrameBar();
   buildSlideshowBar();
   // 应用持久化的幻灯片间隔（buildSlideshowBar 已同步下拉框显示）
   const savedInterval = loadSsInterval();
   if (savedInterval !== null) slideshow.setInterval(savedInterval);
   ui.setEmpty(true);
-  // 空状态初始隐藏帧条（打开图片后由 showImage 按需设置）
+  // 空状态初始隐藏帧条（打开图片后由呈现层按需设置）
   ui.setFrameBarVisible(false);
-  syncZoomButtons(); // 初始：适应窗口激活
 
-  // 后台枚举完成：刷新信息条计数（图片不重载）
-  await listen<BrowseState>("browse://scan-ready", (event) => {
-    const st = event.payload;
-    ui.updateInfo(st, currentDims);
-    ui.setSlideshowProgress(st.global_index + 1, st.global_total);
-    // 兄弟文件夹枚举完成：按强度预取跨文件夹路径；防抖合并
-    scheduleRefreshContext();
-  });
   await listen<LicenseInfo>(LICENSE_STATUS_CHANGED, (event) => {
     licenseService.applyStatus(event.payload);
   });
@@ -835,7 +439,7 @@ async function init(): Promise<void> {
     // 命令行 / 双击打开：Rust 端已注入浏览模型
     const state = await invoke<BrowseState | null>("get_initial_state");
     if (state) {
-      await showImage(state);
+      await presenter.show(state);
       ui.setEmpty(false);
     }
     // 读取缓存设置并同步 UI（localStorage 持久化优先，否则 Rust 默认）
