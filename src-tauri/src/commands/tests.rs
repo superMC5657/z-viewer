@@ -1,9 +1,7 @@
 //! commands 模块测试（#[cfg(test)] 独立文件，不混入产品代码）
 //! 测试通过 `super::*` 访问 AppSettings / prefetch 函数等。
 
-use super::prefetch::prefetch_folder_firsts;
 use super::*;
-use crate::cache::FolderFirstCache;
 
 #[test]
 fn neighbor_window_rules() {
@@ -84,38 +82,6 @@ fn sample(path: &str) -> Arc<crate::decode::LoadResult> {
         (path.len() * 7) as u32,
         false,
     ))
-}
-
-#[test]
-fn folder_first_cache_promote_to_neighbor() {
-    // 验证：预取 C 首图入队列 A → 导航到 C → promote 并入队列 B
-    // C 首图 c01.png 单帧判定 asset → 队列 A 不缓存（asset 由前端池预热）；
-    // 此测试验证非 asset 场景：用 B 首图 img_2.gif（动画，非 asset）
-    let base = std::env::current_dir()
-        .unwrap()
-        .join("..")
-        .join("test-images");
-    // 构造 B 首图为 gif 的模型：直接从 B/img_2.gif 打开
-    let model = BrowseModel::open(&base.join("B/img_2.gif"), None).unwrap();
-    model.wait_ready();
-
-    let first_cache = FolderFirstCache::new(4);
-    let cache = DecodeCache::new(4);
-    let settings = AppSettings::default();
-
-    // 预取相邻文件夹首图（队列 A）：B 的邻居 A 首图 1.png（单帧 png→asset，跳过）、C 首图 c01.png（asset，跳过）
-    // 首图非 asset 的邻居文件夹在此测试树中不存在 → 队列 A 为空是正确行为
-    prefetch_folder_firsts(&model, &cache, &first_cache, &settings);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // 关键验证：get_context 必须包含相邻文件夹首图路径（asset 供前端池预热）
-    // 直接验证 first_image_of 与 neighbor_folders 的衔接
-    let neighbors = model.neighbor_folders(1);
-    assert!(!neighbors.is_empty(), "B 应有相邻文件夹");
-    for f in &neighbors {
-        let first = BrowseModel::first_image_of(f).expect("相邻文件夹应有首图");
-        assert!(first.is_file(), "首图路径应有效");
-    }
 }
 
 #[test]

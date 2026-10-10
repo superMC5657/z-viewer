@@ -1,12 +1,12 @@
 //! Tauri IPC 命令：前端浏览逻辑的桥梁
 //!
 //! 文件组织（可维护性拆分）：
-//! - mod.rs：Tauri 命令 + 全局状态类型 + 导航壳
+//! - mod.rs：Tauri 命令 + 全局状态类型 + 导航壳（薄封装，顺序归 Navigator）
 //! - settings.rs：用户设置（AppSettings）
-//! - prefetch.rs：预取三函数（队列 A/B）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
+//!
+//! 导航/预取/代次实现见 crate::navigator 深模块。
 
-mod prefetch;
 mod settings;
 #[cfg(test)]
 mod tests;
@@ -16,11 +16,13 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{Emitter, State};
 
-use crate::browse::{Boundary, BrowseModel, BrowseState, FolderTarget, Nav};
+use crate::browse::{BrowseModel, BrowseState, FolderTarget};
 use crate::cache::{DecodeCache, FolderFirstCache};
+use crate::navigator::{NavStep, Navigator, PrefetchPolicy};
 
+/// NavResult 唯一定义在 crate::navigator；此处重导出保持 commands::NavResult 路径兼容。
+pub use crate::navigator::NavResult;
 pub use settings::AppSettings;
-use prefetch::{prefetch_context, prefetch_folder_firsts, promote_folder_first};
 
 /// 后台扫描完成事件（携带最新 BrowseState，前端刷新位置计数）
 pub const BROWSE_SCAN_READY: &str = "browse://scan-ready";
@@ -73,7 +75,10 @@ impl SettingsState {
 
     /// 可写更新：闭包内修改设置后返回快照（set_cache_level 共用）。
     pub fn update<T>(&self, f: impl FnOnce(&mut AppSettings) -> T) -> Result<T, String> {
-        self.0.lock().map(|mut g| f(&mut g)).map_err(|e| e.to_string())
+        self.0
+            .lock()
+            .map(|mut g| f(&mut g))
+            .map_err(|e| e.to_string())
     }
 
     /// 快照缓存等级：analytics 上报等只读方复用；锁中毒回退 0（关闭）。
@@ -98,55 +103,6 @@ pub(crate) fn require_pro<T>(
     }
 }
 
-/// 导航结果：boundary 为 Some 时表示撞到全局边界（前端弹 Toast），state 不变
-/// boundary 取值："first-image" | "last-image" | "first-folder" | "last-folder" | "pro-required"
-#[derive(serde::Serialize)]
-pub struct NavResult {
-    pub boundary: Option<String>,
-    pub state: Option<BrowseState>,
-}
-
-impl NavResult {
-    fn ok(state: BrowseState) -> Self {
-        Self {
-            boundary: None,
-            state: Some(state),
-        }
-    }
-    fn boundary(b: Boundary, state: BrowseState) -> Self {
-        let msg = match b {
-            Boundary::FirstImage => "first-image",
-            Boundary::LastImage => "last-image",
-            Boundary::FirstFolder => "first-folder",
-            Boundary::LastFolder => "last-folder",
-        };
-        Self {
-            boundary: Some(msg.into()),
-            state: Some(state),
-        }
-    }
-    /// 专业版功能锁定（免费版调用 jump_folder）：前端弹出解锁引导
-    fn pro_required() -> Self {
-        Self {
-            boundary: Some("pro-required".into()),
-            state: None,
-        }
-    }
-    fn none() -> Self {
-        Self {
-            boundary: None,
-            state: None,
-        }
-    }
-}
-
-fn nav_ok_or_none(model: &BrowseModel, nav: Nav) -> NavResult {
-    match nav {
-        Nav::Ok => NavResult::ok(model.state()),
-        Nav::Boundary(b) => NavResult::boundary(b, model.state()),
-    }
-}
-
 use crate::util::{basename_of, first_line_of};
 
 /// 构造后台扫描完成回调：emit BROWSE_SCAN_READY 供前端刷新位置计数
@@ -159,7 +115,7 @@ pub fn on_ready_callback(app: tauri::AppHandle) -> crate::browse::OnReady {
 
 /// 按路径形态分发打开浏览模型：目录 → open_first_in_dir_gated（取首图），
 /// 文件 → open_gated（定位到该文件）；main.rs 启动注入与 open_path 共用。
-/// 只做分发：日志、advance_generation、prefetch、缓存代次保持在调用点各自处理。
+/// 只做分发：日志、代次推进、预取统一归 Navigator（open_path 经 did_open）。
 pub fn open_model_from_path(
     p: &Path,
     on_ready: Option<crate::browse::OnReady>,
@@ -172,21 +128,22 @@ pub fn open_model_from_path(
     }
 }
 
-/// 执行导航并处理后置动作（首图 promote + 邻居预取）；三个导航命令共用。
+/// 执行导航的薄壳：快照模型与策略后委托 Navigator（顺序：代次→提升→队列 B→A
+/// 由深模块固定，命令层只管日志）。无模型时返回空结果（未打开契约不变）。
 /// 先快照模型（Arc clone）再释放 AppState 锁：导航的等待填充只占模型内部锁
 fn navigate(
     state: &AppState,
     cache: &DecodeCache,
     first_cache: &FolderFirstCache,
     settings: &SettingsState,
-    nav: impl FnOnce(&BrowseModel) -> Nav,
+    step: NavStep,
 ) -> Result<NavResult, String> {
     let Some(model) = state.snapshot()? else {
         return Ok(NavResult::none());
     };
     let prev_folder = model.state().folder_name;
-    let nav = nav(&model);
-    let r = nav_ok_or_none(&model, nav);
+    let policy = settings.read(|s| PrefetchPolicy::from(s))?;
+    let r = Navigator::new(cache.clone(), first_cache.clone()).navigate(&model, step, &policy);
     if let Some(b) = r.boundary.as_deref() {
         // 导航边界：高频且用户可见 toast，只 debug（release 不可见）
         log::debug!("browse boundary {b}");
@@ -202,13 +159,6 @@ fn navigate(
             st.global_total,
             st.file_name
         );
-        cache.advance_generation();
-        // 跨文件夹进入新文件夹：先把预取的首图并入队列 B（前端 load_image 命中）
-        promote_folder_first(&model, cache, first_cache);
-        settings.read(|s| {
-            prefetch_context(&model, cache, s);
-            prefetch_folder_firsts(&model, cache, first_cache, s);
-        })?;
     }
     Ok(r)
 }
@@ -241,11 +191,9 @@ pub fn open_path(
         st.folder_name,
         st.global_total
     );
-    cache.advance_generation();
-    settings.read(|s| {
-        prefetch_context(&model, cache.inner(), s);
-        prefetch_folder_firsts(&model, cache.inner(), first_cache.inner(), s);
-    })?;
+    // 打开尾巴归 Navigator::did_open（推进代次 + 双队列派生，无提升）。
+    let policy = settings.read(|s| PrefetchPolicy::from(s))?;
+    Navigator::new(cache.inner().clone(), first_cache.inner().clone()).did_open(&model, &policy);
     state.replace(model)?;
     Ok(NavResult::ok(st))
 }
@@ -262,7 +210,7 @@ pub fn next_image(
         cache.inner(),
         first_cache.inner(),
         settings.inner(),
-        |m| m.next(),
+        NavStep::Next,
     );
     r
 }
@@ -279,7 +227,7 @@ pub fn prev_image(
         cache.inner(),
         first_cache.inner(),
         settings.inner(),
-        |m| m.prev(),
+        NavStep::Prev,
     )
 }
 
@@ -310,7 +258,7 @@ pub fn jump_folder(
             cache.inner(),
             first_cache.inner(),
             settings.inner(),
-            |m| m.jump_folder(t),
+            NavStep::Folder(t),
         )?;
         if let Some(st) = r.state.as_ref() {
             // 文件夹级跳转成功：低频关键定位变更，记 info
@@ -461,55 +409,28 @@ pub fn get_raw_extensions() -> Vec<&'static str> {
 }
 
 /// 查询当前图片上下文路径（按缓存强度），供前端预解码池预热
-/// 相邻文件夹首图的目录枚举移入 spawn_blocking，不在持有 AppState 锁时阻塞命令线程
+/// 只读投影归 Navigator::frontend_context（无代次、无派生，含 asset）；
+/// 目录枚举在 spawn_blocking 内执行，不在持有 AppState 锁时阻塞命令线程
 /// 专业版功能：免费版返回空（无预取）
 #[tauri::command]
 pub async fn get_context(
     state: State<'_, AppState>,
+    cache: State<'_, DecodeCache>,
+    first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
 ) -> Result<Vec<String>, String> {
     if !require_pro(&license, false, || true) {
         return Ok(Vec::new());
     }
-    // 快照模型后释放 AppState 锁（context_paths/neighbor_folders 走模型内部锁，均快速）
+    // 快照模型后释放 AppState 锁，再单次快照策略（绝不在内部持锁）。
     let Some(model) = state.snapshot()? else {
         return Ok(Vec::new());
     };
-    // 单次锁读取设置（预取窗口 + 首图队列深度）
-    let (prev_n, next_n, folder_depth, enabled) = settings.read(|s| {
-        let (p, n) = s.neighbor_window();
-        (p, n, s.folder_first_depth, s.is_enabled())
-    })?;
-    let mut paths: Vec<String> = model
-        .context_paths(prev_n, next_n)
-        .into_iter()
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
-    // 缓存关闭（cache_level=0）时不返回任何首图路径，前端不预热
-    let neighbors = if folder_depth > 0 && enabled {
-        model.neighbor_folders(1)
-    } else {
-        Vec::new()
-    };
-    // 锁外：后台枚举相邻文件夹首图（asset 供前端池预热，非 asset 由 Rust 队列 A 处理）
-    if !neighbors.is_empty() {
-        let firsts = tauri::async_runtime::spawn_blocking(move || {
-            let mut out = Vec::with_capacity(neighbors.len());
-            for folder in neighbors {
-                if let Some(first) = BrowseModel::first_image_of(&folder) {
-                    out.push(first.to_string_lossy().to_string());
-                }
-            }
-            out
-        })
+    let policy = settings.read(|s| PrefetchPolicy::from(s))?;
+    let nav = Navigator::new(cache.inner().clone(), first_cache.inner().clone());
+    // 投影本身同步：spawn 包装留在命令边缘（深模块内无 spawn）。
+    tauri::async_runtime::spawn_blocking(move || nav.frontend_context(&model, &policy))
         .await
-        .map_err(|e| format!("首图枚举任务失败: {e}"))?;
-        for p in firsts {
-            if !paths.contains(&p) {
-                paths.push(p);
-            }
-        }
-    }
-    Ok(paths)
+        .map_err(|e| format!("上下文枚举任务失败: {e}"))
 }

@@ -7,6 +7,7 @@ mod cache;
 mod commands;
 mod decode;
 mod license;
+mod navigator;
 mod util;
 mod z_log;
 
