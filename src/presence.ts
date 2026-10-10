@@ -73,7 +73,8 @@ export class Presence {
   private running = false;
   private immersive = false;
   private pinned = false;
-  private winBusy = false;
+  private immBusy = false;
+  private pinBusy = false;
   private frameAvailable = false;
   private dialogOpen = false;
 
@@ -162,10 +163,11 @@ export class Presence {
     }
   }
 
-  /** 弹窗显隐打点：打开时清计时+抑制，关闭恢复 */
+  /** 弹窗显隐打点：打开时清计时+抑制，关闭时重排闲置隐藏 */
   setDialogOpen(open: boolean): void {
     this.dialogOpen = open;
     if (open) this.clearIdleTimer();
+    else this.wake();
   }
 
   /** 模式唯一开关：翻转分组 → 显示控制条 → wake → 通知调用面 */
@@ -220,7 +222,7 @@ export class Presence {
         void this.togglePin();
         return;
       case "slideshow-toggle":
-        this.toggleSlideshow(this.isPro());
+        this.toggleSlideshow();
         return;
       case "slideshow-exit":
         this.stopSlideshow();
@@ -257,8 +259,8 @@ export class Presence {
 
   // ---------- 节奏（v4 节拍器，行为与 slideshow.ts 一致） ----------
 
-  /** 开始播放（暂停后继续沿用；首次进入模式时按 pro 决定是否提级缓存） */
-  startSlideshow(opts: { pro: boolean }): void {
+  /** 开始播放（暂停后继续沿用；首次进入模式时按闭包决定是否提级缓存） */
+  startSlideshow(): void {
     if (this.running) return;
     const entering = this.mode !== "slideshow";
     this.running = true;
@@ -266,7 +268,7 @@ export class Presence {
     this.nextTickAt = performance.now() + this.intervalMs;
     this.onRunningChange?.(true);
     this.setPresence("slideshow");
-    if (entering && opts.pro) this.host.onCacheElevation(true);
+    if (entering && this.isPro()) this.host.onCacheElevation(true);
     this.schedule();
   }
 
@@ -277,9 +279,9 @@ export class Presence {
     this.host.onCacheElevation(false);
   }
 
-  toggleSlideshow(pro: boolean): void {
+  toggleSlideshow(): void {
     if (this.running) this.pausePlayback();
-    else this.startSlideshow({ pro });
+    else this.startSlideshow();
   }
 
   /** 设置间隔（毫秒），播放中立即生效：从当前时刻起算新间隔 */
@@ -324,8 +326,8 @@ export class Presence {
 
   /** 切换沉浸（IPC 成功后翻转，失败 Toast 回滚；连按防重入） */
   private async toggleImmersive(): Promise<void> {
-    if (this.winBusy) return;
-    this.winBusy = true;
+    if (this.immBusy) return;
+    this.immBusy = true;
     const next = !this.immersive;
     try {
       await this.host.window.setFullscreen(next);
@@ -337,20 +339,20 @@ export class Presence {
     } catch (err) {
       this.host.notify(`沉浸模式切换失败：${String(err)}`);
     } finally {
-      this.winBusy = false;
+      this.immBusy = false;
     }
   }
 
   /** 退出沉浸（未沉浸时静默） */
   private async exitImmersive(): Promise<void> {
-    if (!this.immersive || this.winBusy) return;
+    if (!this.immersive || this.immBusy) return;
     await this.toggleImmersive();
   }
 
   /** 切换置顶（IPC 成功后翻转，失败 Toast 回滚；连按防重入） */
   private async togglePin(): Promise<void> {
-    if (this.winBusy) return;
-    this.winBusy = true;
+    if (this.pinBusy) return;
+    this.pinBusy = true;
     const next = !this.pinned;
     try {
       await this.host.window.setAlwaysOnTop(next);
@@ -360,7 +362,7 @@ export class Presence {
     } catch (err) {
       this.host.notify(`置顶切换失败：${String(err)}`);
     } finally {
-      this.winBusy = false;
+      this.pinBusy = false;
     }
   }
 

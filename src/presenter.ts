@@ -16,7 +16,7 @@ import type { BrowseState, LoadEnvelope, NavResult } from "./types";
 import { PrefetchPool } from "./prefetch";
 
 export interface ImagePresenterOptions {
-  /** 成功显示一张图片后（导航/直显通用，调用面接 slideshow.resetTimer） */
+  /** 成功显示一张图片后（导航/直显通用，调用面接 presence.notifyManualNav） */
   onShown?: () => void;
   /** 导航撞上付费边界时（调用面接解锁对话框） */
   onProRequired?: () => void;
@@ -273,7 +273,8 @@ export class ImagePresenter {
     window.clearTimeout(this.rawTimer);
     this.rawTimer = window.setTimeout(() => {
       if (gen === this.gen) {
-        void this.upgradeToFull(state, gen);
+        // 全量拉取失败只保留预览（Viewer 不清空旧画面），此处吞掉拒绝以保持静默
+        void this.upgradeToFull(state, gen).catch(() => undefined);
       }
     }, delay);
   }
@@ -282,7 +283,7 @@ export class ImagePresenter {
     if (this.rawTimer !== undefined && this.lastState) {
       window.clearTimeout(this.rawTimer);
       this.rawTimer = undefined;
-      void this.upgradeToFull(this.lastState, this.gen);
+      void this.upgradeToFull(this.lastState, this.gen).catch(() => undefined);
     }
   }
 
@@ -372,6 +373,8 @@ export class ImagePresenter {
     try {
       // 优先 Web 原生 ImageDecoder（硬件加速，免 Rust 端单帧重编码）
       if (typeof ImageDecoder !== "undefined") {
+        const bitmaps: ImageBitmap[] = [];
+        let decoder: ImageDecoder | null = null;
         try {
           const ext = state.path.split(".").pop()?.toLowerCase() ?? "";
           const mime = ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/png";
@@ -381,23 +384,26 @@ export class ImagePresenter {
             const blob = await resp.blob();
             if (gen !== this.gen) return;
 
-            const decoder = new ImageDecoder({ data: blob.stream(), type: mime });
+            decoder = new ImageDecoder({ data: blob.stream(), type: mime });
             await decoder.tracks.ready;
             const track = decoder.tracks.selectedTrack;
             const frameCount = track?.frameCount ?? 0;
 
             if (frameCount <= 1) {
+              decoder.close();
+              decoder = null;
               this.ui.setFrameBarVisible(false);
               this.animCandidate = false;
               this.ui.showToast("该文件不是多帧动画");
               return;
             }
 
-            const bitmaps: ImageBitmap[] = [];
             const delays: number[] = [];
             for (let i = 0; i < frameCount; i++) {
               if (gen !== this.gen) {
                 for (const b of bitmaps) b.close();
+                decoder.close();
+                decoder = null;
                 return;
               }
               const res = await decoder.decode({ frameIndex: i });
@@ -410,15 +416,21 @@ export class ImagePresenter {
 
             if (gen !== this.gen) {
               for (const b of bitmaps) b.close();
+              decoder.close();
+              decoder = null;
               return;
             }
 
+            decoder.close();
+            decoder = null;
             this.ui.setFrameBarVisible(true);
             await this.viewer.show({ kind: "frames", bitmaps, delays });
             return;
           }
         } catch {
-          /* 降级走 Rust 通道 */
+          // 异常（含中途解码失败）：释放已得位图与解码器，降级走 Rust 通道
+          for (const b of bitmaps) b.close();
+          decoder?.close();
         }
       }
 
@@ -426,18 +438,19 @@ export class ImagePresenter {
       const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
       if (gen !== this.gen) return;
       const { header, payload } = parseLoadEnvelope(buf);
-      if (gen !== this.gen) return;
-      this.ui.setFrameBarVisible(true);
       if (gen !== this.gen) return; // await 期间被抢占：不覆盖新图
       await this.viewer.show({ kind: "envelope", header, payload });
       if (gen !== this.gen) return;
-      if (!this.viewer.isAnimation) {
-        // 单帧文件：收起帧条并提示
-        this.ui.setFrameBarVisible(false);
-        this.animCandidate = false;
-        this.ui.showToast("该文件不是多帧动画");
+      if (this.viewer.isAnimation) {
+        // 多帧动画：此时才亮出帧条（静态图不闪现帧条）
+        this.ui.setFrameBarVisible(true);
         return;
       }
+      // 单帧文件：收起帧条并提示
+      this.ui.setFrameBarVisible(false);
+      this.animCandidate = false;
+      this.ui.showToast("该文件不是多帧动画");
+      return;
     } finally {
       this.ui.setFrameLoading(false);
     }
