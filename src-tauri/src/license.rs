@@ -303,45 +303,15 @@ impl LicenseManager {
     /// 是否已解锁专业版
     /// - debug 构建恒为 true（开发调试用；`pnpm tauri build --debug` 亦解锁）
     /// - release 构建：本地 JWT 验签有效 && 产品/设备/功能位匹配 && 未过期
+    ///
+    /// 判定本体为纯函数 is_pro_with（可测）；此处只做 debug 短路 + 快照传入。
     pub fn is_pro(&self) -> bool {
-        #[cfg(debug_assertions)]
-        {
-            true
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            Self::is_pro_with(
+        cfg!(debug_assertions)
+            || is_pro_with(
                 &self.license.lock().ok().and_then(|g| g.clone()),
                 &self.store,
+                &device_id(),
             )
-        }
-    }
-
-    /// 门控核心判定（不含 cfg，供单元测试验证免费版分支；用 store 配置的公钥验签）
-    #[cfg(any(not(debug_assertions), test))]
-    fn is_pro_with(lic: &Option<License>, store: &StoreConfig) -> bool {
-        lic.as_ref()
-            .is_some_and(|lic| lic.is_valid_with(&device_id(), store))
-    }
-
-    /// 门控核心判定（测试用：空公钥下验签必失败，仅验证业务字段分支）
-    #[cfg(test)]
-    fn is_pro_impl(lic: &Option<License>) -> bool {
-        let store = StoreConfig {
-            api_base: String::new(),
-            buy_url: None,
-            product: String::new(),
-            license_level: "pro".into(),
-            public_keys: HashMap::new(),
-            license_file_name: String::new(),
-            activate_path: String::new(),
-            verify_path: String::new(),
-            deactivate_path: String::new(),
-            analytics_path: String::new(),
-            analytics_token: String::new(),
-        };
-        lic.as_ref()
-            .is_some_and(|lic| lic.is_valid_with(&device_id(), &store))
     }
 
     /// 激活：调 soft-candy 换取 JWT → 验签 → 校验设备/等级/功能位 → 落盘
@@ -520,6 +490,16 @@ impl LicenseManager {
         self.clear_license();
         Ok(())
     }
+}
+
+/// 门控核心判定（纯函数，恒编译）：JWT 验签 + 产品/等级/设备/功能位/有效期。
+/// dev 显式传入——测试喂真实 device_id（正例）或伪造 id（wrong-device 反例），
+/// 生产传 device_id()。port（StoreConfig/HTTP/存储/时钟）已 DROPPED：
+/// StoreConfig 是数据（构造注入），HTTP/存储/时钟经 localhost mock + temp-dir
+/// + 相对 now() 测试，无需 trait。
+pub(crate) fn is_pro_with(lic: &Option<License>, store: &StoreConfig, dev: &str) -> bool {
+    lic.as_ref()
+        .is_some_and(|lic| lic.is_valid_with(dev, store))
 }
 
 fn claims_ok(claims: &Claims, dev: &str, product: &str) -> bool {
@@ -1011,7 +991,7 @@ mod tests {
         let m2 = LicenseManager::load(storage.clone(), store.clone());
         assert_eq!(m2.license().expect("重启后应从磁盘读回 JWT"), lic);
         assert!(
-            LicenseManager::is_pro_with(&m2.license(), &store),
+            is_pro_with(&m2.license(), &store, &device_id()),
             "重启后仍应判为已解锁"
         );
 
@@ -1040,29 +1020,293 @@ mod tests {
         assert_eq!(lic.code, claims.code);
         assert_eq!(lic.email, claims.email.unwrap());
         assert!(
-            LicenseManager::is_pro_with(&m.license(), &test_store(&pubkey)),
+            is_pro_with(&m.license(), &test_store(&pubkey), &device_id()),
             "标准许可证应判为已解锁"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
 
-#[cfg(test)]
-mod gate_tests {
-    use super::*;
-
+    /// is_pro_with 判定表：纯函数全分支（真实 store + 真实 device_id，只动被测维度）。
     #[test]
-    fn free_branch_rejected() {
-        assert!(!LicenseManager::is_pro_impl(&None), "无许可证应判免费版");
+    fn is_pro_with_table() {
+        let (pubkey, signing) = test_keypair();
+        let store = test_store(&pubkey);
+        let dev = device_id();
+        let good_claims = claims(&dev, "pro", now() + 3600);
+        let good_token = sign_jwt(&good_claims, &signing);
+        let good = || test_license(&good_claims, good_token.clone());
+
+        assert!(!is_pro_with(&None, &store, &dev), "无许可证 → free");
         let bad = License {
-            code: String::new(),
+            code: "X".into(),
             token: "AAAA.BBBB.CCCC".into(),
             email: String::new(),
         };
+        assert!(!is_pro_with(&Some(bad), &store, &dev), "非法 JWT → free");
+        let expired_claims = claims(&dev, "pro", now() - 1);
+        let expired = test_license(&expired_claims, sign_jwt(&expired_claims, &signing));
+        assert!(!is_pro_with(&Some(expired), &store, &dev), "过期 → free");
         assert!(
-            !LicenseManager::is_pro_impl(&Some(bad)),
-            "非法 JWT 应判免费版"
+            !is_pro_with(&Some(good()), &store, "other-device"),
+            "设备不匹配 → free"
         );
+        // store 缺对应等级公钥（验签材料缺失：吊销/换 key 的离线等价类）→ free。
+        let nokey = StoreConfig {
+            public_keys: HashMap::new(),
+            ..store.clone()
+        };
+        assert!(!is_pro_with(&Some(good()), &nokey, &dev), "无公钥 → free");
+        assert!(is_pro_with(&Some(good()), &store, &dev), "合法 → pro");
+    }
+
+    static MOCK_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    fn temp_dir_unique(tag: &str) -> PathBuf {
+        let n = MOCK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!("iv-lic-{tag}-{}-{n}", std::process::id()))
+    }
+
+    fn mock_store(api_base: &str, pubkey_b64: &str) -> StoreConfig {
+        StoreConfig {
+            api_base: api_base.into(),
+            buy_url: None,
+            product: "z-viewer".into(),
+            license_level: "pro".into(),
+            public_keys: HashMap::from([("pro".to_string(), pubkey_b64.to_string())]),
+            license_file_name: "license.json".into(),
+            activate_path: "/activate".into(),
+            verify_path: "/verify".into(),
+            deactivate_path: "/deactivate".into(),
+            analytics_path: String::new(),
+            analytics_token: String::new(),
+        }
+    }
+
+    /// 最小 localhost HTTP mock（std-only，无新依赖）：按给定顺序 serving 既定响应。
+    /// 非阻塞 accept + 总时限：manager 侧 10s 超时内必有结论，测试不会永久挂死。
+    /// 返回 (api_base, server_handle)；用例结束 join（需求满足后自行退出）。
+    fn mock_server(responses: Vec<(u16, String)>) -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mock 绑定回环");
+        let port = listener.local_addr().expect("取 mock 端口").port();
+        listener.set_nonblocking(true).expect("mock 非阻塞");
+        let total = responses.len();
+        let handle = std::thread::spawn(move || {
+            let mut responses = responses.into_iter();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            let mut served = 0usize;
+            while served < total && std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        if mock_respond(stream, &mut responses).is_ok() {
+                            served += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
+    /// 读完一个 POST 请求（头 + Content-Length 体），按序回一个既定响应。
+    fn mock_respond(
+        mut stream: std::net::TcpStream,
+        next: &mut impl Iterator<Item = (u16, String)>,
+    ) -> std::io::Result<()> {
+        use std::io::{Read, Write};
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+        let mut buf = Vec::with_capacity(4096);
+        let mut chunk = [0u8; 1024];
+        // 读到头结束。
+        let head_len = loop {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                break buf.len();
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(p) = find_header_end(&buf) {
+                break p;
+            }
+        };
+        // 按 Content-Length 读完体（小 JSON 通常一次即达，此处只为稳妥；大小写不敏感）。
+        let body_len: usize = std::str::from_utf8(&buf[..head_len.min(buf.len())])
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.split_once(':'))
+            .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+            .and_then(|(_, v)| v.trim().parse().ok())
+            .unwrap_or(0);
+        while buf.len() < head_len + body_len {
+            let n = stream.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let (status, body) = next.next().expect("mock 响应队列不应耗尽");
+        let reason = match status {
+            200 => "OK",
+            401 => "Unauthorized",
+            _ => "Error",
+        };
+        write!(
+            stream,
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )?;
+        stream.flush()?;
+        Ok(())
+    }
+
+    fn find_header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    }
+
+    /// 激活成功：签名 JWT 落盘 → 重启读回 → LicenseInfo 载荷断言。
+    #[test]
+    fn activate_success_persists_and_roundtrips() {
+        let (pubkey, signing) = test_keypair();
+        let dev = device_id();
+        let c = claims(&dev, "pro", now() + 3600);
+        let token = sign_jwt(&c, &signing);
+        let (api_base, server) = mock_server(vec![(200, format!(r#"{{"license":"{token}"}}"#))]);
+        let dir = temp_dir_unique("activate");
+        let storage = dir.join("license.json");
+        let store = mock_store(&api_base, &pubkey);
+        let m = LicenseManager::load(storage.clone(), store);
+        // 大小写归一化也在覆盖内：小写 code + 大写邮箱仍能激活。
+        let lic = tauri::async_runtime::block_on(
+            m.activate("abcd-efgh-jkmn-pqrs".into(), "Buyer@Example.COM".into()),
+        )
+        .expect("激活应成功");
+        assert_eq!(lic.code, "ABCD-EFGH-JKMN-PQRS");
+        assert_eq!(lic.email, "buyer@example.com");
+        assert_eq!(lic.token, token);
+        assert!(storage.is_file(), "应落盘");
+        // 重启读回（temp-dir round-trip）。
+        let m2 = LicenseManager::load(storage.clone(), m.store_config());
+        assert_eq!(m2.license().expect("重启应读回"), lic);
+        // LicenseInfo 载荷（debug 下 status 恒 pro，只断言载荷字段；emit 留主边缘）。
+        let info = m2.status();
+        assert_eq!(info.level.as_deref(), Some("pro"));
+        assert_eq!(info.level_label.as_deref(), Some("专业版"));
+        assert_eq!(info.code.as_deref(), Some("ABCD-EFGH-JKMN-PQRS"));
+        assert_eq!(info.email.as_deref(), Some("buyer@example.com"));
+        assert_eq!(info.device_id.as_deref(), Some(dev.as_str()));
+        server.join().expect("mock 应正常结束");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 在线续验成功：服务端新 JWT 被换入本地（返回 None 表成功）。
+    #[test]
+    fn verify_online_refreshes_jwt() {
+        let (pubkey, signing) = test_keypair();
+        let dev = device_id();
+        let c = claims(&dev, "pro", now() + 3600);
+        let token = sign_jwt(&c, &signing);
+        let c2 = claims(&dev, "pro", now() + 7200);
+        let token2 = sign_jwt(&c2, &signing);
+        assert_ne!(token, token2);
+        let (api_base, server) = mock_server(vec![(200, format!(r#"{{"license":"{token2}"}}"#))]);
+        let dir = temp_dir_unique("refresh");
+        let storage = dir.join("license.json");
+        let m = LicenseManager::load(storage, mock_store(&api_base, &pubkey));
+        *m.license.lock().unwrap() = Some(test_license(&c, token));
+        let out = tauri::async_runtime::block_on(m.verify_online());
+        assert!(out.is_none(), "续验成功返回 None");
+        assert_eq!(
+            m.license().expect("凭证应保留").token,
+            token2,
+            "应换入服务端新 JWT"
+        );
+        server.join().expect("mock 应正常结束");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 在线续验吊销：401 + CDK_REVOKED → 清内存 + 删文件 + 判 free。
+    /// debug 下 status().status 恒 pro（cfg 短路），故断言 is_pro_with + 载荷清空。
+    #[test]
+    fn verify_online_revoked_clears() {
+        let (pubkey, signing) = test_keypair();
+        let dev = device_id();
+        let c = claims(&dev, "pro", now() + 3600);
+        let token = sign_jwt(&c, &signing);
+        let (api_base, server) = mock_server(vec![(
+            401,
+            r#"{"error":"CDK_REVOKED","message":"revoked"}"#.to_string(),
+        )]);
+        let dir = temp_dir_unique("revoked");
+        let storage = dir.join("license.json");
+        let store = mock_store(&api_base, &pubkey);
+        let m = LicenseManager::load(storage.clone(), store.clone());
+        let lic = test_license(&c, token);
+        *m.license.lock().unwrap() = Some(lic.clone());
+        m.persist(&lic).expect("预置磁盘授权");
+        assert!(storage.is_file());
+
+        let out = tauri::async_runtime::block_on(m.verify_online());
+        assert!(out.is_some(), "吊销应返回最新状态");
+        assert!(m.license().is_none(), "应清空内存授权");
+        assert!(!storage.is_file(), "应删除磁盘授权");
+        assert!(!is_pro_with(&m.license(), &store, &dev), "吊销后判 free");
+        let info = out.unwrap();
+        assert!(
+            info.code.is_none() && info.email.is_none(),
+            "清空后载荷无残留"
+        );
+        server.join().expect("mock 应正常结束");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 在线续验网络失败：连接拒绝 → 静默 None，凭证保留（优雅降级）。
+    #[test]
+    fn verify_online_network_failure_grace() {
+        let (pubkey, signing) = test_keypair();
+        let dev = device_id();
+        let c = claims(&dev, "pro", now() + 3600);
+        let token = sign_jwt(&c, &signing);
+        // 占用后立即释放的端口 → 连接拒绝（快失败，不耗 10s 超时）。
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("取空闲端口");
+            l.local_addr().expect("读端口").port()
+        };
+        let dir = temp_dir_unique("offline");
+        let storage = dir.join("license.json");
+        let m = LicenseManager::load(
+            storage,
+            mock_store(&format!("http://127.0.0.1:{port}"), &pubkey),
+        );
+        *m.license.lock().unwrap() = Some(test_license(&c, token));
+        let out = tauri::async_runtime::block_on(m.verify_online());
+        assert!(out.is_none(), "网络失败静默 None");
+        assert!(m.license().is_some(), "凭证保留等重验");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 注销成功：服务端 unbound → 清内存 + 删文件。
+    #[test]
+    fn deactivate_success_clears() {
+        let (pubkey, signing) = test_keypair();
+        let dev = device_id();
+        let c = claims(&dev, "pro", now() + 3600);
+        let token = sign_jwt(&c, &signing);
+        let (api_base, server) = mock_server(vec![(200, r#"{"unbound":true}"#.to_string())]);
+        let dir = temp_dir_unique("deactivate");
+        let storage = dir.join("license.json");
+        let m = LicenseManager::load(storage.clone(), mock_store(&api_base, &pubkey));
+        let lic = test_license(&c, token);
+        *m.license.lock().unwrap() = Some(lic.clone());
+        m.persist(&lic).expect("预置磁盘授权");
+        tauri::async_runtime::block_on(m.deactivate()).expect("注销应成功");
+        assert!(m.license().is_none(), "应清空内存授权");
+        assert!(!storage.is_file(), "应删除磁盘授权");
+        server.join().expect("mock 应正常结束");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
