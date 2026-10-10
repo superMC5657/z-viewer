@@ -78,8 +78,6 @@ const licenseService = new LicenseService(ui, {
     if (lastState) void openPath(lastState.path);
   },
 });
-/** 当前 RAW 解码的 Blob URL（切换图片时 revoke，防止内存累积） */
-let currentBlobUrl: string | null = null;
 /** showImage 代次：播放中手动翻页等并发加载时，丢弃过期响应 */
 let showSeq = 0;
 /** 当前图片是否为原生 <img> 播放中的动画（帧未加载，帧条交互时按需拆帧） */
@@ -110,15 +108,6 @@ async function showImage(state: BrowseState): Promise<void> {
   rawUpgradeTimer = undefined;
   ui.setFrameBarVisible(false);
   ui.setFramePlaying(false);
-  // 保留旧 RAW Blob 引用，待新图成功渲染后再释放，杜绝解码期间旧纹理提前失效
-  let prevBlobToRevoke = currentBlobUrl;
-  currentBlobUrl = null;
-  const revokePrevBlob = () => {
-    if (prevBlobToRevoke) {
-      URL.revokeObjectURL(prevBlobToRevoke);
-      prevBlobToRevoke = null;
-    }
-  };
 
   // 预取下一批上下文（asset 预热 + Rust 缓存）；防抖合并快速翻页
   scheduleRefreshContext();
@@ -144,10 +133,8 @@ async function showImage(state: BrowseState): Promise<void> {
             .catch(() => false)
         : Promise.resolve(false);
     try {
-      await viewer.loadStatic(convertFileSrc(state.path));
-      revokePrevBlob();
+      await viewer.show({ kind: "url", url: convertFileSrc(state.path) });
     } catch (err) {
-      revokePrevBlob();
       console.error(`[render] failed: ${String(err)}`);
       if (seq === showSeq) {
         ui.showToast(`无法显示图片：${String(err)}`);
@@ -171,7 +158,7 @@ async function showImage(state: BrowseState): Promise<void> {
     return;
   }
 
-  // IPC 通道：RAW/TIFF 由 Rust 解码（二进制信封，payload 为 JPEG 字节）
+  // IPC 通道：RAW/TIFF 由 Rust 解码（信封解析后经统一 seam 显示，分支内聚于 Viewer）
   ui.beginDecoding();
   try {
     let header: LoadEnvelope;
@@ -186,55 +173,7 @@ async function showImage(state: BrowseState): Promise<void> {
     if (seq !== showSeq) return;
 
     try {
-      if (header.mode === "animated" && header.frameSizes.length) {
-        // 逐帧模式（帧控制按需触发）
-        ui.setFrameBarVisible(true);
-        const blobs = splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
-        await viewer.loadAnimation(blobs, header.frameDelays);
-      } else if (header.mode === "raw" || header.mode === "static") {
-        if (
-          header.mime === "image/x-rgba" &&
-          header.width &&
-          header.height &&
-          payload.byteLength === header.width * header.height * 4
-        ) {
-          // 原始 RGBA8 位图直显通道（TIFF/全量 RAW）：免二次 JPEG 压缩/解压损耗
-          const clamped = new Uint8ClampedArray(payload.buffer, payload.byteOffset, payload.byteLength);
-          const imgData = new ImageData(clamped, header.width, header.height);
-          const bitmap = await createImageBitmap(imgData);
-          if (seq !== showSeq) {
-            bitmap.close();
-            return;
-          }
-          await viewer.loadBitmap(bitmap);
-        } else {
-          // 单张 JPEG（RAW/TIFF 预览或回退）
-          const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
-          try {
-            await viewer.loadStatic(url);
-          } catch (err) {
-            URL.revokeObjectURL(url); // 加载失败也要释放，防止 Blob 泄漏
-            throw err; // 交给外层统一 Toast
-          }
-          if (seq !== showSeq) {
-            // 已被抢占：立即释放本函数创建的 Blob
-            URL.revokeObjectURL(url);
-            return;
-          }
-          currentBlobUrl = url;
-        }
-        // 预览阶段立即显示预览尺寸（全量解码完成后 upgradeRawToFull 再更新）
-        if (header.width && header.height) {
-          currentDims = { w: header.width, h: header.height };
-          ui.updateInfo(state, currentDims);
-        }
-        if (header.isPreview) {
-          scheduleRawUpgrade(state, seq);
-        }
-      } else {
-        // 单帧动画降级：asset 协议直读
-        await viewer.loadStatic(convertFileSrc(state.path));
-      }
+      await viewer.show({ kind: "envelope", header, payload });
     } catch (err) {
       if (seq === showSeq) {
         ui.showToast(`无法显示图片：${String(err)}`);
@@ -244,8 +183,16 @@ async function showImage(state: BrowseState): Promise<void> {
     }
     if (seq !== showSeq) return;
 
+    if (header.isPreview) {
+      scheduleRawUpgrade(state, seq);
+    }
+
     currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
     ui.updateInfo(state, currentDims);
+    // 动画分支已内聚：由 Viewer 状态派生帧条可见性（调用面不再解读信封）
+    if (viewer.isAnimation) {
+      ui.setFrameBarVisible(true);
+    }
     ui.setFramePlaying(viewer.isPlaying);
     // 幻灯片进度计数（播放中实时更新）
     ui.setSlideshowProgress(state.global_index + 1, state.global_total);
@@ -253,7 +200,6 @@ async function showImage(state: BrowseState): Promise<void> {
     void invoke("record_view", { path: state.path }).catch(() => undefined);
   } finally {
     ui.endDecoding();
-    revokePrevBlob();
   }
 }
 
@@ -278,67 +224,29 @@ function triggerImmediateRawUpgrade(): void {
   }
 }
 
-/** RAW 内嵌预览已显示：后台拉取全量解码结果并替换（seq 抢占安全；引用计数指示解码中）。
- *  预览 URL 在全量加载成功后才撤销 —— 解码失败时画面保持预览，不破碎。 */
+/** RAW 内嵌预览已显示：后台拉取全量解码结果并替换（seq 抢占安全；变换保持）。
+ *  全量经统一 seam 以 keepTransform 显示；失败时预览由 Viewer 内部保留，不破碎。 */
 async function upgradeRawToFull(state: BrowseState, seq: number): Promise<void> {
   ui.beginDecoding();
-  const previewUrl = currentBlobUrl; // 保留预览引用（成功替换后才撤销）
   try {
     const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: true });
     if (seq !== showSeq) return;
     const { header, payload } = parseLoadEnvelope(buf);
     if (header.isPreview) return; // 防御：仍返回预览（异常路径），保持现有显示
-
-    if (
-      header.mime === "image/x-rgba" &&
-      header.width &&
-      header.height &&
-      payload.byteLength === header.width * header.height * 4
-    ) {
-      const clamped = new Uint8ClampedArray(payload.buffer, payload.byteOffset, payload.byteLength);
-      const imgData = new ImageData(clamped, header.width, header.height);
-      const bitmap = await createImageBitmap(imgData);
-      if (seq !== showSeq) {
-        bitmap.close();
-        return;
-      }
-      await viewer.loadBitmap(bitmap, true);
-      currentBlobUrl = null;
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    } else {
-      const url = URL.createObjectURL(new Blob([payload], { type: header.mime ?? "image/jpeg" }));
-      try {
-        await viewer.loadStatic(url);
-      } catch (err) {
-        URL.revokeObjectURL(url);
-        // 全量 JPEG 异常：恢复预览显示（预览引用仍存活）
-        if (previewUrl) await viewer.loadStatic(previewUrl).catch(() => undefined);
-        throw err;
-      }
-      if (seq !== showSeq) {
-        URL.revokeObjectURL(url);
-        return;
-      }
-      currentBlobUrl = url;
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    if (seq !== showSeq) return;
+    try {
+      await viewer.show({ kind: "envelope", header, payload, keepTransform: true });
+    } catch {
+      // 全量失败：预览仍在（Viewer 在 keep 路径下不清空旧画面），静默保留，无需显式恢复
+      return;
     }
+    if (seq !== showSeq) return;
     // 信息条尺寸更新为全量尺寸
     currentDims = { w: viewer.naturalWidth, h: viewer.naturalHeight };
     ui.updateInfo(state, currentDims);
   } finally {
     ui.endDecoding();
   }
-}
-
-/** 按 payload 切分帧 PNG 字节为独立 Blob（frame_sizes 由 Rust 端给出） */
-function splitFrames(payload: Uint8Array, sizes: number[], mime: string): Blob[] {
-  const blobs: Blob[] = [];
-  let off = 0;
-  for (const s of sizes) {
-    blobs.push(new Blob([payload.subarray(off, off + s)], { type: mime }));
-    off += s;
-  }
-  return blobs;
 }
 
 /** 获取当前上下文路径并预热 */
@@ -508,7 +416,7 @@ function handleToolbarAction(id: string): void {
 // ---------- 帧控制浮条（草图 3.7） ----------
 
 /** 帧条按钮统一入口：帧已就绪（canvas 模式）直接控制；
- *  原生 <img> 播放中先按需拆帧，完成后执行动作（拆帧后 loadAnimation 自动播放，
+ *  原生 <img> 播放中先按需拆帧，完成后执行动作（拆帧后自动播放，
  *  动作如 togglePlay 即暂停、stepFrame 即暂停并步进，语义自然） */
 function frameControl(action: () => void): void {
   if (viewer.isAnimation) {
@@ -578,29 +486,29 @@ async function loadAnimationOnDemand(): Promise<void> {
           }
 
           ui.setFrameBarVisible(true);
-          await viewer.loadBitmapsAnimation(bitmaps, delays);
+          await viewer.show({ kind: "frames", bitmaps, delays });
           return;
         }
       } catch {
       }
     }
 
-    // 回退通道：Rust 解码服务
+    // 回退通道：Rust 解码服务（信封经统一 seam 显示，单帧与否由 Viewer 状态派生）
     const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
     if (seq !== showSeq) return;
     const { header, payload } = parseLoadEnvelope(buf);
     if (seq !== showSeq) return;
-    if (header.mode !== "animated" || header.frameSizes.length === 0) {
+    ui.setFrameBarVisible(true);
+    if (seq !== showSeq) return; // await 期间被抢占：不覆盖新图
+    await viewer.show({ kind: "envelope", header, payload });
+    if (seq !== showSeq) return;
+    if (!viewer.isAnimation) {
       // 单帧文件（如单帧 GIF / 静态 PNG）：收起帧条并提示
       ui.setFrameBarVisible(false);
       currentAnimCandidate = false;
       ui.showToast("该文件不是多帧动画");
       return;
     }
-    ui.setFrameBarVisible(true);
-    const blobs = splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
-    if (seq !== showSeq) return; // await 期间被抢占：不覆盖新图
-    await viewer.loadAnimation(blobs, header.frameDelays);
   } finally {
     ui.setFrameLoading(false);
   }

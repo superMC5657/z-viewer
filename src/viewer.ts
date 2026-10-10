@@ -15,11 +15,22 @@
  * 旧图与旧 Canvas 同步隐藏（0ms 瞬切直接切换，无交叉淡化、无黑屏跳变与频闪）。
  */
 
+import type { LoadEnvelope } from "./types";
+
 const MIN_SCALE = 0.04;
 const MAX_SCALE = 20;
 const ROTATE_MS = 220; // 略大于 200ms 过渡，结束后移除 animating class
 
 export type FitMode = "fit" | "actual";
+
+/** Unified loader seam: single entry for all image content (module seam, shallow depth).
+ *  - url: caller-owned URL (asset path or caller blob); Viewer never revokes input.
+ *  - envelope: already-parsed header+payload; Viewer owns transient JPEG object URLs.
+ *  - frames: ownership transfers; Viewer closes bitmaps on supersede/failure. */
+export type ShowContent =
+  | { kind: "url"; url: string }
+  | { kind: "envelope"; header: LoadEnvelope; payload: Uint8Array; keepTransform?: boolean }
+  | { kind: "frames"; bitmaps: ImageBitmap[]; delays: number[] };
 
 export class Viewer {
   private imgA: HTMLImageElement;
@@ -63,6 +74,8 @@ export class Viewer {
   private pending: { resolve: () => void; reject: (e: Error) => void; seq: number } | null = null;
   /** 静态加载 2.5s 超时兜底定时器（完成/失败/作废时清理，不留空转定时器） */
   private staticLoadTimer: number | undefined;
+  /** Viewer-owned transient envelope JPEG object URL（caller URLs never revoked here） */
+  private ownedBlobUrl: string | null = null;
 
   // 动画状态
   private animFrames: ImageBitmap[] = [];
@@ -118,11 +131,155 @@ export class Viewer {
     return this.naturalH;
   }
 
-  /** 加载静态图（asset 协议 URL 或 RAW 解码的 Blob URL） */
-  loadStatic(url: string): Promise<void> {
+  /** Unified loader seam (single entry; generation guard cannot be bypassed).
+   *  loadSeq++ + settlePending() happen exactly once here, not per branch.
+   *  Superseded generations resolve silently; only the latest writes DOM/closes bitmaps. */
+  async show(content: ShowContent): Promise<void> {
     this.stopAnimation();
     this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
     const seq = ++this.loadSeq;
+    const prevOwned = this.ownedBlobUrl;
+    this.ownedBlobUrl = null;
+    const revokePrev = () => {
+      if (prevOwned) URL.revokeObjectURL(prevOwned);
+    };
+    const restorePrev = () => {
+      this.ownedBlobUrl = prevOwned;
+    };
+
+    if (content.kind === "frames") {
+      // 空序列：no-op resolve（不碰 DOM/回调，恢复 ownership）
+      if (content.bitmaps.length === 0) {
+        restorePrev();
+        return;
+      }
+      await this.loadBitmapsAnimationInternal(content.bitmaps, content.delays, seq);
+      // supersede 检查：静默 resolve，只让最新代次保留画面
+      revokePrev();
+      return;
+    }
+    if (content.kind === "url") {
+      // caller-owned URL：Viewer 永不 revoke 入参，只回收自己此前的 transient
+      try {
+        await this.loadStaticInternal(content.url, false, seq);
+      } catch (e) {
+        revokePrev();
+        throw e;
+      }
+      revokePrev();
+      return;
+    }
+    await this.showEnvelopeInternal(
+      content.header,
+      content.payload,
+      content.keepTransform ?? false,
+      seq,
+      prevOwned,
+      revokePrev,
+      restorePrev,
+    );
+  }
+
+  /** Envelope 分发（原 main.ts header 分支内聚至此，调用面只剩 show）：
+   *  有帧尺寸 → 动画路径；RGBA 形状匹配 → 单帧 canvas（honor keepTransform）；
+   *  否则 JPEG Blob→ObjectURL→img；未知形状落入 JPEG 兜底，无新错误种类。 */
+  private async showEnvelopeInternal(
+    header: LoadEnvelope,
+    payload: Uint8Array,
+    keepTransform: boolean,
+    seq: number,
+    prevOwned: string | null,
+    revokePrev: () => void,
+    restorePrev: () => void,
+  ): Promise<void> {
+    if (header.frameSizes.length > 0) {
+      const blobs = this.splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
+      try {
+        await this.loadAnimationInternal(blobs, header.frameDelays, seq);
+      } catch (e) {
+        revokePrev();
+        throw e;
+      }
+      if (seq !== this.loadSeq) {
+        revokePrev();
+        return;
+      }
+      revokePrev();
+      return;
+    }
+    if (
+      header.mime === "image/x-rgba" &&
+      header.width &&
+      header.height &&
+      payload.byteLength === header.width * header.height * 4
+    ) {
+      let bitmap: ImageBitmap;
+      try {
+        const clamped = new Uint8ClampedArray(payload.buffer, payload.byteOffset, payload.byteLength);
+        const imgData = new ImageData(clamped, header.width, header.height);
+        bitmap = await createImageBitmap(imgData);
+      } catch (e) {
+        if (seq !== this.loadSeq) {
+          revokePrev();
+          return;
+        }
+        revokePrev();
+        throw e;
+      }
+      if (seq !== this.loadSeq) {
+        bitmap.close();
+        revokePrev();
+        return;
+      }
+      await this.loadBitmapInternal(bitmap, keepTransform, seq);
+      if (seq !== this.loadSeq) {
+        revokePrev();
+        return;
+      }
+      revokePrev();
+      return;
+    }
+    // 单张 JPEG（含回退形状）：Viewer 拥有 transient URL 的完整 lifetime
+    const url = URL.createObjectURL(new Blob([payload as unknown as BlobPart], { type: header.mime ?? "image/jpeg" }));
+    if (seq !== this.loadSeq) {
+      URL.revokeObjectURL(url);
+      revokePrev();
+      return;
+    }
+    try {
+      await this.loadStaticInternal(url, keepTransform, seq);
+    } catch (e) {
+      URL.revokeObjectURL(url);
+      if (keepTransform && prevOwned) {
+        // 全量升级失败：预览保持可用（不隐藏/不重置），恢复 ownership 后静默抛给调用方
+        restorePrev();
+        throw e;
+      }
+      revokePrev();
+      throw e;
+    }
+    if (seq !== this.loadSeq) {
+      URL.revokeObjectURL(url);
+      revokePrev();
+      return;
+    }
+    this.ownedBlobUrl = url;
+    revokePrev();
+  }
+
+  /** 按 payload 切分帧字节为独立 Blob（frame 尺寸由 Rust 端给出，已随 envelope 内聚至此） */
+  private splitFrames(payload: Uint8Array, sizes: number[], mime: string): Blob[] {
+    const blobs: Blob[] = [];
+    let off = 0;
+    for (const s of sizes) {
+      blobs.push(new Blob([payload.subarray(off, off + s)], { type: mime }));
+      off += s;
+    }
+    return blobs;
+  }
+
+  /** img 双缓冲加载实现（ bodies 与原公开 loader 一致，仅 generation 由 show 统一供给） */
+  private loadStaticInternal(url: string, keepTransform: boolean, seq: number): Promise<void> {
     this.active = "img";
     // 注意：不在此处立即隐藏 canvas，保证新图解码期间旧画面依然停留在屏幕上，杜绝黑屏空档
 
@@ -141,13 +298,27 @@ export class Viewer {
 
       const onDecoded = () => {
         if (this.pending?.seq !== seq) return;
+        if (seq !== this.loadSeq) return;
         window.clearTimeout(this.staticLoadTimer);
-        this.resetTransform();
+        const oldW = this.naturalW;
+        const oldH = this.naturalH;
+        const keep = keepTransform && oldW > 0 && oldH > 0;
+        if (!keep) {
+          this.resetTransform();
+        }
         this.naturalW = incoming.naturalWidth;
         this.naturalH = incoming.naturalHeight;
         this.loaded = true;
         this.activeImg = incoming;
-        this.fit(); // 内部针对 incoming 设置 transform
+        if (keep) {
+          if (this.fitMode === "fit" && Math.abs(this.userScale - 1) < 0.005) {
+            this.fit();
+          } else {
+            this.apply();
+          }
+        } else {
+          this.fit(); // 内部针对 incoming 设置 transform
+        }
 
         // 双缓冲瞬切：新图就绪后单帧原子切换，旧图/旧Canvas同步隐藏，杜绝黑屏空档
         incoming.classList.add("visible");
@@ -162,8 +333,14 @@ export class Viewer {
 
       const onError = () => {
         if (this.pending?.seq !== seq) return;
+        if (seq !== this.loadSeq) return;
         window.clearTimeout(this.staticLoadTimer);
         this.pending = null;
+        if (keepTransform && this.naturalW > 0 && this.naturalH > 0) {
+          // 升级路径失败：保留旧画面与变换，不隐藏，直接抛统一文案
+          reject(new Error("图片加载失败"));
+          return;
+        }
         this.resetTransform();
         outgoing.classList.remove("visible");
         this.canvas.classList.remove("visible");
@@ -190,11 +367,8 @@ export class Viewer {
     });
   }
 
-  /** 加载单张位图（原始 RGBA 直通，免 JPEG 二次编解码开销） */
-  async loadBitmap(bitmap: ImageBitmap, keepTransform = false): Promise<void> {
-    this.stopAnimation();
-    this.settlePending();
-    const seq = ++this.loadSeq;
+  /** 单张位图实现（原始 RGBA 直通，免 JPEG 二次编解码开销；实现与原 loader 一致） */
+  private async loadBitmapInternal(bitmap: ImageBitmap, keepTransform: boolean, seq: number): Promise<void> {
     this.active = "canvas";
     // 延迟隐藏 imgA/imgB：待 canvas 绘制并 fit 完成后再统一隐藏，避免中间黑屏
 
@@ -205,7 +379,8 @@ export class Viewer {
 
     const oldW = this.naturalW;
     const oldH = this.naturalH;
-    if (!keepTransform) {
+    const keep = keepTransform && oldW > 0 && oldH > 0;
+    if (!keep) {
       this.resetTransform();
     }
     this.naturalW = bitmap.width;
@@ -216,7 +391,7 @@ export class Viewer {
     bitmap.close();
 
     this.loaded = true;
-    if (keepTransform && oldW > 0 && oldH > 0) {
+    if (keep) {
       if (this.fitMode === "fit" && Math.abs(this.userScale - 1) < 0.005) {
         this.fit();
       } else {
@@ -231,11 +406,8 @@ export class Viewer {
     this.onStateChange?.();
   }
 
-  /** 加载预解码的动画位图序列（Web 原生 ImageDecoder 通道，首选零开销路径） */
-  async loadBitmapsAnimation(bitmaps: ImageBitmap[], delays: number[]): Promise<void> {
-    this.stopAnimation();
-    this.settlePending();
-    const seq = ++this.loadSeq;
+  /** 预解码动画序列实现（实现与原 loader 一致；空序列由 show 提前拦截） */
+  private async loadBitmapsAnimationInternal(bitmaps: ImageBitmap[], delays: number[], seq: number): Promise<void> {
     this.active = "canvas";
     // 延迟隐藏 imgA/imgB，避免首帧绘制前黑屏
     this.resetTransform();
@@ -264,10 +436,16 @@ export class Viewer {
     this.onStateChange?.();
   }
 
-  /** 加载动画图：预解码全部帧后显示第一帧并自动播放（帧 PNG 字节按 frame_sizes 切分） */
-  async loadAnimation(frameBlobs: Blob[], delays: number[]): Promise<void> {
+  /** 动画帧解码实现：全部成功才接管画面，部分失败关闭已得位图并抛统一文案 */
+  private async loadAnimationInternal(frameBlobs: Blob[], delays: number[], seq: number): Promise<void> {
     if (frameBlobs.length === 0) return;
     const settled = await Promise.allSettled(frameBlobs.map((b) => createImageBitmap(b)));
+    if (seq !== this.loadSeq) {
+      for (const s of settled) {
+        if (s.status === "fulfilled") s.value.close();
+      }
+      return;
+    }
     const bitmaps: ImageBitmap[] = [];
     let failed = false;
     for (const s of settled) {
@@ -278,7 +456,7 @@ export class Viewer {
       for (const b of bitmaps) b.close();
       throw new Error("动画帧解码失败");
     }
-    await this.loadBitmapsAnimation(bitmaps, delays);
+    await this.loadBitmapsAnimationInternal(bitmaps, delays, seq);
   }
 
   /** 切换沉浸模式：fit 避让高度变化后重新布局（全屏动画后窗口尺寸才稳定，下一帧再校准一次） */
