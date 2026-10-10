@@ -88,16 +88,13 @@ impl SettingsState {
 }
 
 /// 专业版门控唯一入口（Top4 收口）：pro 则执行 pro()，否则返回 free。
+/// 调用方传入 license.is_pro() 快照——纯布尔可测，LicenseManager 不再漏进门控。
 /// 各命令的 free 契约保持不变：
 /// - jump_folder → Ok(pro-required)、get_context → Ok(空)
 /// - set_cache_level → Err(解锁提示)、get_settings/load_image → 降级值
-pub(crate) fn require_pro<T>(
-    license: &crate::license::LicenseManager,
-    free: T,
-    pro: impl FnOnce() -> T,
-) -> T {
-    if license.is_pro() {
-        pro()
+pub(crate) fn require_pro<T>(pro: bool, free: T, pf: impl FnOnce() -> T) -> T {
+    if pro {
+        pf()
     } else {
         free
     }
@@ -176,7 +173,7 @@ pub fn open_path(
     path: String,
 ) -> Result<NavResult, String> {
     let p = Path::new(&path);
-    let pro = require_pro(&license, false, || true);
+    let pro = require_pro(license.is_pro(), false, || true);
     let on_ready = Some(on_ready_callback(app.clone()));
     let model = open_model_from_path(p, on_ready, pro);
     let Some(model) = model else {
@@ -242,7 +239,7 @@ pub fn jump_folder(
     license: State<'_, crate::license::LicenseManager>,
     target: String,
 ) -> Result<NavResult, String> {
-    require_pro(&license, Ok(NavResult::pro_required()), || {
+    require_pro(license.is_pro(), Ok(NavResult::pro_required()), || {
         let t = match target.as_str() {
             "first" => FolderTarget::First,
             "prev" => FolderTarget::Prev,
@@ -294,7 +291,7 @@ pub async fn load_image(
 ) -> Result<tauri::ipc::Response, String> {
     crate::z_log::set_last_viewed(&path);
     let enabled = settings.read(|s| s.is_enabled())?;
-    let caching = enabled && require_pro(&license, false, || true);
+    let caching = enabled && require_pro(license.is_pro(), false, || true);
     if caching {
         // 命中：信封已打包一次缓存于条目内，这里只做一次缓冲拷贝进 IPC 响应
         if let Some(hit) = cache.get_entry(&path) {
@@ -325,8 +322,8 @@ pub async fn load_image(
         }
     };
     if caching {
-        // asset 空结果（单帧 gif/png/webp）与内嵌预览不占缓存槽位
-        if result.mode != "asset" && !result.is_preview {
+        // 写过滤经 should_cache（单帧降级与内嵌预览不占缓存槽位）。
+        if crate::cache_policy::should_cache(&result) {
             cache.put(path.clone(), Arc::clone(&result));
         }
         // 实时解码完成：清除该路径的预取登记（预取任务 put 前 peek 会跳过）
@@ -365,7 +362,7 @@ pub fn set_cache_level(
     level: usize,
 ) -> Result<AppSettings, String> {
     require_pro(
-        &license,
+        license.is_pro(),
         Err("预取缓存是专业版功能，请解锁后使用".to_string()),
         || {
             let level = level.min(2);
@@ -396,7 +393,7 @@ pub fn get_settings(
 ) -> AppSettings {
     let mut s = *settings.0.lock().unwrap_or_else(|e| e.into_inner());
     let level = s.cache_level;
-    s.cache_level = require_pro(&license, 0, || level);
+    s.cache_level = require_pro(license.is_pro(), 0, || level);
     s
 }
 
@@ -420,7 +417,7 @@ pub async fn get_context(
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
 ) -> Result<Vec<String>, String> {
-    if !require_pro(&license, false, || true) {
+    if !require_pro(license.is_pro(), false, || true) {
         return Ok(Vec::new());
     }
     // 快照模型后释放 AppState 锁，再单次快照策略（绝不在内部持锁）。

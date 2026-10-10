@@ -1,5 +1,5 @@
 //! commands 模块测试（#[cfg(test)] 独立文件，不混入产品代码）
-//! 测试通过 `super::*` 访问 AppSettings / prefetch 函数等。
+//! 缓存写规则只经 cache_policy 断言，此处不断言规则本身。
 
 use super::*;
 
@@ -54,9 +54,9 @@ fn asset_mode_not_cached() {
         .to_string();
     let r = crate::decode::load_image(&path, false).unwrap();
     assert_eq!(r.mode, "asset");
-    // 模拟 load_image 的「asset 不 put」分支
+    // 写规则经 should_cache（此处只验证它把 asset 拦在槽位之外）。
     let arc = Arc::new(r);
-    if arc.mode != "asset" {
+    if crate::cache_policy::should_cache(&arc) {
         cache.put(path.clone(), Arc::clone(&arc));
     }
     // 另一张真缓存

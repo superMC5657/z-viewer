@@ -4,6 +4,7 @@
 mod analytics;
 mod browse;
 mod cache;
+mod cache_policy;
 mod commands;
 mod decode;
 mod license;

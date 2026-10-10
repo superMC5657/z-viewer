@@ -19,8 +19,8 @@
 //!   内部保留 animated 单槽 vs LRU 分流（本模块盲传 [`LoadResult`]）。
 //! - 预取纪律：peek（不碰 LRU）vs get_entry（-demand 触碰）；解码后紧邻 put
 //!   再做一次 peek 复查；begin_prefetch→end_prefetch 每条退出路径配对
-//!   （失活丢弃/解码失败/asset 跳过/首图缺失）；is_asset_ext 跳过 +
-//!   mode != asset && !is_preview 写过滤。
+//!   （失活丢弃/解码失败/规则跳过/首图缺失）；过滤只经 crate::cache_policy
+//!   （should_prefetch 预过滤 + should_cache 写过滤），此处不复述规则。
 //!
 //! 调用方只传快照：`&BrowseModel`（已快照的 Arc，绝不在内部持 AppState 锁——
 //! Condvar 等待 locality 不变）+ `&PrefetchPolicy`（AppSettings 快照）。
@@ -237,25 +237,28 @@ impl Navigator {
 
     /// 提升：导航进入新文件夹时把队列 A 命中的首图并入队列 B
     /// （前端 load_image 按图片路径查队列 B，命中即零解码）。
-    /// 首图路径随缓存值保存，直接读取无需重复文件系统枚举。
+    /// 首图路径随缓存值保存，直接读取无需重复文件系统枚举；
+    /// 写过滤同样经 should_cache（队列 A 照例只含可缓存条目，此处为守卫）。
     fn promote_folder_first(&self, model: &BrowseModel) {
         let folder = model.current_folder_path();
         let Some(first) = self.first_cache.get(&folder.to_string_lossy()) else {
             return;
         };
+        if !crate::cache_policy::should_cache(&first.result) {
+            return;
+        }
         self.cache.put(first.path.clone(), first.result.clone());
     }
 
     /// 派生上下文队列 B：当前文件夹前后邻居预取（decode_paths 门控）。
-    /// 仅缓存 RAW/动画（asset 由前端池预热）；失败静默忽略。
+    /// 预取规则只经 should_prefetch（asset 由前端池预热）；失败静默忽略。
     fn spawn_context(&self, model: &BrowseModel, policy: &PrefetchPolicy) {
         if !policy.decode_paths {
             return;
         }
         for p in model.context_paths(policy.prev, policy.next) {
             let path = p.to_string_lossy().to_string();
-            // asset 通道由前端 PrefetchPool 预热，Rust 不重复解码。
-            if crate::decode::is_asset_ext(&path) {
+            if !crate::cache_policy::should_prefetch(&path) {
                 continue;
             }
             if !self.cache.begin_prefetch(&path) {
@@ -297,7 +300,7 @@ impl Navigator {
 
     /// 单路径预取核心（同步）：spawn 闭包与测试共用同一实现。
     /// 前提：调用方已 `begin_prefetch` 登记；本函数保证每条退出路径
-    /// 配对 `end_prefetch`（失活丢弃/解码失败/asset 跳过）。
+    /// 配对 `end_prefetch`（失活丢弃/解码失败/规则跳过）。
     /// 学到的经验：peek 复查紧邻 put（实时加载可能已填充，跳过覆盖）。
     /// 私有：测试经 `super::*` 可见；外部调用方一律走派生循环（协议不可绕过）。
     fn prefetch_one(&self, path: &str, gen: usize) {
@@ -306,8 +309,8 @@ impl Navigator {
             self.cache.end_prefetch(path);
             return;
         }
-        // asset 由前端池预热（派生循环已预过滤，此处让核心自包含可独立测试）。
-        if crate::decode::is_asset_ext(path) {
+        // 规则前置（派生循环已预过滤，此处让核心自包含可独立测试）。
+        if !crate::cache_policy::should_prefetch(path) {
             self.cache.end_prefetch(path);
             return;
         }
@@ -324,8 +327,8 @@ impl Navigator {
                 return;
             }
         };
-        // asset（单帧降级）与内嵌预览不占缓存槽位。
-        if result.mode == "asset" || result.is_preview {
+        // 写过滤经 should_cache：单帧降级与内嵌预览不占缓存槽位。
+        if !crate::cache_policy::should_cache(&result) {
             self.cache.end_prefetch(path);
             return;
         }
@@ -349,14 +352,14 @@ impl Navigator {
             return;
         };
         let path = first.to_string_lossy().to_string();
-        if crate::decode::is_asset_ext(&path) {
+        if !crate::cache_policy::should_prefetch(&path) {
             self.cache.end_prefetch(&folder_str);
             return; // asset 由前端池预热。
         }
         if !self.cache.is_stale(gen, ABORT_LAG) {
             match (self.decoder)(&path, true) {
                 Ok(result) => {
-                    if result.mode != "asset" && !result.is_preview {
+                    if crate::cache_policy::should_cache(&result) {
                         self.first_cache.put(
                             folder_str.clone(),
                             Arc::new(FolderFirst {
@@ -444,16 +447,6 @@ mod tests {
     /// 恒失败解码器：走解码失败路径。
     fn failing_decoder(path: &str, _full: bool) -> Result<LoadResult, String> {
         Err(format!("boom {path}"))
-    }
-
-    /// 返回 asset 占位的解码器：走 asset 跳过路径。
-    fn asset_decoder(_path: &str, _full: bool) -> Result<LoadResult, String> {
-        Ok(LoadResult::asset())
-    }
-
-    /// 返回预览位的解码器：走 is_preview 跳过路径。
-    fn preview_decoder(_path: &str, _full: bool) -> Result<LoadResult, String> {
-        Ok(LoadResult::jpeg("raw", b"prev".to_vec(), 10, 10, true))
     }
 
     fn test_nav(cache: DecodeCache, first_cache: FolderFirstCache, decoder: Decoder) -> Navigator {
@@ -585,9 +578,10 @@ mod tests {
         cleanup(&base);
     }
 
-    /// (d) 前端上下文返回 asset，预取跳过 asset。
+    /// (d) 前端上下文返回 asset（预取侧的跳过规则已收归 cache_policy 表测试，
+    /// 此处只断言只读投影的 Navigator 缝）。
     #[test]
-    fn frontend_context_keeps_assets_prefetch_skips_them() {
+    fn frontend_context_returns_assets_for_frontend_pool() {
         let base = build_tree();
         let model = open_sync(&base.join("B/b1.jpg"));
         let cache = DecodeCache::new(8);
@@ -601,31 +595,6 @@ mod tests {
             ctx.contains(&a_first),
             "frontend_context 应返回 asset 首图供前端池预热：{ctx:?}"
         );
-
-        // 预取跳过 asset：同步核心对同一 asset 路径不写缓存。
-        let asset_path = base.join("A").join("a2.png").to_string_lossy().to_string();
-        assert!(cache.begin_prefetch(&asset_path));
-        nav.prefetch_one(&asset_path, cache.current_generation());
-        assert!(
-            cache.get_entry(&asset_path).is_none(),
-            "asset 路径预取应跳过（前端池负责）"
-        );
-
-        // 队列 A 同理：邻居首图为 asset 时不入首图缓存。
-        let folders = model.neighbor_folders(1);
-        assert!(!folders.is_empty());
-        for folder in &folders {
-            let key = folder.to_string_lossy().to_string();
-            if cache.begin_prefetch(&key) {
-                nav.prefetch_first(folder.clone(), key.clone(), cache.current_generation());
-            }
-            // 观察面：首图缓存无该文件夹条目（asset 跳过），且登记已释放。
-            assert!(
-                cache.begin_prefetch(&key),
-                "asset 首图路径必须配对 end_prefetch：{key}"
-            );
-            cache.end_prefetch(&key);
-        }
         cleanup(&base);
     }
 
@@ -675,22 +644,6 @@ mod tests {
             assert!(cache.begin_prefetch(&key), "第 {i} 轮应可登记");
             nav_fail.prefetch_one(&key, cache.current_generation());
             assert!(cache.get_entry(&key).is_none(), "解码失败不应入缓存");
-        }
-
-        // asset 跳过路径。
-        let nav_asset = test_nav(cache.clone(), first_cache.clone(), asset_decoder);
-        for i in 0..10 {
-            let key = format!("asset-{i}.png");
-            assert!(cache.begin_prefetch(&key));
-            nav_asset.prefetch_one(&key, cache.current_generation());
-        }
-
-        // 预览跳过路径。
-        let nav_prev = test_nav(cache.clone(), first_cache.clone(), preview_decoder);
-        for i in 0..10 {
-            let key = format!("prev-{i}.raw");
-            assert!(cache.begin_prefetch(&key));
-            nav_prev.prefetch_one(&key, cache.current_generation());
         }
 
         // 失活丢弃路径。

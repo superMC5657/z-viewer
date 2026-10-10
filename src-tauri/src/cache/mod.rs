@@ -5,13 +5,14 @@
 //! Arc 共享避免深拷贝；Clone 派生供 spawn_blocking 闭包移动。
 //!
 //! 文件组织（可维护性拆分）：
-//! - mod.rs：通用 LRU 队列（共享基础设施）
-//! - folder_first.rs：队列 A（文件夹首图缓存）
+//! - mod.rs：通用 LRU 队列（共享基础设施）+ 队列 A 别名（见下）
 //! - decode_cache.rs：队列 B（解码缓存，含预取去重）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
+//!
+//! 队列 A 说明：原 folder_first.rs 只是 LruQueue 的 45 行 passthrough，
+//! 已并入此处一个别名；首图条目路径随值保存（promote 免重枚举）。
 
 mod decode_cache;
-mod folder_first;
 #[cfg(test)]
 mod tests;
 
@@ -19,8 +20,22 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::decode::LoadResult;
+
 pub use decode_cache::DecodeCache;
-pub use folder_first::{FolderFirst, FolderFirstCache};
+
+/// 文件夹首图缓存条目：解码结果 + 首图路径（并入 DecodeCache 时的 key）。
+#[derive(Clone)]
+pub struct FolderFirst {
+    /// 该文件夹第一张图片的路径
+    pub path: String,
+    /// 解码结果（raw/animated；asset 不缓存）
+    pub result: Arc<LoadResult>,
+}
+
+/// 队列 A（文件夹首图缓存）：跨文件夹跳转命中即零延迟。
+/// 别名直达 LruQueue；key = 文件夹路径，value = 首图路径 + 解码结果。
+pub type FolderFirstCache = LruQueue<Arc<FolderFirst>>;
 
 /// 通用 LRU 队列（String key → 任意值 V，V: Clone）
 /// clone 共享内部队列与容量（供 spawn_blocking 闭包移动），操作均线程安全
