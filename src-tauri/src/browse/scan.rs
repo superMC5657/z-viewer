@@ -100,15 +100,13 @@ impl BrowseModel {
         // 名字与双击/命令行传入路径通常字节一致）；不中再大小写不敏感兜底
         // （to_string_lossy 对 UTF-8 名返回借用零分配，语义与原实现一致）。
         let file_name_lossy = file_name_os.to_string_lossy();
-        let image_index = current_images
-            .iter()
-            .position(|img| match img.file_name() {
-                Some(n) if n == file_name_os => true,
-                Some(n) => n
-                    .to_string_lossy()
-                    .eq_ignore_ascii_case(file_name_lossy.as_ref()),
-                None => false,
-            });
+        let image_index = current_images.iter().position(|img| match img.file_name() {
+            Some(n) if n == file_name_os => true,
+            Some(n) => n
+                .to_string_lossy()
+                .eq_ignore_ascii_case(file_name_lossy.as_ref()),
+            None => false,
+        });
         let Some(image_index) = image_index else {
             log::info!(
                 "browse open gated reject unknown-image {}",
@@ -190,16 +188,13 @@ impl BrowseModel {
     ) -> Option<Self> {
         let current_images = Self::list_images(dir);
         let Some(first) = current_images.first().cloned() else {
-            log::info!(
-                "browse open gated reject empty-dir {}",
-                basename_of(dir)
-            );
+            log::info!("browse open gated reject empty-dir {}", basename_of(dir));
             return None;
         };
         Self::open_with_current_images(&first, current_images, on_ready, cross_folder)
     }
 
-    pub(super) fn list_images(dir: &Path) -> Vec<PathBuf> {
+    fn list_images(dir: &Path) -> Vec<PathBuf> {
         // 预计算文件名（每图片一次分配）排序后再丢弃，避免比较器内 O(n log n) 次分配
         let mut imgs: Vec<(String, PathBuf)> = Vec::new();
         if let Ok(rd) = std::fs::read_dir(dir) {
@@ -257,14 +252,15 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
                 d.global_index += filled;
             }
         }
-        // 每填完一个文件夹即唤醒（先释放锁再 notify）：导航线程在 wait_folder_len /
-        // find_nonempty_folder 等待时，目标文件夹一填完就能继续，不必等所有兄弟文件夹
+        // 每填完一个文件夹即唤醒（先释放锁再 notify）：导航线程在 wait_filled
+        // 等待时，目标文件夹一填完就能继续，不必等所有兄弟文件夹
         // 全部枚举完（兄弟多的场景避免 PgDn/跨文件夹导航长时间阻塞）。
         scan_inner.cv.notify_all();
     }
 
     // 若用户已导航进空文件夹，同样移除它并指向相邻非空文件夹，
     // 避免空文件夹永久残留、folder_total 虚高。
+    // 压缩是扫描线程在扫描末尾、持有同一把锁时的单次操作（见 compact_empty）。
     let mut d = scan_inner
         .m
         .lock()
@@ -272,6 +268,22 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
     if d.cancelled {
         return;
     }
+    compact_empty(&mut d);
+    d.loading = false;
+    drop(d); // 先释放锁，state_from_inner 会再次加锁
+    let state = BrowseModel::state_from_inner(&scan_inner);
+    if let Some(cb) = on_ready {
+        cb(state);
+    }
+    scan_inner.cv.notify_all();
+}
+
+/// 压缩空文件夹（仅扫描线程在扫描末尾、持有同一把锁时调用一次）：
+/// 移除 images==Some(empty) 的文件夹，按 removed_before/cur_removed 调整
+/// folder_index，并重算 global_total/global_index 基准（此后增量维护）。
+/// 与任何 wait_filled 等待互斥：压缩运行时所有文件夹已填充，有等待者即有
+/// 未填充文件夹即扫描未结束——等待中索引不可能被压缩致失效。
+fn compact_empty(d: &mut InnerData) {
     let old_folders = std::mem::take(&mut d.folders);
     let old_index = d.folder_index;
 
@@ -281,18 +293,11 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         .all(|f| matches!(&f.images, Some(imgs) if imgs.is_empty()));
     if all_empty {
         d.folders = old_folders;
-        d.loading = false;
         log::debug!(
             "browse scan done folders {} total {} (all-empty)",
             d.folders.len(),
             d.global_total
         );
-        drop(d);
-        let state = BrowseModel::state_from_inner(&scan_inner);
-        if let Some(cb) = on_ready {
-            cb(state);
-        }
-        scan_inner.cv.notify_all();
         return;
     }
 
@@ -325,7 +330,6 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
     } else {
         d.folder_index = old_index - removed_before;
     }
-    d.loading = false;
     // 压缩后一次性重算全局计数（此后为增量维护的基准）
     let (mut total, mut prefix) = (0usize, 0usize);
     for (i, f) in d.folders.iter().enumerate() {
@@ -344,10 +348,4 @@ fn background_scan(scan_inner: Arc<ModelInner>, on_ready: Option<OnReady>) {
         d.folders.len(),
         d.global_total
     );
-    drop(d); // 先释放锁，state_from_inner 会再次加锁
-    let state = BrowseModel::state_from_inner(&scan_inner);
-    if let Some(cb) = on_ready {
-        cb(state);
-    }
-    scan_inner.cv.notify_all();
 }

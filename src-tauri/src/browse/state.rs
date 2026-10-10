@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{BrowseModel, BrowseState, ModelInner};
+use super::{BrowseModel, BrowseState, ModelInner, Waited};
 
 impl BrowseModel {
     /// 当前图片上下文的路径（跨文件夹衔接），用于预加载缓存（8.2）
@@ -127,20 +127,14 @@ impl BrowseModel {
         best.map(|(_, p)| p)
     }
 
-    /// 等待后台枚举完成（测试用）
+    /// 测试等待后台枚举完成：经公开 state().loading 轮询，不碰内部锁。
+    /// 保留为方法仅因外部测试 seam（navigator 的 open_sync）调用它且 scope 禁止
+    /// 改动 navigator.rs；与 `open` 一样是 prod 不可见的 #[cfg(test)] 薄适配。
+    /// browse 自身测试一律用 tests.rs 本地 fixture，不走此方法。
     #[cfg(test)]
     pub fn wait_ready(&self) {
-        let mut d = self
-            .inner
-            .m
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while d.loading {
-            d = self
-                .inner
-                .cv
-                .wait(d)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while self.state().loading {
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 
@@ -148,46 +142,53 @@ impl BrowseModel {
         Self::state_from_inner(&self.inner)
     }
 
+    /// 空浏览状态：模型废弃/越界时的自洽快照（前端 showSeq 兜底）。
+    fn empty_state() -> BrowseState {
+        BrowseState {
+            path: String::new(),
+            file_name: String::new(),
+            folder_name: String::new(),
+            file_size: 0,
+            global_index: 0,
+            global_total: 0,
+            folder_index: 0,
+            folder_total: 0,
+            loading: false,
+        }
+    }
+
     pub(super) fn state_from_inner(inner: &Arc<ModelInner>) -> BrowseState {
-        // 第一段（持模型主锁）：等待当前文件夹填充，取一份 O(1) 快照后立即释放锁
-        let snapshot = {
-            let mut d = inner
+        // 第一段（持模型主锁）：经唯一等待点确认当前文件夹已填充，取一份 O(1)
+        // 快照后立即释放锁。取消/越界返回空状态；压缩致索引失效则整体重试
+        // （压缩单次且压缩后全填充，重试必收敛）。
+        let snapshot = loop {
+            let d = inner
                 .m
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            loop {
-                if let Some(imgs) = &d.folders[d.folder_index].images {
-                    let folder = &d.folders[d.folder_index];
-                    let img = imgs.get(d.image_index).cloned();
-                    break (
-                        folder.path.clone(),
-                        img,
-                        d.global_index,
-                        d.global_total,
-                        d.folder_index,
-                        d.folders.len(),
-                        d.loading,
-                    );
-                }
-                if d.cancelled {
-                    // 模型已废弃：返回空状态
-                    return BrowseState {
-                        path: String::new(),
-                        file_name: String::new(),
-                        folder_name: String::new(),
-                        file_size: 0,
-                        global_index: 0,
-                        global_total: 0,
-                        folder_index: 0,
-                        folder_total: 0,
-                        loading: false,
-                    };
-                }
-                d = inner
-                    .cv
-                    .wait(d)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
+            let entry_len = d.folders.len();
+            let fi = d.folder_index;
+            let d = match Self::wait_filled(inner, d, fi, entry_len) {
+                Waited::Ready(_, d) => d,
+                Waited::Over => return Self::empty_state(),
+                Waited::Stale => continue,
+            };
+            // wait_filled 已复验长度：当前文件夹填充且索引有效（锁未离手，
+            // 压缩无法交错），直接取快照。
+            let folder = &d.folders[d.folder_index];
+            let img = folder
+                .images
+                .as_ref()
+                .and_then(|imgs| imgs.get(d.image_index).cloned());
+            break (
+                folder.path.clone(),
+                img,
+                d.global_index,
+                d.global_total,
+                d.folder_index,
+                d.folders.len(),
+                d.loading,
+            );
         };
         let (folder_path, img, global_index, global_total, folder_index, folder_total, loading) =
             snapshot;
@@ -243,15 +244,5 @@ impl BrowseModel {
             folder_total,
             loading,
         }
-    }
-}
-
-impl Drop for BrowseModel {
-    fn drop(&mut self) {
-        // 通知后台扫描线程尽快退出
-        if let Ok(mut d) = self.inner.m.lock() {
-            d.cancelled = true;
-        }
-        self.inner.cv.notify_all();
     }
 }

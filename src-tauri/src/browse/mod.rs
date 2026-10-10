@@ -8,15 +8,12 @@
 //! 异步枚举：
 //! - open() 只同步枚举当前文件夹（定位首图），兄弟文件夹由后台线程逐个填充
 //! - 导航到未填充文件夹时阻塞等待（Condvar）；neighbor_paths 预取则非阻塞
-//! - 扫描完成回调 on_ready(BrowseState)：前端刷新位置计数
+//! - 扫描完成回调 onReady(BrowseState)：前端刷新位置计数
 //! - Drop 时置 cancelled，扫描线程尽快退出
 //!
-//! 文件组织（可维护性拆分）：
-//! - mod.rs：类型定义与辅助函数
-//! - scan.rs：open / 后台扫描线程
-//! - nav.rs：图片级 / 文件夹级导航
-//! - state.rs：状态计算与上下文路径
-//! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
+//! 本文件即公共接口：外部只见 BrowseModel / BrowseState / Boundary / Nav /
+//! FolderTarget / OnReady 及 BrowseModel 上的公开方法；其余（InnerData、锁、
+//! Condvar、等待点）均为模块私有实现。
 
 mod nav;
 mod scan;
@@ -26,15 +23,16 @@ mod tests;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-pub(super) use crate::decode::is_image_file;
+use crate::decode::is_image_file;
 
 /// 目录项 → (文件名, 路径)：仅接受常规图片文件。
 /// list_images 与 first_image_of 共用的单条目判定（过滤行为唯一来源）。
+/// 模块私有：子模块经 super:: 引用，外部不可见。
 /// 快路径：DirEntry::file_type 直接来自目录枚举元数据（Windows 零额外系统调用）；
 /// 常规文件短路通过，符号链接/未知类型回退 Path::is_file()（stat 语义，跟随链接）。
-pub(super) fn image_entry(entry: &std::fs::DirEntry) -> Option<(String, PathBuf)> {
+fn image_entry(entry: &std::fs::DirEntry) -> Option<(String, PathBuf)> {
     let p = entry.path();
     let is_file = match entry.file_type() {
         Ok(ft) => ft.is_file() || p.is_file(),
@@ -110,6 +108,72 @@ pub type OnReady = Box<dyn FnOnce(BrowseState) + Send>;
 #[derive(Clone)]
 pub struct BrowseModel {
     inner: Arc<ModelInner>,
+}
+
+impl BrowseModel {
+    /// 全模块唯一的阻塞等待点：等待 folders[idx] 填充完成，返回其长度与锁。
+    /// 取消/走到尽头返回 Over（调用方映射为 Boundary/空状态，不再复查标志）；
+    /// 等待中若发生压缩（唯一缩表者，长度变化可观测）则返回 Stale，
+    /// 调用方整体重试——压缩单次运行且压缩后全填充，重试必收敛、无等待。
+    /// 睡眠中压缩可能让 idx 指向另一文件夹（别名），故命中亦复验长度，
+    /// 不可将错就错。导航（next/prev/jump_folder）与状态快照都经此，
+    /// 任何处不手写 lock/wait/cancel。
+    fn wait_filled<'a>(
+        inner: &Arc<ModelInner>,
+        mut guard: MutexGuard<'a, InnerData>,
+        idx: usize,
+        entry_len: usize,
+    ) -> Waited<'a> {
+        loop {
+            if guard.cancelled {
+                return Waited::Over;
+            }
+            if idx >= guard.folders.len() {
+                // 长度变化 ⟹ 睡眠中发生压缩，索引已失效 → 整体重试；
+                // 长度不变 ⟹ 真走到尽头 → 收尾。
+                return if guard.folders.len() != entry_len {
+                    Waited::Stale
+                } else {
+                    Waited::Over
+                };
+            }
+            if let Some(imgs) = &guard.folders[idx].images {
+                if guard.folders.len() != entry_len {
+                    return Waited::Stale;
+                }
+                return Waited::Ready(imgs.len(), guard);
+            }
+            guard = inner
+                .cv
+                .wait(guard)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+/// wait_filled 结果（模块私有三态）：就绪 / 终结（取消或走到尽头，
+/// 调用方按 Boundary/空状态收尾）/ 失效（等待中发生压缩，调用方整体重试）。
+enum Waited<'a> {
+    Ready(usize, MutexGuard<'a, InnerData>),
+    Over,
+    Stale,
+}
+
+/// 跳过式查找结果（模块私有三态）：命中 / 走到尽头 / 压缩致索引失效（整体重试）。
+enum Found<'a> {
+    Hit(usize, usize, MutexGuard<'a, InnerData>),
+    End,
+    Stale,
+}
+
+impl Drop for BrowseModel {
+    fn drop(&mut self) {
+        // 通知后台扫描线程尽快退出（与 wait_filled 紧邻：每次等待都能醒来见取消）
+        if let Ok(mut d) = self.inner.m.lock() {
+            d.cancelled = true;
+        }
+        self.inner.cv.notify_all();
+    }
 }
 
 /// 给前端的当前浏览状态（纯数据）

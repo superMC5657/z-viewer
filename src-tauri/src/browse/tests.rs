@@ -1,9 +1,9 @@
-//! browse 模块测试（#[cfg(test)] 独立文件，不混入产品代码）
-//! 测试通过 `super::*` 访问 BrowseModel 及私有字段 inner。
+//! browse 模块测试：只经公开接口断言（状态/导航/上下文），不碰内部锁。
 
 use super::*;
 use std::fs;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
@@ -37,26 +37,32 @@ fn cleanup(base: &Path) {
 
 fn open_sync(path: &Path) -> BrowseModel {
     let m = BrowseModel::open(path, None).unwrap();
-    m.wait_ready(); // 等待后台枚举完成，保证断言稳定
+    wait_ready(&m); // 等待后台枚举完成，保证断言稳定
     m
+}
+
+/// 测试等待后台枚举完成：公开 state().loading 轮询（不碰内部锁——接口唯一）。
+fn wait_ready(m: &BrowseModel) {
+    while m.state().loading {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 #[test]
 fn natural_order_and_folders() {
     let base = build_tree();
     let m = open_sync(&base.join("A/a1.png"));
-    {
-        let d = m.inner.m.lock().unwrap();
-        assert_eq!(d.folders.len(), 3, "无图文件夹应被排除");
-        assert_eq!(d.folders[0].images.as_ref().unwrap().len(), 3);
-        assert_eq!(
-            d.folders[0].images.as_ref().unwrap()[2]
-                .file_name()
-                .unwrap(),
-            "a10.png",
-            "natord 自然排序：a1, a2, a10"
-        );
-    }
+    let st = m.state();
+    assert_eq!(st.folder_total, 3, "无图文件夹应被排除");
+    assert_eq!(st.global_total, 6, "A(3)+B(2)+C(1)");
+    // natord 自然排序：a1, a2, a10（字典序会是 a1, a10, a2）
+    assert_eq!(m.state().file_name, "a1.png");
+    assert!(matches!(m.next(), Nav::Ok));
+    assert_eq!(m.state().file_name, "a2.png");
+    assert!(matches!(m.next(), Nav::Ok));
+    assert_eq!(m.state().file_name, "a10.png", "natord 自然排序");
+    assert!(matches!(m.next(), Nav::Ok));
+    assert_eq!(m.state().folder_name, "B", "A 走完无缝进入 B");
     cleanup(&base);
 }
 
@@ -181,7 +187,7 @@ fn open_is_fast_on_current_folder() {
         "当前文件夹已同步枚举，立即可用"
     );
     assert!(m.state().loading, "后台枚举未完成时 loading=true");
-    m.wait_ready();
+    wait_ready(&m);
     assert!(!m.state().loading, "完成后 loading=false");
     cleanup(&base);
 }
@@ -240,7 +246,7 @@ fn async_open_large_library_is_immediate() {
         "初始已知总数 = 当前文件夹图片数"
     );
     // 后台完成后总数 = 20×30=600
-    m.wait_ready();
+    wait_ready(&m);
     assert_eq!(m.state().global_total, 600, "扫描完成后全局总数正确");
     assert_eq!(m.state().global_index, 5 * 30 + 10, "全局位置累计正确");
     cleanup(&base);
@@ -316,13 +322,10 @@ fn nav_skips_empty_sibling_folder() {
 
     let m = open_sync(&base.join("A/a2.png"));
     // 扫描完成后空 A0 已被压缩移除，且当前文件夹无变化
-    {
-        let d = m.inner.m.lock().unwrap();
-        assert_eq!(d.folders.len(), 2, "空文件夹 A0 应被压缩移除");
-    }
-    assert_eq!(m.state().file_name, "a2.png");
+    let st = m.state();
+    assert_eq!(st.folder_total, 2, "空文件夹 A0 应被压缩移除");
+    assert_eq!(st.file_name, "a2.png");
     // next 从 A 末尾无缝进入 B
-    let m = m;
     assert!(matches!(m.next(), Nav::Ok), "跨文件夹跳过空 A0");
     assert_eq!(m.state().folder_name, "B");
     assert_eq!(m.state().file_name, "b1.jpg");
@@ -352,7 +355,7 @@ fn nav_during_scan_never_panics() {
             _ => break,
         }
     }
-    m.wait_ready();
+    wait_ready(&m);
     // 最终状态有效且不 panic（当前文件夹非空，path 不应为空）
     assert!(!m.state().path.is_empty(), "导航后当前图片路径应有效");
     cleanup(&base);
@@ -365,17 +368,14 @@ fn free_mode_single_folder_no_cross() {
     let base = build_tree();
     // 免费版（cross_folder=false）：打开 A/a1.png 只浏览当前文件夹
     let m = BrowseModel::open_gated(&base.join("A/a1.png"), None, false).unwrap();
-    {
-        let d = m.inner.m.lock().unwrap();
-        assert_eq!(d.folders.len(), 1, "免费版 folders 只含当前文件夹");
-        assert!(!d.loading, "免费版无后台扫描，loading=false");
-        assert_eq!(
-            d.global_total, 3,
-            "全局总数 = 当前文件夹图片数（不累计兄弟）"
-        );
-    }
+    let st = m.state();
+    assert_eq!(st.folder_total, 1, "免费版 folders 只含当前文件夹");
+    assert!(!st.loading, "免费版无后台扫描，loading=false");
+    assert_eq!(
+        st.global_total, 3,
+        "全局总数 = 当前文件夹图片数（不累计兄弟）"
+    );
     // next 到文件夹末尾即停（不跨到 B）
-    let m = m;
     assert_eq!(m.state().file_name, "a1.png");
     for _ in 0..2 {
         assert_eq!(m.next(), Nav::Ok, "文件夹内翻页正常");
@@ -406,25 +406,114 @@ fn pro_mode_cross_folder_still_works() {
     let base = build_tree();
     // 专业版（cross_folder=true）：可跨到兄弟文件夹
     let m = BrowseModel::open_gated(&base.join("A/a10.png"), None, true).unwrap();
-    {
-        let d = m.inner.m.lock().unwrap();
-        assert_eq!(
-            d.folders.len(),
-            4,
-            "专业版扫描全部同级目录（含空目录，后台压缩）"
-        );
-        assert!(d.loading);
-    }
-    m.wait_ready();
-    let m = m;
-    {
-        let d = m.inner.m.lock().unwrap();
-        assert_eq!(d.folders.len(), 3, "后台压缩后无图文件夹被排除");
-    }
-    let m = m;
+    let st = m.state();
+    assert_eq!(
+        st.folder_total, 4,
+        "专业版扫描全部同级目录（含空目录，后台压缩）"
+    );
+    assert!(st.loading);
+    wait_ready(&m);
+    assert_eq!(m.state().folder_total, 3, "后台压缩后无图文件夹被排除");
     // A 末张 a10.png → next 跨到 B/b1.jpg
     let nav = m.next();
     assert_eq!(nav, Nav::Ok);
     assert_eq!(m.state().file_name, "b1.jpg", "专业版跨文件夹衔接");
+    cleanup(&base);
+}
+
+// ---------- 封口回归：取消/压缩/空文件夹只经公开接口观察 ----------
+
+#[test]
+fn cancel_wakes_blocked_nav() {
+    // 大图库 + 加厚的 D01：扫描远慢于导航线程启动，next() 必阻塞在未填充文件夹上
+    let base = temp_base();
+    for d in 0..60 {
+        for i in 0..25 {
+            touch(
+                &base
+                    .join(format!("D{d:02}"))
+                    .join(format!("img_{i:03}.png")),
+            );
+        }
+    }
+    for i in 0..1500 {
+        touch(&base.join("D01").join(format!("slow_{i:04}.png")));
+    }
+    // 停在首文件夹末张，不等扫描完成
+    let m = BrowseModel::open(&base.join("D00/img_024.png"), None).unwrap();
+    let m2 = m.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let blocked = matches!(m2.next(), Nav::Boundary(_));
+        let _st = m2.state(); // 存活克隆上绝不 panic
+        let _ = tx.send(blocked);
+    });
+    drop(m); // 中断等待：扫描取消，等待者必须醒来
+    let blocked = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("取消必须唤醒阻塞导航");
+    assert!(blocked, "取消的等待应返回 Boundary（不挂起/不 panic）");
+    cleanup(&base);
+}
+
+#[test]
+fn drop_during_scan_no_on_ready_panic() {
+    let base = build_tree();
+    let fired = Arc::new(AtomicBool::new(false));
+    let fired2 = Arc::clone(&fired);
+    {
+        let _m = BrowseModel::open(
+            &base.join("A/a1.png"),
+            Some(Box::new(move |_state| {
+                fired2.store(true, Ordering::SeqCst);
+            })),
+        )
+        .unwrap();
+        // 立即丢弃：扫描应静默退出，不回调、不挂起
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !fired.load(Ordering::SeqCst),
+        "丢弃后扫描不得再回调 on_ready"
+    );
+    // 运行环境健康：新模型照常可用
+    let m2 = open_sync(&base.join("B/b1.jpg"));
+    assert_eq!(m2.state().file_name, "b1.jpg");
+    cleanup(&base);
+}
+
+#[test]
+fn compression_current_folder_removed() {
+    let base = build_tree();
+    // 不等待：打开后立即删除磁盘上的当前文件夹（内存列表不受影响）
+    let m = BrowseModel::open(&base.join("A/a1.png"), None).unwrap();
+    fs::remove_dir_all(base.join("A")).unwrap();
+    wait_ready(&m);
+    let st = m.state();
+    assert!(!st.path.is_empty(), "内存快照不受磁盘删除影响");
+    assert_eq!(st.file_name, "a1.png");
+    assert!(st.folder_index < st.folder_total, "索引有效");
+    assert!(st.global_index < st.global_total, "全局位置有效");
+    cleanup(&base);
+}
+
+#[test]
+fn empty_sibling_never_observed() {
+    // A 与 B 之间夹一个空目录 A0，从 A 末尾 next 应跳过 A0 直达 B
+    let base = temp_base();
+    for n in ["a1", "a2"] {
+        touch(&base.join("A").join(format!("{n}.png")));
+    }
+    for n in ["b1", "b2"] {
+        touch(&base.join("B").join(format!("{n}.jpg")));
+    }
+    fs::create_dir_all(base.join("A0")).unwrap();
+    // 不等待扫描完成：A 末张 next 应阻塞等待填充并跳过空 A0，直达 B
+    let m = BrowseModel::open(&base.join("A/a2.png"), None).unwrap();
+    assert_eq!(m.state().file_name, "a2.png");
+    let nav = m.next();
+    assert!(matches!(nav, Nav::Ok));
+    assert_eq!(m.state().folder_name, "B");
+    assert_eq!(m.state().file_name, "b1.jpg");
     cleanup(&base);
 }
