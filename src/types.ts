@@ -28,7 +28,7 @@ export interface AppSettings {
   folder_first_depth: number;
 }
 
-/** Rust 端 license::LicenseInfo */
+/** Rust 端 license::LicenseInfo（跨 IPC 的富权益答案；features 与 status 同源） */
 export interface LicenseInfo {
   /** 授权状态："pro"（专业版）| "free"（免费版） */
   status: string;
@@ -42,6 +42,8 @@ export interface LicenseInfo {
   code?: string | null;
   /** 本地保存的购买邮箱 */
   email?: string | null;
+  /** JWT 权益位（与 status 同源；前端由 LicenseInfo 快照派生答案） */
+  features: string[];
 }
 
 /** Rust 端 license::StoreInfo（购买入口） */

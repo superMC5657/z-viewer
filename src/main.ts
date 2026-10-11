@@ -78,7 +78,7 @@ const presence: Presence = new Presence(
         void presenter.navigate(() => invoke("next_image"));
         return;
       }
-      if (!requirePro()) return;
+      if (!licenseService.require("cross-folder")) return;
       const target = kind === "folder-first" ? "first" : kind === "folder-last" ? "last" : kind === "folder-prev" ? "prev" : "next";
       void presenter.navigate(() => invoke("jump_folder", { target }));
     },
@@ -93,9 +93,9 @@ const presence: Presence = new Presence(
     onCacheElevation: (active, elevatedFrom) => {
       if (active) {
         // 自动提级到高等级缓存（专业版功能）；免费版跳过（Rust 会拒绝，避免误弹错误）
-        if (licenseService.isPro && cacheLevel !== 2) void setCacheLevel(2);
+        if (licenseService.can("prefetch-cache") && cacheLevel !== 2) void setCacheLevel(2);
       } else if (
-        licenseService.isPro &&
+        licenseService.can("prefetch-cache") &&
         elevatedFrom != null &&
         (elevatedFrom !== 2 || cacheLevel !== 2)
       ) {
@@ -123,7 +123,7 @@ const presence: Presence = new Presence(
       setAlwaysOnTop: (b) => appWindow.setAlwaysOnTop(b),
     },
   },
-  { isPro: () => licenseService.isPro },
+  { canUse: (e) => licenseService.can(e) },
 );
 const ui: UI = new UI(presence.bars);
 ui.onFrameAvailability = (v) => presence.setFrameAvailable(v);
@@ -134,9 +134,6 @@ const presenter: ImagePresenter = new ImagePresenter(viewer, ui, {
 });
 
 const LICENSE_STATUS_CHANGED = "license://status-changed";
-let cacheLevel = 1;
-/** 缓存等级设置请求代次：并发切换时只应用最后一次（防幻灯片自动切换与手动切换竞态） */
-let cacheLevelGen = 0;
 
 // ---------- 薄接线：呈现策略归 ImagePresenter，本文件只留 window/input/slideshow/cache/license ----------
 
@@ -173,6 +170,52 @@ const licenseService: LicenseService = new LicenseService(ui, {
   },
   onDialogVisibility: (open) => presence.setDialogOpen(open),
 });
+
+// ---------- 缓存等级（起因聚合：unlock/downgrade/提级恢复的副作用归 license 回调之旁，
+// cacheLevelGen 竞态就地可理解——见 setCacheLevel 代次校验） ----------
+let cacheLevel = 1;
+/** 缓存等级设置请求代次：并发切换时只应用最后一次（防幻灯片自动切换与手动切换竞态） */
+let cacheLevelGen = 0;
+
+/**
+ * 设置缓存等级：0(关·白) 1(开·蓝) 2(高·橙)
+ * - level 与当前相同时跳过（force 除外：幻灯片停止时的恢复必须强制，覆盖在飞请求）
+ * - 代次校验：invoke 返回时若期间又有新设置请求，本次结果作废（避免旧请求覆盖新状态）
+ */
+async function setCacheLevel(level: number, toast?: string, force = false): Promise<void> {
+  const lv = Math.min(2, Math.max(0, level));
+  if (!force && lv === cacheLevel) return;
+  const gen = ++cacheLevelGen;
+  try {
+    await invoke<AppSettings>("set_cache_level", { level: lv });
+    if (gen !== cacheLevelGen) return; // 已有更新的设置请求：本次结果作废
+    cacheLevel = lv;
+    try {
+      localStorage.setItem("cache-level", String(lv));
+    } catch {
+      /* 忽略持久化失败 */
+    }
+    syncCacheButton();
+    if (toast) ui.showToast(toast);
+    if (lv > 0) presenter.refreshContext(); // 开启后立即按当前上下文预热
+  } catch (err) {
+    ui.showToast(`切换失败：${String(err)}`);
+  }
+}
+
+/** 切换缓存等级：0(关·白) → 1(开·蓝) → 2(高·橙) → 0 循环 */
+async function toggleCache(): Promise<void> {
+  const next = (cacheLevel + 1) % 3;
+  const toasts = ["预取缓存已关闭", "预取缓存已开启", "高等级预取：前 1 后 3"];
+  await setCacheLevel(next, toasts[next]);
+}
+
+/** 同步缓存按钮视觉：0=白 1=蓝(active) 2=橙(level-2) */
+function syncCacheButton(): void {
+  ui.setToolbarActive("cache-toggle", cacheLevel >= 1);
+  ui.setToolbarLevel("cache-toggle", cacheLevel >= 2);
+}
+
 // ---------- 工具栏动作（意图经 Presence.dispatch；缓存/license/更新直连） ----------
 
 /** 工具栏 id → 输入意图（呈现词汇适配，模块只讲 InputIntent；null 走直连分支） */
@@ -209,15 +252,7 @@ function toolbarIdToIntent(id: string): InputIntent | null {
   }
 }
 
-/** 付费功能入口统一拦截：免费版弹出解锁引导（不发起 IPC） */
-function requirePro(): boolean {
-  if (licenseService.isPro) return true;
-  ui.showToast("专业版功能，解锁后可用");
-  void licenseService.openDialog();
-  return false;
-}
-
-// ---------- 工具栏动作 ----------
+// ---------- 工具栏动作（意图经 Presence.dispatch；缓存/license/更新直连） ----------
 
 function handleToolbarAction(id: string): void {
   const intent = toolbarIdToIntent(id);
@@ -227,7 +262,7 @@ function handleToolbarAction(id: string): void {
   }
   switch (id) {
     case "cache-toggle":
-      if (!requirePro()) return;
+      if (!licenseService.require("prefetch-cache")) return;
       void toggleCache();
       break;
     case "update":
@@ -300,47 +335,6 @@ function buildSlideshowBar(): void {
     ui.setToolbarActive("slideshow", running);
     // running=false（暂停）：保持模式、保留进度计数、保留高等级缓存——随时可继续播放
   };
-}
-
-// ---------- 缓存开关（三态：关/开/高） ----------
-
-/**
- * 设置缓存等级：0(关·白) 1(开·蓝) 2(高·橙)
- * - level 与当前相同时跳过（force 除外：幻灯片停止时的恢复必须强制，覆盖在飞请求）
- * - 代次校验：invoke 返回时若期间又有新设置请求，本次结果作废（避免旧请求覆盖新状态）
- */
-async function setCacheLevel(level: number, toast?: string, force = false): Promise<void> {
-  const lv = Math.min(2, Math.max(0, level));
-  if (!force && lv === cacheLevel) return;
-  const gen = ++cacheLevelGen;
-  try {
-    await invoke<AppSettings>("set_cache_level", { level: lv });
-    if (gen !== cacheLevelGen) return; // 已有更新的设置请求：本次结果作废
-    cacheLevel = lv;
-    try {
-      localStorage.setItem("cache-level", String(lv));
-    } catch {
-      /* 忽略持久化失败 */
-    }
-    syncCacheButton();
-    if (toast) ui.showToast(toast);
-    if (lv > 0) presenter.refreshContext(); // 开启后立即按当前上下文预热
-  } catch (err) {
-    ui.showToast(`切换失败：${String(err)}`);
-  }
-}
-
-/** 切换缓存等级：0(关·白) → 1(开·蓝) → 2(高·橙) → 0 循环 */
-async function toggleCache(): Promise<void> {
-  const next = (cacheLevel + 1) % 3;
-  const toasts = ["预取缓存已关闭", "预取缓存已开启", "高等级预取：前 1 后 3"];
-  await setCacheLevel(next, toasts[next]);
-}
-
-/** 同步缓存按钮视觉：0=白 1=蓝(active) 2=橙(level-2) */
-function syncCacheButton(): void {
-  ui.setToolbarActive("cache-toggle", cacheLevel >= 1);
-  ui.setToolbarLevel("cache-toggle", cacheLevel >= 2);
 }
 
 // ---------- 事件装配 ----------
@@ -520,7 +514,7 @@ async function init(): Promise<void> {
     }
     // 读取缓存设置并同步 UI（localStorage 持久化优先，否则 Rust 默认）
     const settings = await invoke<AppSettings>("get_settings");
-    if (!licenseService.isPro) {
+    if (!licenseService.can("prefetch-cache")) {
       // 免费版：缓存被锁定为关闭，忽略 localStorage 里的付费等级（避免显示橙色高等级态）
       cacheLevel = 0;
     } else {

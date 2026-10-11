@@ -2,11 +2,13 @@
  * 可见性 + 意图 + 节奏的唯一深模块（前端 C3）。
  * 收敛三处旧主人：overlay-manager（闲置/分组/悬停）、window-state（沉浸/置顶）、slideshow（v4 节拍器）。
  * 方向向内：main → Presence → host 回调 → presenter/viewer/Tauri。
- * 本模块不导入 ui/license/updater/viewer/window-state；窗口经 host.window，是否专业版经按次 {pro}。
+ * 本模块不导入 ui/license/updater/viewer/window-state；窗口经 host.window，权益问题经按次 canUse 闭包。
  * 内容节点零拥有：浮层容器只查询一次，文本/图标写入归 UI/presenter。
  * 节拍唯一主人：start/stop/tick/advance/reset/恢复/退出清理全归此模块，
  * 调用面只做开始/停止/播放条接线与内容适配（onAdvance 内容体只做薄转发）。
  */
+
+import type { Entitlement } from "./services/license";
 
 export type PresenceMode = "browse" | "slideshow";
 
@@ -58,8 +60,8 @@ export interface PresenceOptions {
   idleMs?: number;
   /** 唤醒高频节流时间（毫秒），默认 150 */
   throttleMs?: number;
-  /** 是否专业版（仅 slideshow-toggle/start 时的提级决策用；实现永不导入 license） */
-  isPro?: () => boolean;
+  /** 权益问题（仅 slideshow 提级决策用；实现永不导入 license 服务，只收权益名） */
+  canUse?: (e: Entitlement) => boolean;
 }
 
 /** 按住方向键的 repeat 限流（沿用旧值）：连发只放行每 120ms 一次 */
@@ -183,7 +185,7 @@ export class Presence {
   ) {
     this.idleMs = opts?.idleMs ?? 2000;
     this.throttleMs = opts?.throttleMs ?? 150;
-    if (opts?.isPro) this.isPro = opts.isPro;
+    if (opts?.canUse) this.canUse = opts.canUse;
     this.bars = {
       infoBar: document.getElementById("info-bar")!,
       toolbar: document.getElementById("toolbar")!,
@@ -196,7 +198,7 @@ export class Presence {
     this.bindHover(this.bars.slideshowBar);
   }
 
-  private isPro: () => boolean = () => false;
+  private canUse: (e: Entitlement) => boolean = () => false;
 
   get currentMode(): PresenceMode {
     return this.mode;
@@ -351,7 +353,7 @@ export class Presence {
     this.nextTickAt = performance.now() + this.intervalMs;
     this.onRunningChange?.(true);
     this.setPresence("slideshow");
-    if (entering && this.isPro()) {
+    if (entering && this.canUse("prefetch-cache")) {
       // 首次进入记录播放前等级（暂停→继续不覆盖，恢复仍用最初的等级）
       this.elevatedFrom = this.host.getCacheLevel();
       this.host.onCacheElevation(true);

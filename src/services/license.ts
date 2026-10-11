@@ -1,8 +1,10 @@
 /**
- * 专业版授权服务模块
+ * 专业版授权服务模块（前端权益答案唯一源）
  * 激活码验证、注销、在线购买跳转与解锁对话框交互（支持 Light Dismiss 点击背景关闭）
  * 对话框 DOM 归 LicenseDialog 唯一拥有，本模块只发意图（render/showError/按钮文案），
  * 经 LicenseCallbacks adapter 收结果；本文件零 DOM 直抓。
+ * 权益问题（can/require）一律由 LicenseInfo 快照派生，加一条权益只改
+ * ENTITLEMENT_FEATURES 映射与 Entitlement 词表，不再四处动手。
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -18,8 +20,25 @@ export interface LicenseCallbacks {
   onDialogVisibility?: (open: boolean) => void;
 }
 
+/** 付费权益词表（普通形状，非 module；调用面只传名） */
+export type Entitlement = "cross-folder" | "prefetch-cache";
+
+/** 富权益答案（与后端 LicenseInfo 同源快照；seam 携带此答案而非光秃 boolean） */
+export interface Entitlements {
+  pro: boolean;
+  level: string | null;
+  features: string[];
+}
+
+/** 权益 → 所需 JWT 功能位（当前捆绑为一个 pro；拆分时只改此处） */
+const ENTITLEMENT_FEATURES: Record<Entitlement, string> = {
+  "cross-folder": "pro",
+  "prefetch-cache": "pro",
+};
+
 export class LicenseService {
-  private pro = false;
+  /** 授权快照（唯一答案源；entitlements/can/require 皆由此派生，不各处设 flag） */
+  private lastInfo: LicenseInfo | null = null;
   private deactivateConfirmArmed = false;
   private deactivateConfirmTimer: number | undefined;
 
@@ -33,22 +52,38 @@ export class LicenseService {
     });
   }
 
-  get isPro(): boolean {
-    return this.pro;
+  /** 当前富权益答案（快照派生；无快照时全 free） */
+  entitlements(): Entitlements {
+    const info = this.lastInfo;
+    return {
+      pro: info?.status === "pro",
+      level: info?.level ?? null,
+      features: info?.features ?? [],
+    };
   }
 
-  setPro(val: boolean): void {
-    this.pro = val;
-    this.ui.setLocked(!val);
+  /** 是否拥有某权益（pro 状态全授；features 供未来拆分） */
+  can(e: Entitlement): boolean {
+    const a = this.entitlements();
+    return a.pro || a.features.includes(ENTITLEMENT_FEATURES[e]);
+  }
+
+  /** 付费权益统一拦截：无权益则 Toast + 弹解锁引导（不发起 IPC）；调用面只传权益名 */
+  require(e: Entitlement): boolean {
+    if (this.can(e)) return true;
+    this.ui.showToast("专业版功能，解锁后可用");
+    void this.openDialog();
+    return false;
   }
 
   /** 同步在线续验或启动拉取的授权状态 */
   applyStatus(info: LicenseInfo): void {
-    const wasPro = this.pro;
-    this.pro = info.status === "pro";
-    this.ui.setLocked(!this.pro);
+    const wasPro = this.entitlements().pro;
+    this.lastInfo = info;
+    const pro = info.status === "pro";
+    this.ui.setLocked(!pro);
 
-    if (!wasPro || this.pro) return;
+    if (!wasPro || pro) return;
 
     // 由 pro 降级时清理状态
     this.hideDialog();
@@ -88,7 +123,7 @@ export class LicenseService {
     try {
       const info = await invoke<LicenseInfo>("activate_license", { code, email });
       if (info.status === "pro") {
-        this.pro = true;
+        this.lastInfo = info;
         this.hideDialog();
         this.ui.setLocked(false);
         this.ui.showToast("专业版解锁成功");
@@ -108,8 +143,8 @@ export class LicenseService {
     dialog.clearLicenseError();
     try {
       const info = await invoke<LicenseInfo>("deactivate_license");
-      this.pro = info.status === "pro";
-      this.ui.setLocked(!this.pro);
+      this.lastInfo = info;
+      this.ui.setLocked(info.status !== "pro");
       this.hideDialog();
       this.ui.showToast("已取消激活");
       this.callbacks.onReloadRequested();

@@ -190,7 +190,8 @@ impl License {
     }
 }
 
-/// 前端可见的授权状态
+/// 前端可见的授权状态（跨 IPC 的富权益答案：status/level/features 由同一判定源派生，
+/// 前端 LicenseService 快照此答案回答权益问题，不再各处拼装光秃 boolean）
 #[derive(Clone, Serialize, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct LicenseInfo {
@@ -206,6 +207,8 @@ pub struct LicenseInfo {
     pub code: Option<String>,
     /// 本地保存的购买邮箱（未激活时为 null）
     pub email: Option<String>,
+    /// JWT 权益位（与 status 同源；前端按位回答细分权益，加权益只扩展此处）
+    pub features: Vec<String>,
 }
 
 /// 授权管理器（Tauri 托管状态；Clone 供后台任务移动）
@@ -727,6 +730,9 @@ impl LicenseManager {
     pub fn status(&self) -> LicenseInfo {
         let dev = device_id();
         let lic = self.license();
+        // 单快照取 pro：status 与 features 同源派生，避免两次 is_pro() 的 TOCTOU；
+        // free 时 features 强制空（过期/篡改/失配但 device/app 匹配时不泄露权益位）。
+        let pro = self.is_pro();
         let claims = lic
             .as_ref()
             .and_then(|l| l.claims())
@@ -744,12 +750,17 @@ impl LicenseManager {
                     .and_then(|c| c.email.clone().filter(|e| !e.is_empty()))
             });
         LicenseInfo {
-            status: if self.is_pro() { "pro" } else { "free" }.to_string(),
+            status: if pro { "pro" } else { "free" }.to_string(),
             device_id: Some(dev),
             level: claims.as_ref().map(|c| c.level.clone()),
             level_label: claims.as_ref().map(|c| c.level_label.clone()),
             code,
             email,
+            features: if pro {
+                claims.as_ref().map(|c| c.features.clone()).unwrap_or_default()
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -1058,6 +1069,47 @@ mod tests {
         };
         assert!(!is_pro_with(&Some(good()), &nokey, &dev), "无公钥 → free");
         assert!(is_pro_with(&Some(good()), &store, &dev), "合法 → pro");
+    }
+
+    /// status() 同源派生表：features 永不脱离 status（free ⇒ 空）。
+    /// debug 下 is_pro() 恒短路 true，故 free 分支以一致性断言覆盖；
+    /// release 下追加严格断言。旧实现（未验签 claims 直出 features）在
+    /// release 下过期用例挂 free+非空，此表即抓该回归。
+    #[test]
+    fn status_features_co_derived() {
+        let (pubkey, signing) = test_keypair();
+        let dev = device_id();
+        let store = test_store(&pubkey);
+        let dir = temp_dir_unique("status-features");
+        let storage = dir.join("license.json");
+        let m = LicenseManager::load(storage, store);
+
+        // 合法 JWT → pro + 含 pro 位（双 profile 一致）。
+        let good_claims = claims(&dev, "pro", now() + 3600);
+        let good = test_license(&good_claims, sign_jwt(&good_claims, &signing));
+        *m.license.lock().unwrap() = Some(good);
+        let info = m.status();
+        assert_eq!(info.status, "pro");
+        assert!(
+            info.features.iter().any(|f| f == FEATURE_PRO),
+            "合法应含 pro 位"
+        );
+
+        // 过期 JWT → 一致性：free 必空（release 下严格断言 free+空）。
+        let bad_claims = claims(&dev, "pro", now() - 1);
+        let bad = test_license(&bad_claims, sign_jwt(&bad_claims, &signing));
+        *m.license.lock().unwrap() = Some(bad);
+        let info = m.status();
+        assert!(
+            info.status == "pro" || info.features.is_empty(),
+            "free 时 features 必须为空"
+        );
+        #[cfg(not(debug_assertions))]
+        assert_eq!(info.status, "free", "过期在 release 下判 free");
+        #[cfg(not(debug_assertions))]
+        assert!(info.features.is_empty(), "过期在 release 下 features 置空");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     static MOCK_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
