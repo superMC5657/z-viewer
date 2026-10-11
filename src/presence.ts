@@ -4,6 +4,8 @@
  * 方向向内：main → Presence → host 回调 → presenter/viewer/Tauri。
  * 本模块不导入 ui/license/updater/viewer/window-state；窗口经 host.window，是否专业版经按次 {pro}。
  * 内容节点零拥有：浮层容器只查询一次，文本/图标写入归 UI/presenter。
+ * 节拍唯一主人：start/stop/tick/advance/reset/恢复/退出清理全归此模块，
+ * 调用面只做开始/停止/播放条接线与内容适配（onAdvance 内容体只做薄转发）。
  */
 
 import { keyToIntent } from "./input";
@@ -35,8 +37,12 @@ export interface PresenceHost {
   notify(msg: string): void;
   /** 幻灯片模式翻转（调用面只同步计数文本） */
   onSlideshowMode(active: boolean): void;
-  /** 缓存提级/恢复（save/restore + IPC 归调用面） */
-  onCacheElevation(active: boolean): void;
+  /** 幻灯片退出清理（调用面只重置进度计数；模式/缓存恢复顺序由本模块保证） */
+  onSlideshowExit(): void;
+  /** 当前缓存等级（进入时记录，退出恢复用；调用面只读值） */
+  getCacheLevel(): number;
+  /** 缓存提级/恢复执行（决策与记忆归本模块：进入传 true，退出传 false + 进入前等级） */
+  onCacheElevation(active: boolean, elevatedFrom?: number | null): void;
   /** 沉浸翻转（调用面扇出到 Viewer/body/按钮） */
   onImmersiveChange(active: boolean): void;
   /** 置顶翻转（调用面同步按钮） */
@@ -60,6 +66,30 @@ export interface PresenceOptions {
 
 /** 按住方向键的 repeat 限流（沿用旧值）：连发只放行每 120ms 一次 */
 const NAV_REPEAT_MS = 120;
+/** 幻灯片间隔持久化键（localStorage；沿用旧键名） */
+const SS_INTERVAL_KEY = "ss-interval";
+/** 幻灯片默认间隔（ms；与旧行为一致） */
+const DEFAULT_INTERVAL_MS = 5000;
+
+/** 读取持久化的幻灯片间隔（ms），无/非法回默认 5s（自 main.ts 迁移，校验逐字保留） */
+export function loadSlideshowInterval(): number {
+  try {
+    const v = Number(localStorage.getItem(SS_INTERVAL_KEY));
+    return Number.isFinite(v) && v >= 1000 ? v : DEFAULT_INTERVAL_MS;
+  } catch {
+    return DEFAULT_INTERVAL_MS;
+  }
+}
+
+/** Promise 竞速 + 兜底定时器清理：主 Promise 先完成时 clearTimeout
+ *  （否则兜底定时器每拍空转到点才释放，幻灯片播放中持续累积；自 main.ts 逐字迁移） */
+export function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  let timer: number | undefined;
+  const timeout = new Promise<null>((res) => {
+    timer = window.setTimeout(() => res(null), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => window.clearTimeout(timer));
+}
 
 export class Presence {
   /** 浮层容器（构造时查询一次；唯一持有 overlay-bar 查找的位置） */
@@ -90,6 +120,8 @@ export class Presence {
   private advancing = false;
   private pendingAdvance = false;
   private nextTickAt = 0;
+  /** 进入幻灯片时记录的缓存等级（暂停→继续不覆盖，退出时恢复；免费/未提级时为 null） */
+  private elevatedFrom: number | null = null;
 
   private detachKeyboard: (() => void) | null = null;
   private readonly disposers: Array<() => void> = [];
@@ -257,9 +289,9 @@ export class Presence {
     return detach;
   }
 
-  // ---------- 节奏（v4 节拍器，行为与 slideshow.ts 一致） ----------
+  // ---------- 节奏（v4 节拍器唯一主人：start/stop/tick/advance/reset/恢复/退出清理） ----------
 
-  /** 开始播放（暂停后继续沿用；首次进入模式时按闭包决定是否提级缓存） */
+  /** 开始播放（暂停后继续沿用；首次进入且专业版时记录等级并提级缓存） */
   startSlideshow(): void {
     if (this.running) return;
     const entering = this.mode !== "slideshow";
@@ -268,7 +300,11 @@ export class Presence {
     this.nextTickAt = performance.now() + this.intervalMs;
     this.onRunningChange?.(true);
     this.setPresence("slideshow");
-    if (entering && this.isPro()) this.host.onCacheElevation(true);
+    if (entering && this.isPro()) {
+      // 首次进入记录播放前等级（暂停→继续不覆盖，恢复仍用最初的等级）
+      this.elevatedFrom = this.host.getCacheLevel();
+      this.host.onCacheElevation(true);
+    }
     this.schedule();
   }
 
@@ -276,7 +312,17 @@ export class Presence {
   stopSlideshow(): void {
     this.pausePlayback();
     this.setPresence("browse");
-    this.host.onCacheElevation(false);
+    const saved = this.elevatedFrom;
+    this.elevatedFrom = null;
+    this.host.onCacheElevation(false, saved);
+  }
+
+  /** 退出幻灯片模式，返回图片浏览（返回按钮/播放完/打开新图共用；幂等） */
+  exitSlideshow(): void {
+    if (this.mode === "browse") return;
+    console.info("[slideshow] exited");
+    this.stopSlideshow();
+    this.host.onSlideshowExit();
   }
 
   toggleSlideshow(): void {
@@ -284,9 +330,14 @@ export class Presence {
     else this.startSlideshow();
   }
 
-  /** 设置间隔（毫秒），播放中立即生效：从当前时刻起算新间隔 */
+  /** 设置间隔（毫秒，持久化）：播放中立即生效，从当前时刻起算新间隔 */
   setIntervalMs(ms: number): void {
     this.intervalMs = ms;
+    try {
+      localStorage.setItem(SS_INTERVAL_KEY, String(ms));
+    } catch {
+      /* 忽略持久化失败 */
+    }
     this.pendingAdvance = false; // 重新锚定拍点：旧欠拍作废
     if (this.running) {
       this.nextTickAt = performance.now() + this.intervalMs;

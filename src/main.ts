@@ -16,7 +16,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Viewer } from "./viewer";
 import { UI } from "./ui";
 import { ImagePresenter } from "./presenter";
-import { Presence, type InputIntent, type NavigateKind } from "./presence";
+import { Presence, loadSlideshowInterval, raceWithTimeout, type InputIntent, type NavigateKind } from "./presence";
 import { ICONS } from "./icons";
 import { setRawExts } from "./types";
 import type { AppSettings, BrowseState, LicenseInfo, NavResult } from "./types";
@@ -86,18 +86,21 @@ const presence: Presence = new Presence(
     onSlideshowMode: (active) => {
       if (active) ui.syncSlideshowProgressFromInfo();
     },
-    onCacheElevation: (active) => {
+    onSlideshowExit: () => {
+      ui.setSlideshowProgress(0, 0);
+    },
+    getCacheLevel: () => cacheLevel,
+    onCacheElevation: (active, elevatedFrom) => {
       if (active) {
-        // 首次进入记录播放前等级（暂停→继续不覆盖，恢复仍用最初的等级）
-        slideshowPrevCacheLevel = cacheLevel;
         // 自动提级到高等级缓存（专业版功能）；免费版跳过（Rust 会拒绝，避免误弹错误）
         if (licenseService.isPro && cacheLevel !== 2) void setCacheLevel(2);
-      } else {
-        // 恢复播放前的缓存等级
-        if (licenseService.isPro && slideshowPrevCacheLevel !== null && (slideshowPrevCacheLevel !== 2 || cacheLevel !== 2)) {
-          void setCacheLevel(slideshowPrevCacheLevel, undefined, true);
-        }
-        slideshowPrevCacheLevel = null;
+      } else if (
+        licenseService.isPro &&
+        elevatedFrom != null &&
+        (elevatedFrom !== 2 || cacheLevel !== 2)
+      ) {
+        // 恢复进入前记录的等级（暂停→继续不覆盖，恢复用最初的等级）
+        void setCacheLevel(elevatedFrom, undefined, true);
       }
     },
     onImmersiveChange: (active) => {
@@ -134,13 +137,11 @@ const LICENSE_STATUS_CHANGED = "license://status-changed";
 let cacheLevel = 1;
 /** 缓存等级设置请求代次：并发切换时只应用最后一次（防幻灯片自动切换与手动切换竞态） */
 let cacheLevelGen = 0;
-/** 幻灯片播放前的缓存等级（退出模式时恢复） */
-let slideshowPrevCacheLevel: number | null = null;
 
 // ---------- 薄接线：呈现策略归 ImagePresenter，本文件只留 window/input/slideshow/cache/license ----------
 
 async function openPath(path: string): Promise<void> {
-  exitSlideshow(); // 打开新图片：退出幻灯片模式回到浏览（含停止播放）
+  presence.exitSlideshow(); // 打开新图片：退出幻灯片模式回到浏览（含停止播放）
   presenter.clearContext(); // 新上下文，清空旧预解码池
   try {
     const result = await invoke<NavResult>("open_path", { path });
@@ -238,17 +239,7 @@ function handleToolbarAction(id: string): void {
   }
 }
 
-// ---------- 幻灯片（草图 3.6） ----------
-
-/** Promise 竞速 + 兜底定时器清理：主 Promise 先完成时 clearTimeout
- *  （否则兜底定时器每拍空转到点才释放，幻灯片播放中持续累积） */
-function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
-  let timer: number | undefined;
-  const timeout = new Promise<null>((res) => {
-    timer = window.setTimeout(() => res(null), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => window.clearTimeout(timer));
-}
+// ---------- 幻灯片播放条接线（草图 3.6；节拍归 Presence，此处只做开始/停止/播放条接线） ----------
 
 function buildSlideshowBar(): void {
   ui.setSlideshowPlaying(false);
@@ -256,24 +247,20 @@ function buildSlideshowBar(): void {
   document.getElementById("ss-play")!.addEventListener("click", () => presence.dispatch("slideshow-toggle"));
   document.getElementById("ss-play")!.innerHTML = ICONS.play;
   document.getElementById("ss-exit")!.innerHTML = ICONS.exit;
-  document.getElementById("ss-exit")!.addEventListener("click", () => exitSlideshow());
+  document.getElementById("ss-exit")!.addEventListener("click", () => presence.exitSlideshow());
   // 沉浸模式（与普通工具栏 fullscreen 按钮同一功能/激活态）
   document.getElementById("ss-fullscreen")!.innerHTML = ICONS["maximize-2"];
   document.getElementById("ss-fullscreen")!.addEventListener("click", () => presence.dispatch("immersive-toggle"));
 
   const intervalSel = document.getElementById("ss-interval") as HTMLSelectElement;
-  // 下拉框初始显示持久化的间隔值（否则 select 显示默认 5s 但实际可能不是）
-  const savedInterval = loadSsInterval();
-  if (savedInterval !== null) intervalSel.value = String(savedInterval);
+  // 间隔初始值与持久化归 Presence；此处只做下拉框显示同步、变更转发与启动应用
+  const initialInterval = loadSlideshowInterval();
+  intervalSel.value = String(initialInterval);
+  presence.setIntervalMs(initialInterval);
   intervalSel.addEventListener("change", () => {
     const ms = Number(intervalSel.value);
     presence.setIntervalMs(ms);
     console.info(`[slideshow] interval changed to ${ms}ms`);
-    try {
-      localStorage.setItem("ss-interval", String(ms));
-    } catch {
-      /* 忽略持久化失败 */
-    }
   });
 
   // 播放器回调
@@ -294,11 +281,11 @@ function buildSlideshowBar(): void {
       // 播放到全局最后一张：自动停止并提醒（需求 2.4），退出幻灯片模式回到浏览
       console.info("[slideshow] finished: reached last image");
       ui.showToast("已播放完所有图片");
-      exitSlideshow();
+      presence.exitSlideshow();
       return false;
     }
     if (!result.state) {
-      exitSlideshow(); // 空模型（未打开图片）：停止空转并退出
+      presence.exitSlideshow(); // 空模型（未打开图片）：停止空转并退出
       return false;
     }
     // 呈现超时兜底：5s 未完成按成功处理（避免挂起杀死幻灯片）
@@ -313,14 +300,6 @@ function buildSlideshowBar(): void {
     ui.setToolbarActive("slideshow", running);
     // running=false（暂停）：保持模式、保留进度计数、保留高等级缓存——随时可继续播放
   };
-}
-
-/** 退出幻灯片模式，返回图片浏览（返回按钮 / 播放完 / 打开新图） */
-function exitSlideshow(): void {
-  if (presence.currentMode === "browse") return; // 幂等
-  console.info("[slideshow] exited");
-  presence.stopSlideshow();
-  ui.setSlideshowProgress(0, 0);
 }
 
 // ---------- 缓存开关（三态：关/开/高） ----------
@@ -511,9 +490,6 @@ async function init(): Promise<void> {
   bindEvents();
   licenseService.bindDialogEvents();
   buildSlideshowBar();
-  // 应用持久化的幻灯片间隔（buildSlideshowBar 已同步下拉框显示）
-  const savedInterval = loadSsInterval();
-  if (savedInterval !== null) presence.setIntervalMs(savedInterval);
   ui.setEmpty(true);
   // 空状态初始隐藏帧条（打开图片后由呈现层按需设置）
   ui.setFrameBarVisible(false);
@@ -559,18 +535,6 @@ async function init(): Promise<void> {
   }
   // 启动闲置计时：空状态或看图状态下浮层都会按时自动隐藏
   presence.wake();
-}
-
-// ---------- 工具 ----------
-
-/** 读取持久化的幻灯片间隔（ms），无/非法返回 null（用默认 5s） */
-function loadSsInterval(): number | null {
-  try {
-    const v = Number(localStorage.getItem("ss-interval"));
-    return Number.isFinite(v) && v >= 1000 ? v : null;
-  } catch {
-    return null;
-  }
 }
 
 void init();
