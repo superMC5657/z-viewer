@@ -199,8 +199,21 @@ export class Dialog {
 /**
  * 授权对话框（unlock-dialog 唯一主人）：全部零件 DOM 与显隐归此拥有，
  * LicenseService 只发意图（render/showError/按钮文案），经 LicenseCallbacks 收结果。
- * 零件在构造时一次缓存（querySelector 限定遮罩内）；调用面零 getElementById。
+ * 零件在构造时一次缓存（querySelector 限定遮罩内）；调用面零 getElementById、
+ * 零元素直拿——事件装配走 wireActions 行为缝。
  */
+
+/** 对话框模式（renderLicense 写入的仅有取值） */
+export type LicenseDialogMode = "active" | "inactive";
+
+/** 对话框行为装配（调用面只传回调；元素接线归 Dialog 内部） */
+export interface LicenseDialogActions {
+  onCancel: () => void;
+  onConfirm: () => void;
+  onBuy: () => void;
+  /** 输入框回车提交 */
+  onSubmit: () => void;
+}
 export class LicenseDialog extends Dialog {
   private readonly titleEl: HTMLElement;
   private readonly descEl: HTMLElement;
@@ -239,28 +252,20 @@ export class LicenseDialog extends Dialog {
   }
 
   /** 当前模式（renderLicense 写入：active=管理/注销态，inactive=激活态） */
-  get mode(): string {
-    return this.mask.dataset.mode ?? "";
+  get mode(): LicenseDialogMode {
+    return this.mask.dataset.mode === "active" ? "active" : "inactive";
   }
 
-  get cancelButton(): HTMLElement {
-    return this.cancelBtn;
-  }
-
-  get confirmButton(): HTMLButtonElement {
-    return this.confirmBtn;
-  }
-
-  get buyButton(): HTMLElement {
-    return this.buyBtn;
-  }
-
-  get codeInput(): HTMLInputElement {
-    return this.codeField;
-  }
-
-  get emailInput(): HTMLInputElement {
-    return this.emailField;
+  /** 装配对话框行为（调用面只传回调，元素接线不外泄） */
+  wireActions(a: LicenseDialogActions): void {
+    this.cancelBtn.addEventListener("click", a.onCancel);
+    this.confirmBtn.addEventListener("click", a.onConfirm);
+    this.buyBtn.addEventListener("click", a.onBuy);
+    const onEnter = (e: KeyboardEvent) => {
+      if (e.key === "Enter") a.onSubmit();
+    };
+    this.codeField.addEventListener("keydown", onEnter);
+    this.emailField.addEventListener("keydown", onEnter);
   }
 
   /** 按授权状态渲染内容并打开（active=管理态，inactive=激活态） */

@@ -170,41 +170,32 @@ export class LicenseService {
     }
   }
 
-  /** 绑定解锁弹窗表单交互事件（零件经 Dialog 缝获取，本处只装配行为） */
+  /** 绑定解锁弹窗表单交互事件（经 Dialog 行为缝装配，本处只给回调） */
   bindDialogEvents(): void {
     const dialog = this.ui.licenseDialog;
-    const cancelBtn = dialog.cancelButton;
-    const confirmBtn = dialog.confirmButton;
-    const buyBtn = dialog.buyButton;
-
-    cancelBtn.addEventListener("click", () => this.hideDialog());
-
-    confirmBtn.addEventListener("click", () => {
-      if (dialog.mode === "active") {
-        if (!this.deactivateConfirmArmed) {
-          this.deactivateConfirmArmed = true;
-          dialog.armDeactivateConfirm();
-          this.ui.showToast("再次点击确认注销");
-          window.clearTimeout(this.deactivateConfirmTimer);
-          this.deactivateConfirmTimer = window.setTimeout(() => this.resetDeactivateConfirm(), 3000);
+    dialog.wireActions({
+      onCancel: () => this.hideDialog(),
+      onConfirm: () => {
+        if (dialog.mode === "active") {
+          if (!this.deactivateConfirmArmed) {
+            this.deactivateConfirmArmed = true;
+            dialog.armDeactivateConfirm();
+            this.ui.showToast("再次点击确认注销");
+            window.clearTimeout(this.deactivateConfirmTimer);
+            this.deactivateConfirmTimer = window.setTimeout(() => this.resetDeactivateConfirm(), 3000);
+            return;
+          }
+          void this.deactivate();
           return;
         }
-        void this.deactivate();
-        return;
-      }
-      const { code, email } = dialog.readInputs();
-      void this.activate(code, email);
-    });
-
-    buyBtn.addEventListener("click", () => void this.openStore());
-
-    const onEnter = (e: KeyboardEvent) => {
-      if (e.key === "Enter") {
         const { code, email } = dialog.readInputs();
         void this.activate(code, email);
-      }
-    };
-    dialog.codeInput.addEventListener("keydown", onEnter);
-    dialog.emailInput.addEventListener("keydown", onEnter);
+      },
+      onBuy: () => void this.openStore(),
+      onSubmit: () => {
+        const { code, email } = dialog.readInputs();
+        void this.activate(code, email);
+      },
+    });
   }
 }

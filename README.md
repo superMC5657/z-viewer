@@ -94,17 +94,25 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file patchelf l
 
 ```
 src/                  # 前端代码
-  main.ts             # 入口、状态机、IPC
+  main.ts             # 入口、缓存开关、幻灯片播放条接线、事件装配
   viewer.ts           # 渲染与变换（缩放/旋转/翻转，rAF 合并 60fps）
-  window-state.ts     # 沉浸模式 / 窗口置顶控制
-  slideshow.ts        # 幻灯片播放器（间隔/边界/计时）
-  ui.ts               # 信息条 / 工具栏 / Toast / 浮层 / 解锁对话框
+  presenter.ts        # 图片呈现：代次守卫、通道分发、预取池、帧条策略
+  presence.ts         # 可见性 + 意图 + 节奏：浮层分组、键盘映射、幻灯片节拍器
+  ui.ts               # 信息条 / 工具栏 / Toast / 帧条 / 解码指示（对话框转交 Dialog）
   icons.ts            # 线性 SVG 图标与工具栏定义
+  types.ts            # IPC 类型与二进制信封解析（LicenseInfo 含权益位）
   ui.css              # 毛玻璃样式（设计 Token 按设计草图）
+  components/dialog.ts # Modal 基类 + 授权对话框唯一主人（零件/显隐/行为缝）
+  services/license.ts # 授权服务：权益答案源、激活/注销、购买跳转
+  services/updater.ts # 自动更新检查
+  utils/format.ts     # 纯函数：尺寸/位置/帧计数格式化
+  lib/z-log.ts        # 前端统一日志转发
 src-tauri/            # Rust 后端
   src/browse/         # 浏览模型：目录枚举、自然排序、跨文件夹导航（含门控）
   src/decode/         # 解码服务：RAW（预览快显 + rawler 全量）、TIFF、动画拆帧、EXIF 方向
   src/cache/          # LRU 解码缓存 + 文件夹首图队列（专业版）
+  src/cache_policy.rs # 缓存策略：写过滤与预取过滤纯规则
+  src/navigator.rs    # 深导航：导航 + 预取 + 代次协议唯一实现
   src/commands/       # Tauri IPC commands（含付费门控）
   src/util.rs         # 日志/时间小工具单一实现（basename_of / first_line_of / now）
   src/z_log.rs        # 统一日志：级别门槛、轮转修剪、脱敏、panic hook、导出诊断包
