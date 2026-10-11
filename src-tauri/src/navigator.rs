@@ -1,8 +1,11 @@
 //! 深导航模块：导航 + 预取 + 代次协议的唯一实现（深模块，窄接口）。
 //!
-//! 外部接口恰好 3 个方法 + 1 个策略结构体（全部 infallible，无 Result；
+//! 外部接口 3 个方法 + 1 个策略结构体 + 2 个失活阈值常量（全部 infallible，无 Result；
 //! 预取失败 log-and-drop，只记 basename）：
 //! - [`PrefetchPolicy`]：预取策略快照（`From<&AppSettings>` 5 行薄映射）
+//! - [`Navigator::ABORT_LAG`] / [`Navigator::SKIP_PUT_LAG`]：失活/写盘滞后阈值
+//!   （接口可见的调谐常量；调用方只读不推导，派生细节收归 `is_aborted` /
+//!   `should_skip_put` 语义谓词）
 //! - [`Navigator::navigate`]：next/prev/jump_folder（推进代次 + 首图提升 + 双队列派生）
 //! - [`Navigator::did_open`]：open_path 尾巴（推进代次 + 双队列派生，无提升）
 //! - [`Navigator::frontend_context`]：get_context 只读投影（无代次、无派生，含 asset）
@@ -13,9 +16,13 @@
 //! 代次递增先于一切派生，任务捕获的是导航后代次。
 //!
 //! 缝背后的实现（locality：调用方不可见）：
-//! - 代次时钟委托给 [`DecodeCache`] 的 AtomicUsize（current/advance/is_stale）；
-//!   测试用全新缓存手动驱动计数器（见 tests），无泛型/trait 污染公开接口。
-//! - 失活滞后（abort 2 / skip-put 3）为私有调谐常量；[`DecodeCache::put`]
+//! - 代次时钟归本模块所有（`generation: Arc<AtomicUsize>`，`Clone` 共享同一时钟；
+//!   命令层每次现造 Navigator，共享格取自同一被管 [`DecodeCache`] 句柄，跨导航
+//!   失活协议不断）。生产推进只经 [`Navigator::navigate`] / [`Navigator::did_open`]，
+//!   `current/advance` 仅 pub(crate) 供测试驱动；无泛型/trait 污染公开接口。
+//! - [`DecodeCache`] 不再自持时钟：新鲜度判定对照传入的捕获代次在本模块完成
+//!   （`is_aborted` / `should_skip_put`），缓存侧只上报命中/失效（peek/get/put）。
+//!   [`DecodeCache::put`]
 //!   内部保留 animated 单槽 vs LRU 分流（本模块盲传 [`LoadResult`]）。
 //! - 预取纪律：peek（不碰 LRU）vs get_entry（-demand 触碰）；解码后紧邻 put
 //!   再做一次 peek 复查；begin_prefetch→end_prefetch 每条退出路径配对
@@ -31,6 +38,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::browse::{Boundary, BrowseModel, BrowseState, FolderTarget, Nav};
 use crate::cache::{DecodeCache, FolderFirst, FolderFirstCache};
@@ -38,10 +46,24 @@ use crate::commands::AppSettings;
 use crate::decode::LoadResult;
 use crate::util::{basename_of, first_line_of};
 
-/// 失活滞后：后台任务落后当前代次超过 2 代直接丢弃（私有调谐常量）。
-const ABORT_LAG: usize = 2;
-/// 写盘滞后：解码完成后落后超过 3 代则跳过 put（私有调谐常量）。
-const SKIP_PUT_LAG: usize = 3;
+/// 深模块：持有克隆的 [`DecodeCache`] + [`FolderFirstCache`] 句柄，
+/// 集中导航 + 预取 + 代次协议。Clone 仅复制句柄（同一缓存、同一代次时钟）。
+#[derive(Clone)]
+pub struct Navigator {
+    cache: DecodeCache,
+    first_cache: FolderFirstCache,
+    /// 新鲜度时钟：归推进它的本模块所有（共享格，见 [`DecodeCache::generation_cell`]）。
+    generation: Arc<AtomicUsize>,
+    decoder: Decoder,
+    scanner: FolderScanner,
+}
+
+impl Navigator {
+    /// 失活滞后：后台任务落后当前代次超过 2 代直接丢弃（模块内部调谐常量）。
+    const ABORT_LAG: usize = 2;
+    /// 写盘滞后：解码完成后落后超过 3 代则跳过 put（模块内部调谐常量）。
+    const SKIP_PUT_LAG: usize = 3;
+}
 
 /// 预取策略快照：`From<&AppSettings>` 薄映射（level 0/1/2 经 neighbor_window +
 /// folder_first_depth，folder_depth 钳制 ≤3）。
@@ -133,30 +155,22 @@ pub(crate) type Decoder = fn(&str, bool) -> Result<LoadResult, String>;
 /// 文件夹扫描 seam（pub(crate) 上限，生产默认 [`BrowseModel::first_image_of`]）。
 pub(crate) type FolderScanner = fn(&Path) -> Option<PathBuf>;
 
-/// 深模块：持有克隆的 [`DecodeCache`] + [`FolderFirstCache`] 句柄，
-/// 集中导航 + 预取 + 代次协议。Clone 仅复制句柄（同一缓存）。
-#[derive(Clone)]
-pub struct Navigator {
-    cache: DecodeCache,
-    first_cache: FolderFirstCache,
-    decoder: Decoder,
-    scanner: FolderScanner,
-}
-
 impl Navigator {
     /// 生产构造：默认 seam（解码器 + 扫描器），调用方传克隆句柄即可。
+    /// 代次时钟取自缓存句柄的共享格：同一被管缓存克隆出的 Navigator 共享同一时钟。
     pub fn new(cache: DecodeCache, first_cache: FolderFirstCache) -> Self {
+        let generation = cache.generation_cell();
         Self {
             cache,
             first_cache,
+            generation,
             decoder: crate::decode::load_image,
             scanner: BrowseModel::first_image_of,
         }
     }
 
     /// 测试 seam 注入（pub(crate) 上限）：自定义解码器/扫描器，
-    /// 配全新缓存即手动代次计数器（Clock 委托给 [`DecodeCache`] 的
-    /// AtomicUsize，测试直接 `advance_generation` 驱动）。
+    /// 时钟归本模块所有，测试经 `advance_generation` 手动驱动。
     #[cfg(test)]
     pub(crate) fn with_seams(
         cache: DecodeCache,
@@ -164,12 +178,41 @@ impl Navigator {
         decoder: Decoder,
         scanner: FolderScanner,
     ) -> Self {
+        let generation = cache.generation_cell();
         Self {
             cache,
             first_cache,
+            generation,
             decoder,
             scanner,
         }
+    }
+
+    /// 当前代次（私有：生产推进只经 navigate/did_open；测试经此读取）。
+    fn current_generation(&self) -> usize {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// 推进代次（私有：生产调用方一律走 navigate/did_open；
+    /// 测试手动驱动模拟快速连续导航）。
+    fn advance_generation(&self) -> usize {
+        self.generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// 失活判定：捕获代次落后当前超过 max_lag（对照传入的代次上报，
+    /// 阈值语义见 [`Navigator::ABORT_LAG`] / [`Navigator::SKIP_PUT_LAG`]）。
+    fn is_stale(&self, gen: usize, max_lag: usize) -> bool {
+        self.current_generation().saturating_sub(gen) > max_lag
+    }
+
+    /// 后台任务是否应直接丢弃（落后超过 [`Navigator::ABORT_LAG`] 代）。
+    fn is_aborted(&self, gen: usize) -> bool {
+        self.is_stale(gen, Self::ABORT_LAG)
+    }
+
+    /// 解码完成后是否应跳过 put（落后超过 [`Navigator::SKIP_PUT_LAG`] 代）。
+    fn should_skip_put(&self, gen: usize) -> bool {
+        self.is_stale(gen, Self::SKIP_PUT_LAG)
     }
 
     /// 导航：next/prev/jump_folder + 后置协议（代次→提升→队列 B→队列 A）。
@@ -195,7 +238,7 @@ impl Navigator {
             return result;
         }
         // 固定顺序：代次递增恰好一次 → 提升 → 队列 B → 队列 A。
-        self.cache.advance_generation();
+        self.advance_generation();
         self.promote_folder_first(model);
         self.spawn_context(model, policy);
         self.spawn_folder_firsts(model, policy);
@@ -208,7 +251,7 @@ impl Navigator {
         if !policy.enabled {
             return;
         }
-        self.cache.advance_generation();
+        self.advance_generation();
         self.spawn_context(model, policy);
         self.spawn_folder_firsts(model, policy);
     }
@@ -265,7 +308,7 @@ impl Navigator {
                 continue;
             }
             // 代次在导航后已递增：任务捕获导航后代次。
-            let gen = self.cache.current_generation();
+            let gen = self.current_generation();
             let this = self.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 this.prefetch_one(&path, gen);
@@ -290,7 +333,7 @@ impl Navigator {
             if !self.cache.begin_prefetch(&folder_str) {
                 continue;
             }
-            let gen = self.cache.current_generation();
+            let gen = self.current_generation();
             let this = self.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 this.prefetch_first(folder, folder_str, gen);
@@ -305,7 +348,7 @@ impl Navigator {
     /// 私有：测试经 `super::*` 可见；外部调用方一律走派生循环（协议不可绕过）。
     fn prefetch_one(&self, path: &str, gen: usize) {
         // 用户快速切图已远离当前上下文：直接放弃，不占 CPU。
-        if self.cache.is_stale(gen, ABORT_LAG) {
+        if self.is_aborted(gen) {
             self.cache.end_prefetch(path);
             return;
         }
@@ -332,7 +375,7 @@ impl Navigator {
             self.cache.end_prefetch(path);
             return;
         }
-        if !self.cache.peek(path) && !self.cache.is_stale(gen, SKIP_PUT_LAG) {
+        if !self.cache.peek(path) && !self.should_skip_put(gen) {
             self.cache.put(path.to_string(), Arc::new(result));
         }
         self.cache.end_prefetch(path);
@@ -342,7 +385,7 @@ impl Navigator {
     /// 每条退出路径配对 `end_prefetch`（失活/首图缺失/asset 跳过/解码失败）。
     /// 私有：同 prefetch_one，协议不可绕过。
     fn prefetch_first(&self, folder: PathBuf, folder_str: String, gen: usize) {
-        if self.cache.is_stale(gen, ABORT_LAG) {
+        if self.is_aborted(gen) {
             self.cache.end_prefetch(&folder_str);
             return;
         }
@@ -356,7 +399,7 @@ impl Navigator {
             self.cache.end_prefetch(&folder_str);
             return; // asset 由前端池预热。
         }
-        if !self.cache.is_stale(gen, ABORT_LAG) {
+        if !self.is_aborted(gen) {
             match (self.decoder)(&path, true) {
                 Ok(result) => {
                     if crate::cache_policy::should_cache(&result) {
@@ -463,21 +506,21 @@ mod tests {
         let nav = test_nav(cache.clone(), first_cache.clone(), fake_decoder);
         let policy = enabled_policy();
 
-        assert_eq!(cache.current_generation(), 0);
+        assert_eq!(nav.current_generation(), 0);
         let r = nav.navigate(&model, NavStep::Next, &policy);
         assert!(r.boundary.is_none(), "A 内翻页应 Ok");
-        assert_eq!(cache.current_generation(), 1, "Ok 恰好推进一次代次");
+        assert_eq!(nav.current_generation(), 1, "Ok 恰好推进一次代次");
 
         // 走到全局末尾再 next → Boundary，代次不动。
         let r = nav.navigate(&model, NavStep::Next, &policy); // a2 → b1
         assert!(r.boundary.is_none());
-        assert_eq!(cache.current_generation(), 2);
+        assert_eq!(nav.current_generation(), 2);
         let r = nav.navigate(&model, NavStep::Next, &policy); // b1 → b2
         assert!(r.boundary.is_none());
         let r = nav.navigate(&model, NavStep::Next, &policy); // b2 → 撞尾
         assert_eq!(r.boundary.as_deref(), Some("last-image"));
         assert_eq!(
-            cache.current_generation(),
+            nav.current_generation(),
             3,
             "Boundary 零推进（之前 3 次 Ok 各 +1）"
         );
@@ -494,7 +537,7 @@ mod tests {
         );
         let r = nav.navigate(&model, NavStep::Prev, &closed_policy());
         assert!(r.boundary.is_none());
-        assert_eq!(cache.current_generation(), 3, "缓存关闭时 Ok 也不推进代次");
+        assert_eq!(nav.current_generation(), 3, "缓存关闭时 Ok 也不推进代次");
         assert!(
             cache.get_entry(&seeded).is_none(),
             "缓存关闭时不得提升（防无条件 promote 回归）"
@@ -509,7 +552,7 @@ mod tests {
         let nav = test_nav(cache.clone(), FolderFirstCache::new(4), fake_decoder);
 
         // 新鲜代次：同步核心正常 put（对照组）。
-        let fresh = cache.current_generation();
+        let fresh = nav.current_generation();
         assert!(cache.begin_prefetch("fresh.raw"));
         nav.prefetch_one("fresh.raw", fresh);
         assert!(
@@ -518,9 +561,9 @@ mod tests {
         );
 
         // 模拟快速连续导航：代次大幅前移后，旧代任务失活丢弃。
-        let old = cache.current_generation();
+        let old = nav.current_generation();
         for _ in 0..10 {
-            cache.advance_generation();
+            nav.advance_generation();
         }
         assert!(cache.begin_prefetch("stale.raw"));
         nav.prefetch_one("stale.raw", old);
@@ -534,6 +577,56 @@ mod tests {
             "失活丢弃路径必须配对 end_prefetch"
         );
         cache.end_prefetch("stale.raw");
+    }
+
+    /// 时钟语义（由 cache/tests.rs 随重构迁入，行为断言不变）：lag 边界恰为
+    /// 接口阈值常量；判定经语义谓词，调用方不推导滞后步数。
+    #[test]
+    fn generation_clock_thresholds() {
+        let cache = DecodeCache::new(4);
+        let nav = test_nav(cache, FolderFirstCache::new(4), fake_decoder);
+        assert_eq!(Navigator::ABORT_LAG, 2);
+        assert_eq!(Navigator::SKIP_PUT_LAG, 3);
+        assert_eq!(nav.current_generation(), 0);
+        assert!(!nav.is_aborted(0));
+        assert!(!nav.should_skip_put(0));
+
+        nav.advance_generation(); // 代次 = 1
+        assert!(!nav.is_aborted(0));
+        assert!(!nav.should_skip_put(0));
+
+        nav.advance_generation(); // 代次 = 2
+        assert!(!nav.is_aborted(0), "lag=2 未超过 ABORT_LAG");
+        assert!(!nav.should_skip_put(0));
+
+        nav.advance_generation(); // 代次 = 3
+        assert!(nav.is_aborted(0), "超过 ABORT_LAG 视为已过期");
+        assert!(!nav.is_aborted(1), "lag=2 未超过 ABORT_LAG");
+        assert!(!nav.should_skip_put(1), "lag=2 未超过 SKIP_PUT_LAG");
+
+        nav.advance_generation(); // 代次 = 4
+        assert!(nav.should_skip_put(0), "超过 SKIP_PUT_LAG 跳过 put");
+    }
+
+    /// 时钟共享：同一缓存克隆出的 Navigator 共享同一时钟（命令层每次现造
+    /// Navigator，跨导航失活协议不断——旧实例捕获的代次经新实例的推进而失活）。
+    #[test]
+    fn generation_clock_shared_across_navigators() {
+        let cache = DecodeCache::new(8);
+        let first_cache = FolderFirstCache::new(4);
+        let old_nav = test_nav(cache.clone(), first_cache.clone(), fake_decoder);
+        // 旧实例捕获当前代次（模拟已派生的后台任务）。
+        let old = old_nav.current_generation();
+        // 新导航现造 Navigator（同生产路径）并推进。
+        let new_nav = test_nav(cache.clone(), first_cache, fake_decoder);
+        new_nav.advance_generation();
+        assert_eq!(old_nav.current_generation(), 1, "推进经共享格全局可见");
+        new_nav.advance_generation();
+        new_nav.advance_generation();
+        assert!(old_nav.is_aborted(old), "跨实例推进后旧代次失活");
+        // 独立缓存的时钟互不干扰。
+        let other = test_nav(DecodeCache::new(8), FolderFirstCache::new(4), fake_decoder);
+        assert_eq!(other.current_generation(), 0);
     }
 
     /// (c) 跨文件夹提升：队列 A 命中在 navigate 返回时已同步进入队列 B，
@@ -616,7 +709,7 @@ mod tests {
         );
         let key = "some-folder".to_string();
         assert!(cache.begin_prefetch(&key));
-        nav.prefetch_first(PathBuf::from(&key), key.clone(), cache.current_generation());
+        nav.prefetch_first(PathBuf::from(&key), key.clone(), nav.current_generation());
         let hit = first_cache.get(&key).expect("首图成功路径应入队列 A");
         assert_eq!(
             hit.path,
@@ -642,7 +735,7 @@ mod tests {
         for i in 0..10 {
             let key = format!("fail-{i}.raw");
             assert!(cache.begin_prefetch(&key), "第 {i} 轮应可登记");
-            nav_fail.prefetch_one(&key, cache.current_generation());
+            nav_fail.prefetch_one(&key, nav_fail.current_generation());
             assert!(cache.get_entry(&key).is_none(), "解码失败不应入缓存");
         }
 
@@ -651,9 +744,9 @@ mod tests {
         for i in 0..10 {
             let key = format!("stale-{i}.raw");
             assert!(cache.begin_prefetch(&key));
-            let old = cache.current_generation();
+            let old = nav_stale.current_generation();
             for _ in 0..10 {
-                cache.advance_generation();
+                nav_stale.advance_generation();
             }
             nav_stale.prefetch_one(&key, old);
         }
@@ -663,7 +756,7 @@ mod tests {
         for i in 0..10 {
             let key = format!("/nonexistent-dir-{i}");
             assert!(cache.begin_prefetch(&key));
-            nav_first.prefetch_first(PathBuf::from(&key), key.clone(), cache.current_generation());
+            nav_first.prefetch_first(PathBuf::from(&key), key.clone(), nav_first.current_generation());
         }
 
         // 若任一路径泄漏登记/计数，门控此时将拒绝新登记。
@@ -716,14 +809,14 @@ mod tests {
         );
         let nav = test_nav(cache.clone(), first_cache, fake_decoder);
         nav.did_open(&model, &enabled_policy());
-        assert_eq!(cache.current_generation(), 1, "did_open 推进一次代次");
+        assert_eq!(nav.current_generation(), 1, "did_open 推进一次代次");
         assert!(
             cache.get_entry(&b_first).is_none(),
             "did_open 不提升（残留首图不得混入新会话队列 B）"
         );
         // 缓存关闭时空操作。
         nav.did_open(&model, &closed_policy());
-        assert_eq!(cache.current_generation(), 1);
+        assert_eq!(nav.current_generation(), 1);
         cleanup(&base);
     }
 }

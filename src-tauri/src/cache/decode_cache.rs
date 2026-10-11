@@ -51,7 +51,9 @@ pub struct DecodeCache {
     in_flight: Arc<Mutex<HashSet<String>>>,
     /// 当前进行中的预取任务数（配合 in_flight 锁做并发门控，见 begin_prefetch）
     prefetch_active: Arc<AtomicUsize>,
-    /// 导航代次：用户切换图片时递增，用于取消远离视口的过期预取任务
+    /// 导航代次格：时钟语义（推进/读取/失活判定）与阈值归 [`crate::navigator::Navigator`]
+    /// 所有，本处仅承载共享句柄 —— 命令层每次现造 Navigator，同一被管缓存克隆出的
+    /// Navigator 经此格共享同一时钟（跨导航失活协议不断）。本模块不提供时钟 API。
     generation: Arc<AtomicUsize>,
 }
 
@@ -66,19 +68,10 @@ impl DecodeCache {
         }
     }
 
-    /// 获取当前导航代次
-    pub fn current_generation(&self) -> usize {
-        self.generation.load(Ordering::Relaxed)
-    }
-
-    /// 推进导航代次（用户换图时调用）
-    pub fn advance_generation(&self) -> usize {
-        self.generation.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// 判定任务是否已过期（滞后于当前代次超过 max_lag 步）
-    pub fn is_stale(&self, gen: usize, max_lag: usize) -> bool {
-        self.generation.load(Ordering::Relaxed).saturating_sub(gen) > max_lag
+    /// 共享代次格：同一缓存克隆出的 [`crate::navigator::Navigator`] 经此共享同一时钟。
+    /// 推进/读取/失活判定一律走 Navigator 方法（时钟归推进它的模块所有）。
+    pub(crate) fn generation_cell(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.generation)
     }
 
     /// 命中返回缓存值并移到末尾；未命中返回 None（生产路径走 get_entry 复用信封）
