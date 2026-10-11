@@ -86,11 +86,13 @@ export class Viewer {
   private transformTimer: number | undefined;
   /** 沉浸模式：fit 时是否避让标题栏 */
   private immersive = false;
-  /** 加载代次：异步解码期间被新加载抢占时丢弃旧结果 */
+  /** 执行层回防代次（非真相源）：同代内 show/showUpgrade 交叠时丢弃旧结果；
+   *  跨代新鲜唯一由 presenter 代次守卫决定，本计数器只静默让路 */
   private loadSeq = 0;
-  /** 进行中的静态加载（img 通道） */
+  /** 进行中的静态加载（img 通道；新入口 settlePending 静默 resolve，随 presenter 代次推进） */
   private pending: { resolve: () => void; reject: (e: Error) => void; seq: number } | null = null;
-  /** 静态加载 2.5s 超时兜底定时器（完成/失败/作废时清理，不留空转定时器） */
+  /** 静态加载 2.5s 超时兜底定时器（完成/失败/作废时清理，不留空转定时器；
+   *  执行层回防（随 loadSeq），升级/ctx 计时器归 presenter 统一管理） */
   private staticLoadTimer: number | undefined;
   /** Viewer-owned transient envelope JPEG object URL（caller URLs never revoked here） */
   private ownedBlobUrl: string | null = null;
@@ -142,7 +144,8 @@ export class Viewer {
   /** Narrow loader seam (generation guard cannot be bypassed).
    *  loadSeq++ + settlePending() happen exactly once per entry, not per branch.
    *  Superseded generations resolve silently; only the latest writes DOM/closes bitmaps.
-   *  变体选择归 Viewer：envelope 一律重置变换（升级路径走 showUpgrade）。 */
+   *  变体选择归 Viewer：envelope 一律重置变换（升级路径走 showUpgrade）。
+   *  本模块代次守卫只作执行层回防（同代重入串行化），跨代新鲜真相源为 presenter 代次。 */
   async show(content: ShowContent): Promise<void> {
     // 信封走共核（代次守卫恰好一次；此处直接返回，不再经过下述 frames/url 守卫）
     if (content.kind === "envelope") {

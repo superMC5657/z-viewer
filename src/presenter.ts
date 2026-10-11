@@ -3,6 +3,9 @@
  * main.ts 只保留接线（window/input/slideshow/cache/license），呈现策略全部收敛于此。
  * 解码与双缓冲委托 Viewer.show（C2 缝）；Tauri invoke 停在命令边缘，永不出接口。
  * 跨切面协作只经注入闭包（onShown/onProRequired），不依赖 Slideshow/WindowState/LicenseService。
+ * 新鲜度真相源（本模块唯一）：gen 为单一代次钟，rawTimer/ctxTimer/animCheckCache
+ * LRU/预解码池状态全部归此管理；Viewer 侧 loadSeq/pending/2.5s 兜底仅为执行层回防
+ * （同代重入串行化），不做第二真相源。show/navigate 对外保持薄 face。
  */
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -13,7 +16,6 @@ import type { ContentState, FitMode, Viewer } from "./viewer";
 import type { UI } from "./ui";
 import { needsIpc, parseLoadEnvelope } from "./types";
 import type { BrowseState, LoadEnvelope, NavResult } from "./types";
-import { PrefetchPool } from "./prefetch";
 
 export interface ImagePresenterOptions {
   /** 成功显示一张图片后（导航/直显通用，调用面接 presence.notifyManualNav） */
@@ -43,8 +45,11 @@ const ANIM_CHECK_CACHE_MAX = 1000;
 const RAW_UPGRADE_DELAY_MS = 350;
 /** get_context 防抖：快速翻页时合并为一次预取 */
 const CONTEXT_DEBOUNCE_MS = 100;
+/** 前端预解码池上限（warmContext 唯一入口驱动；隐藏 <img> 不挂载 DOM，仅占解码缓存） */
+const PREFETCH_POOL_MAX = 10;
 
 export class ImagePresenter {
+  // ---------- 新鲜度真相源（单一代次钟 + 所属计时器/缓存/池状态，同一 locality） ----------
   /** 统一呈现代次（替代 showSeq；每次 show 自增，await 后复核，过期静默丢弃） */
   private gen = 0;
   /** 导航单飞：进行中只记最新 pending（替代 navInFlight/navPending 二元组） */
@@ -60,7 +65,9 @@ export class ImagePresenter {
   private readonly animCheckCache = new Map<string, boolean>();
   private rawTimer: number | undefined;
   private ctxTimer: number | undefined;
-  private readonly prefetch = new PrefetchPool();
+  /** 前端预解码池状态（warmContext 唯一入口驱动；原 PrefetchPool 折叠入此，deletion test 通过） */
+  private poolImgs: HTMLImageElement[] = [];
+  private poolLoading = new Set<string>();
 
   constructor(
     private readonly viewer: Viewer,
@@ -228,9 +235,9 @@ export class ImagePresenter {
     void this.warmContext();
   }
 
-  /** 打开新上下文前清空预解码池 */
+  /** 打开新上下文前清空预解码池（池状态与代次钟同 locality） */
   clearContext(): void {
-    this.prefetch.clear();
+    this.clearPool();
   }
 
   // ---------- 内部 ----------
@@ -328,7 +335,7 @@ export class ImagePresenter {
   private async warmContext(): Promise<void> {
     try {
       const paths = await invoke<string[]>("get_context");
-      this.prefetch.warm(paths, needsIpc);
+      this.warmPool(paths);
     } catch {
       /* 忽略失败 */
     }
@@ -338,6 +345,51 @@ export class ImagePresenter {
   private scheduleContext(delay = CONTEXT_DEBOUNCE_MS): void {
     window.clearTimeout(this.ctxTimer);
     this.ctxTimer = window.setTimeout(() => void this.warmContext(), delay);
+  }
+
+  /** 预解码池预热（asset 通道提前隐藏 <img> 加载并 decode()，切图零解码瞬时显示；
+   *  动画/RAW 走 Rust 缓存不在此预热；原 PrefetchPool.warm 逐字搬运，deletion test 通过） */
+  private warmPool(paths: string[]): void {
+    for (const p of paths) {
+      if (this.poolLoading.has(p)) continue;
+      if (needsIpc(p)) continue;
+      const url = convertFileSrc(p);
+      if (this.poolImgs.some((i) => i.dataset.src === url)) continue;
+      const img = new Image();
+      img.dataset.src = url;
+      img.dataset.path = p;
+      img.decoding = "async";
+      this.poolLoading.add(p);
+      img.src = url;
+      img
+        .decode()
+        .then(() => this.poolLoading.delete(p))
+        .catch(() => this.poolLoading.delete(p));
+      this.poolImgs.push(img);
+      this.trimPool();
+    }
+  }
+
+  /** 裁剪池（保留最近 PREFETCH_POOL_MAX 个），被裁剪的加载中路径同步释放登记 */
+  private trimPool(): void {
+    if (this.poolImgs.length <= PREFETCH_POOL_MAX) return;
+    const overflow = this.poolImgs.length - PREFETCH_POOL_MAX;
+    for (let i = 0; i < overflow; i++) {
+      const img = this.poolImgs.shift()!;
+      const path = img.dataset.path;
+      if (path) this.poolLoading.delete(path);
+      // 只 removeAttribute：置 src="" 会把空串解析为当前文档 URL，触发一次对页面本身的冗余请求
+      img.removeAttribute("src");
+    }
+  }
+
+  /** 清空池（打开新上下文时调用，释放解码缓存；原 PrefetchPool.clear 逐字搬运） */
+  private clearPool(): void {
+    for (const img of this.poolImgs) {
+      img.removeAttribute("src");
+    }
+    this.poolImgs = [];
+    this.poolLoading.clear();
   }
 
   /** 帧条策略：帧已就绪直接控制；原生播放中先按需拆帧，完成后执行同一动作 */
