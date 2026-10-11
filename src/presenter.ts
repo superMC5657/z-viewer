@@ -9,7 +9,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import type { FitMode, Viewer } from "./viewer";
+import type { ContentState, FitMode, Viewer } from "./viewer";
 import type { UI } from "./ui";
 import { needsIpc, parseLoadEnvelope } from "./types";
 import type { BrowseState, LoadEnvelope, NavResult } from "./types";
@@ -53,6 +53,8 @@ export class ImagePresenter {
   /** 最近一次浏览状态（解锁重开当前图片用；调用面经 lastPath 只读） */
   private lastState: BrowseState | null = null;
   private currentDims: { w: number; h: number } | null = null;
+  /** Viewer 推送的内容快照（onContent 写入；帧条显隐/播放图标/尺寸读数由此派生，不轮询 Viewer） */
+  private lastContent: ContentState | null = null;
   /** 当前图片是否为原生 <img> 播放中的动画（帧条交互时按需拆帧） */
   private animCandidate = false;
   private readonly animCheckCache = new Map<string, boolean>();
@@ -68,6 +70,12 @@ export class ImagePresenter {
     // 帧条策略一次接线：按钮 DOM 留在 UI 缝内，op 语义归此模块
     this.ui.onFrameAction((op) => this.onFrameOp(op));
     this.viewer.onFrameChange = (index, total) => this.ui.updateFrameCount(index, total);
+    // 内容状态推送一次接线：存快照 + 直驱帧条显隐/播放图标（调用方不再轮询 Viewer）
+    this.viewer.onContent = (s) => {
+      this.lastContent = s;
+      this.ui.setFrameBarVisible(s.animated);
+      this.ui.setFramePlaying(s.playing);
+    };
     // 变换联动内聚：按钮同步 + 放大超 100% 立即提全量（原 bindEvents 订阅迁移至此）
     this.viewer.onStateChange = () => {
       this.syncZoom();
@@ -89,6 +97,11 @@ export class ImagePresenter {
     return this.lastState?.path ?? null;
   }
 
+  /** 内容快照重置（经方法边界：show 头的直接赋 null 会被 CFA 带入后续读取致 never） */
+  private resetContent(): void {
+    this.lastContent = null;
+  }
+
   /** 直接显示（初态、打开路径、幻灯片推进共用）。显示失败只 Toast，永不抛错。 */
   async show(state: BrowseState): Promise<void> {
     this.lastState = state;
@@ -100,6 +113,7 @@ export class ImagePresenter {
     void getCurrentWindow().setTitle(winTitle).catch(() => undefined);
     this.ui.updateInfo(state, null);
     this.currentDims = null;
+    this.resetContent();
     this.animCandidate = false;
     window.clearTimeout(this.rawTimer);
     this.rawTimer = undefined;
@@ -124,8 +138,10 @@ export class ImagePresenter {
         return;
       }
       if (gen !== this.gen) return;
-      this.currentDims = { w: this.viewer.naturalWidth, h: this.viewer.naturalHeight };
+      const snap: ContentState | null = this.lastContent;
+      this.currentDims = snap ? { w: snap.width, h: snap.height } : null;
       this.ui.updateInfo(state, this.currentDims);
+      // 动画文件：原生播放中，亮出帧条（计数未知，交互时按需拆帧）
       // 动画文件：原生播放中，亮出帧条（计数未知，交互时按需拆帧）
       if (await animatedP) {
         if (gen !== this.gen) return; // await 期间被抢占
@@ -159,7 +175,6 @@ export class ImagePresenter {
       } catch (err) {
         if (gen === this.gen) {
           this.ui.showToast(`无法显示图片：${String(err)}`);
-          this.ui.setFrameBarVisible(false);
         }
         return;
       }
@@ -169,13 +184,10 @@ export class ImagePresenter {
         this.scheduleUpgrade(state, gen);
       }
 
-      this.currentDims = { w: this.viewer.naturalWidth, h: this.viewer.naturalHeight };
+      const snap: ContentState | null = this.lastContent;
+      this.currentDims = snap ? { w: snap.width, h: snap.height } : null;
       this.ui.updateInfo(state, this.currentDims);
-      // 动画分支已内聚于 Viewer：由呈现状态派生帧条可见性
-      if (this.viewer.isAnimation) {
-        this.ui.setFrameBarVisible(true);
-      }
-      this.ui.setFramePlaying(this.viewer.isPlaying);
+      // 帧条显隐与播放图标已由 onContent 推送直驱（不再轮询 isAnimation/isPlaying）
       // 幻灯片进度计数（播放中实时更新）
       this.ui.setSlideshowProgress(state.global_index + 1, state.global_total);
       // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身不再计数）
@@ -287,7 +299,7 @@ export class ImagePresenter {
     }
   }
 
-  /** RAW 内嵌预览已显示：后台拉取全量并以 keepTransform 替换；失败时预览由 Viewer 保留 */
+  /** RAW 内嵌预览已显示：后台拉取全量并升级替换（变换保持归 Viewer）；失败时预览由 Viewer 保留 */
   private async upgradeToFull(state: BrowseState, gen: number): Promise<void> {
     this.ui.beginDecoding();
     try {
@@ -297,14 +309,15 @@ export class ImagePresenter {
       if (header.isPreview) return; // 防御：仍返回预览（异常路径），保持现有显示
       if (gen !== this.gen) return;
       try {
-        await this.viewer.show({ kind: "envelope", header, payload, keepTransform: true });
+        await this.viewer.showUpgrade(header, payload);
       } catch {
-        // 全量失败：预览仍在（keep 路径下 Viewer 不清空旧画面），静默保留
+        // 全量失败：预览仍在（升级路径下 Viewer 不清空旧画面），静默保留
         return;
       }
       if (gen !== this.gen) return;
       // 信息条尺寸更新为全量尺寸
-      this.currentDims = { w: this.viewer.naturalWidth, h: this.viewer.naturalHeight };
+      const snap: ContentState | null = this.lastContent;
+      this.currentDims = snap ? { w: snap.width, h: snap.height } : null;
       this.ui.updateInfo(state, this.currentDims);
     } finally {
       this.ui.endDecoding();
@@ -348,17 +361,17 @@ export class ImagePresenter {
           break;
       }
     };
-    if (this.viewer.isAnimation) {
+    if (this.lastContent?.animated) {
       run();
-      this.ui.setFramePlaying(this.viewer.isPlaying);
+      this.ui.setFramePlaying(this.lastContent?.playing ?? false);
       return;
     }
     if (!this.animCandidate) return;
     void this.ensureAnimation()
       .then(() => {
-        if (this.viewer.isAnimation) {
+        if (this.lastContent?.animated) {
           run();
-          this.ui.setFramePlaying(this.viewer.isPlaying);
+          this.ui.setFramePlaying(this.lastContent?.playing ?? false);
         }
       })
       .catch((err) => this.ui.showToast(String(err)));
@@ -441,7 +454,7 @@ export class ImagePresenter {
       if (gen !== this.gen) return; // await 期间被抢占：不覆盖新图
       await this.viewer.show({ kind: "envelope", header, payload });
       if (gen !== this.gen) return;
-      if (this.viewer.isAnimation) {
+      if (this.lastContent?.animated) {
         // 多帧动画：此时才亮出帧条（静态图不闪现帧条）
         this.ui.setFrameBarVisible(true);
         return;

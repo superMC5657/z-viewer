@@ -13,6 +13,11 @@
  *
  * 切图瞬切：新图后台解码并计算 fit 变换完成后，在同一帧原子替换显示，
  * 旧图与旧 Canvas 同步隐藏（0ms 瞬切直接切换，无交叉淡化、无黑屏跳变与频闪）。
+ *
+ * 内部区隔（不进公开面）：A 变换引擎（fit/apply/clampPan/scheduleApply/
+ * animateTransform/resetTransform）与 B 播放引擎（animFrames/delays/index/
+ * playing + scheduleNext/drawFrame/stopAnimation）各守私有状态，只经
+ * show/showUpgrade/play/pause 受控入口协作；变换数学不得进入播放区，反之亦然。
  */
 
 import type { LoadEnvelope } from "./types";
@@ -23,14 +28,27 @@ const ROTATE_MS = 220; // 略大于 200ms 过渡，结束后移除 animating cla
 
 export type FitMode = "fit" | "actual";
 
-/** Unified loader seam: single entry for all image content (module seam, shallow depth).
+/** Narrow content seam: caller says *what* to draw; Viewer owns variant selection,
+ *  ownership, and transform decisions (deep module, shallow seam).
  *  - url: caller-owned URL (asset path or caller blob); Viewer never revokes input.
- *  - envelope: already-parsed header+payload; Viewer owns transient JPEG object URLs.
+ *  - envelope: already-parsed header+payload; Viewer owns transient JPEG object URLs
+ *    and selects the animation / single-bitmap / JPEG-static variant internally.
+ *    Transform reset is the default; preview→full upgrades go through showUpgrade
+ *    (keep decision owned here, not a caller flag).
  *  - frames: ownership transfers; Viewer closes bitmaps on supersede/failure. */
 export type ShowContent =
   | { kind: "url"; url: string }
-  | { kind: "envelope"; header: LoadEnvelope; payload: Uint8Array; keepTransform?: boolean }
+  | { kind: "envelope"; header: LoadEnvelope; payload: Uint8Array }
   | { kind: "frames"; bitmaps: ImageBitmap[]; delays: number[] };
+
+/** Pushed content state: what is on screen right now. Callers snapshot this push
+ *  to derive frame-bar visibility / playing icon — never poll the Viewer. */
+export interface ContentState {
+  width: number;
+  height: number;
+  animated: boolean;
+  playing: boolean;
+}
 
 export class Viewer {
   private imgA: HTMLImageElement;
@@ -77,7 +95,7 @@ export class Viewer {
   /** Viewer-owned transient envelope JPEG object URL（caller URLs never revoked here） */
   private ownedBlobUrl: string | null = null;
 
-  // 动画状态
+  // 动画状态（内部区隔 B 私有；对外只经 onContent 推送快照，不轮询）
   private animFrames: ImageBitmap[] = [];
   private animDelays: number[] = [];
   private animIndex = 0;
@@ -85,6 +103,8 @@ export class Viewer {
 
   /** 帧变化回调（index 从 1 开始） */
   onFrameChange: ((index: number, total: number) => void) | null = null;
+  /** 内容状态推送（显示完成/播放翻转时触发；调用方存快照派生帧条显隐，不再轮询） */
+  onContent: ((s: ContentState) => void) | null = null;
   /** 变换状态变化回调（缩放/模式/旋转/加载后触发，用于同步按钮状态） */
   onStateChange: (() => void) | null = null;
 
@@ -114,27 +134,21 @@ export class Viewer {
     return this.baseScale * this.userScale;
   }
 
-  get isAnimation(): boolean {
+  /** 是否处于 canvas 动画态（内部判定；外部经 onContent 推送获知，不轮询） */
+  private get isAnimation(): boolean {
     return this.active === "canvas" && this.animFrames.length > 0;
   }
 
-  get isPlaying(): boolean {
-    return this.animPlaying;
-  }
-
-  /** 当前显示尺寸（静态图 = 图像自然尺寸；动画 = 第一帧尺寸） */
-  get naturalWidth(): number {
-    return this.naturalW;
-  }
-
-  get naturalHeight(): number {
-    return this.naturalH;
-  }
-
-  /** Unified loader seam (single entry; generation guard cannot be bypassed).
-   *  loadSeq++ + settlePending() happen exactly once here, not per branch.
-   *  Superseded generations resolve silently; only the latest writes DOM/closes bitmaps. */
+  /** Narrow loader seam (generation guard cannot be bypassed).
+   *  loadSeq++ + settlePending() happen exactly once per entry, not per branch.
+   *  Superseded generations resolve silently; only the latest writes DOM/closes bitmaps.
+   *  变体选择归 Viewer：envelope 一律重置变换（升级路径走 showUpgrade）。 */
   async show(content: ShowContent): Promise<void> {
+    // 信封走共核（代次守卫恰好一次；此处直接返回，不再经过下述 frames/url 守卫）
+    if (content.kind === "envelope") {
+      await this.showEnvelope(content.header, content.payload, false);
+      return;
+    }
     this.stopAnimation();
     this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
     const seq = ++this.loadSeq;
@@ -169,15 +183,47 @@ export class Viewer {
       revokePrev();
       return;
     }
+    // url 分支结束；envelope 已在入口处分流至共核
+  }
+
+  /** 全量升级（预览→全量替换，变换保持）：keep 决策归 Viewer 所有，
+   *  调用方只说"升级"，不再拼装 keepTransform 变体细节；代次守卫与 show 同规。 */
+  async showUpgrade(header: LoadEnvelope, payload: Uint8Array): Promise<void> {
+    await this.showEnvelope(header, payload, true);
+  }
+
+  /** 信封入口共核（show/showUpgrade 共享同一代次守卫与归属权处理，不可绕过） */
+  private async showEnvelope(header: LoadEnvelope, payload: Uint8Array, keepTransform: boolean): Promise<void> {
+    this.stopAnimation();
+    this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
+    const seq = ++this.loadSeq;
+    const prevOwned = this.ownedBlobUrl;
+    this.ownedBlobUrl = null;
+    const revokePrev = () => {
+      if (prevOwned) URL.revokeObjectURL(prevOwned);
+    };
+    const restorePrev = () => {
+      this.ownedBlobUrl = prevOwned;
+    };
     await this.showEnvelopeInternal(
-      content.header,
-      content.payload,
-      content.keepTransform ?? false,
+      header,
+      payload,
+      keepTransform,
       seq,
       prevOwned,
       revokePrev,
       restorePrev,
     );
+  }
+
+  /** 内容状态推送：对照当前画面快照上报（dims/动画/播放），调用方存快照派生 UI */
+  private emitContent(): void {
+    this.onContent?.({
+      width: this.naturalW,
+      height: this.naturalH,
+      animated: this.isAnimation,
+      playing: this.animPlaying,
+    });
   }
 
   /** Envelope 分发（原 main.ts header 分支内聚至此，调用面只剩 show）：
@@ -292,6 +338,9 @@ export class Viewer {
       window.clearTimeout(this.staticLoadTimer);
       this.staticLoadTimer = window.setTimeout(() => {
         if (this.pending?.seq === seq) {
+          // 兜底 resolve：按调用方此前可读语义推送当前（可能滞后）快照，
+          // 与直接读 dims 的行为一致；解码完成时还会再推一次
+          this.emitContent();
           this.pending.resolve();
         }
       }, 2500);
@@ -327,6 +376,7 @@ export class Viewer {
 
         this.pending?.resolve();
         this.pending = null;
+        this.emitContent();
         this.onStateChange?.();
         resolve();
       };
@@ -403,6 +453,7 @@ export class Viewer {
     this.canvas.classList.add("visible");
     this.imgA.classList.remove("visible");
     this.imgB.classList.remove("visible");
+    this.emitContent();
     this.onStateChange?.();
   }
 
@@ -616,13 +667,16 @@ export class Viewer {
     return ew > this.stage.clientWidth + PAN_MARGIN * 2 || eh > this.stage.clientHeight + PAN_MARGIN * 2;
   }
 
-  // ---------- 动画控制 ----------
+  // ---------- 动画控制（公开受控操作；内部区隔 B 播放引擎的前端） ----------
+  // 本区只做播放状态机翻转（play/pause/toggle/step/seek）并经 onContent 推送；
+  // 变换数学（fit/apply/clamp）不得进入，帧时序（scheduleNext/drawFrame）见区隔 B。
 
   play(): void {
     if (!this.isAnimation || this.animPlaying) return;
     this.animPlaying = true;
     this.lastAnimTick = performance.now();
     this.scheduleNext();
+    this.emitContent();
   }
 
   pause(): void {
@@ -631,6 +685,7 @@ export class Viewer {
       cancelAnimationFrame(this.rafAnimHandle);
       this.rafAnimHandle = null;
     }
+    this.emitContent();
   }
 
   togglePlay(): void {
@@ -656,7 +711,8 @@ export class Viewer {
     this.drawFrame();
   }
 
-  // ---------- 内部 ----------
+  // ---------- 内部区隔 B：播放引擎（私有；scheduleNext/drawFrame/stopAnimation） ----------
+  // 只碰 animFrames/animDelays/animIndex/animPlaying 与 canvas 绘制；变换状态只读而不写。
 
   private scheduleNext(): void {
     if (!this.animPlaying) return;
@@ -698,6 +754,8 @@ export class Viewer {
     this.animIndex = 0;
   }
 
+  // ---------- 内部区隔 A：变换引擎（私有；resetTransform/fit/apply/clampPan/scheduleApply/animateTransform） ----------
+  // 只算 transform 与中心点；播放状态（anim*/rafAnim）不得在此写入。
   private resetTransform(): void {
     this.loaded = false;
     this.fitMode = "fit";
