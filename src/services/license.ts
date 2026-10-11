@@ -1,6 +1,8 @@
 /**
  * 专业版授权服务模块
  * 激活码验证、注销、在线购买跳转与解锁对话框交互（支持 Light Dismiss 点击背景关闭）
+ * 对话框 DOM 归 LicenseDialog 唯一拥有，本模块只发意图（render/showError/按钮文案），
+ * 经 LicenseCallbacks adapter 收结果；本文件零 DOM 直抓。
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -72,19 +74,17 @@ export class LicenseService {
     this.ui.hideLicenseDialog();
   }
 
-  /** 重置注销确认状态 */
+  /** 重置注销确认状态（按钮文案归 Dialog，本处只管计时器与 armed 标志） */
   private resetDeactivateConfirm(): void {
     this.deactivateConfirmArmed = false;
     window.clearTimeout(this.deactivateConfirmTimer);
-    const dialog = document.getElementById("unlock-dialog");
-    const btn = document.getElementById("unlock-confirm") as HTMLButtonElement | null;
-    if (btn) btn.textContent = dialog?.dataset.mode === "active" ? "注销" : "激活";
+    this.ui.licenseDialog.resetConfirmLabel();
   }
 
   /** 激活专业版 */
   async activate(code: string, email: string): Promise<void> {
-    const errEl = document.getElementById("unlock-error")!;
-    errEl.classList.add("hidden");
+    const dialog = this.ui.licenseDialog;
+    dialog.clearLicenseError();
     try {
       const info = await invoke<LicenseInfo>("activate_license", { code, email });
       if (info.status === "pro") {
@@ -95,19 +95,17 @@ export class LicenseService {
         this.callbacks.onUnlocked();
         this.callbacks.onReloadRequested();
       } else {
-        errEl.textContent = "激活失败，请检查激活码";
-        errEl.classList.remove("hidden");
+        dialog.showLicenseError("激活失败，请检查激活码");
       }
     } catch (err) {
-      errEl.textContent = String(err);
-      errEl.classList.remove("hidden");
+      dialog.showLicenseError(String(err));
     }
   }
 
   /** 取消激活（注销） */
   async deactivate(): Promise<void> {
-    const errEl = document.getElementById("unlock-error")!;
-    errEl.classList.add("hidden");
+    const dialog = this.ui.licenseDialog;
+    dialog.clearLicenseError();
     try {
       const info = await invoke<LicenseInfo>("deactivate_license");
       this.pro = info.status === "pro";
@@ -117,45 +115,40 @@ export class LicenseService {
       this.callbacks.onReloadRequested();
     } catch (err) {
       this.resetDeactivateConfirm();
-      errEl.textContent = String(err);
-      errEl.classList.remove("hidden");
+      dialog.showLicenseError(String(err));
     }
   }
 
   /** 打开官网购买页 */
   async openStore(): Promise<void> {
-    const errEl = document.getElementById("unlock-error")!;
-    errEl.classList.add("hidden");
+    const dialog = this.ui.licenseDialog;
+    dialog.clearLicenseError();
     try {
       const info = await invoke<StoreInfo>("get_store_info");
       if (!info.buyUrl) {
-        errEl.textContent = "在线购买地址尚未配置，请联系开发者";
-        errEl.classList.remove("hidden");
+        dialog.showLicenseError("在线购买地址尚未配置，请联系开发者");
         return;
       }
       await openUrl(info.buyUrl);
     } catch (err) {
-      errEl.textContent = String(err);
-      errEl.classList.remove("hidden");
+      dialog.showLicenseError(String(err));
     }
   }
 
-  /** 绑定解锁弹窗表单交互事件 */
+  /** 绑定解锁弹窗表单交互事件（零件经 Dialog 缝获取，本处只装配行为） */
   bindDialogEvents(): void {
-    const dialogMask = document.getElementById("unlock-dialog")!;
-    const cancelBtn = document.getElementById("unlock-cancel")!;
-    const confirmBtn = document.getElementById("unlock-confirm")! as HTMLButtonElement;
-    const buyBtn = document.getElementById("unlock-buy")!;
-    const codeInput = document.getElementById("unlock-code") as HTMLInputElement;
-    const emailInput = document.getElementById("unlock-email") as HTMLInputElement;
+    const dialog = this.ui.licenseDialog;
+    const cancelBtn = dialog.cancelButton;
+    const confirmBtn = dialog.confirmButton;
+    const buyBtn = dialog.buyButton;
 
     cancelBtn.addEventListener("click", () => this.hideDialog());
 
     confirmBtn.addEventListener("click", () => {
-      if (dialogMask.dataset.mode === "active") {
+      if (dialog.mode === "active") {
         if (!this.deactivateConfirmArmed) {
           this.deactivateConfirmArmed = true;
-          confirmBtn.textContent = "确认注销";
+          dialog.armDeactivateConfirm();
           this.ui.showToast("再次点击确认注销");
           window.clearTimeout(this.deactivateConfirmTimer);
           this.deactivateConfirmTimer = window.setTimeout(() => this.resetDeactivateConfirm(), 3000);
@@ -164,17 +157,19 @@ export class LicenseService {
         void this.deactivate();
         return;
       }
-      void this.activate(codeInput.value.trim(), emailInput.value.trim());
+      const { code, email } = dialog.readInputs();
+      void this.activate(code, email);
     });
 
     buyBtn.addEventListener("click", () => void this.openStore());
 
     const onEnter = (e: KeyboardEvent) => {
       if (e.key === "Enter") {
-        void this.activate(codeInput.value.trim(), emailInput.value.trim());
+        const { code, email } = dialog.readInputs();
+        void this.activate(code, email);
       }
     };
-    codeInput.addEventListener("keydown", onEnter);
-    emailInput.addEventListener("keydown", onEnter);
+    dialog.codeInput.addEventListener("keydown", onEnter);
+    dialog.emailInput.addEventListener("keydown", onEnter);
   }
 }

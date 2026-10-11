@@ -8,6 +8,8 @@
  * - 焦点设置与关闭后焦点恢复 (Focus Restoration)
  */
 
+import type { LicenseInfo } from "../types";
+
 export interface DialogOptions {
   /** 遮罩层 DOM 元素或 ID（例如 "unlock-dialog"） */
   mask: HTMLElement | string;
@@ -191,5 +193,129 @@ export class Dialog {
     this.hideModal();
     this.closeCallbacks.clear();
     this.openCallbacks.clear();
+  }
+}
+
+/**
+ * 授权对话框（unlock-dialog 唯一主人）：全部零件 DOM 与显隐归此拥有，
+ * LicenseService 只发意图（render/showError/按钮文案），经 LicenseCallbacks 收结果。
+ * 零件在构造时一次缓存（querySelector 限定遮罩内）；调用面零 getElementById。
+ */
+export class LicenseDialog extends Dialog {
+  private readonly titleEl: HTMLElement;
+  private readonly descEl: HTMLElement;
+  private readonly infoBox: HTMLElement;
+  private readonly formEl: HTMLElement;
+  private readonly buyRow: HTMLElement;
+  private readonly confirmBtn: HTMLButtonElement;
+  private readonly emailText: HTMLElement;
+  private readonly codeText: HTMLElement;
+  private readonly codeField: HTMLInputElement;
+  private readonly emailField: HTMLInputElement;
+  private readonly errEl: HTMLElement;
+  private readonly cancelBtn: HTMLElement;
+  private readonly buyBtn: HTMLElement;
+
+  constructor(maskId = "unlock-dialog") {
+    super({ mask: maskId });
+    const req = <T extends HTMLElement = HTMLElement>(sel: string): T => {
+      const el = this.mask.querySelector<T>(sel);
+      if (!el) throw new Error(`LicenseDialog part not found: ${sel}`);
+      return el;
+    };
+    this.titleEl = req("#unlock-title");
+    this.descEl = req("#unlock-desc");
+    this.infoBox = req("#unlock-info");
+    this.formEl = req("#unlock-form");
+    this.buyRow = req("#unlock-buy-row");
+    this.confirmBtn = req<HTMLButtonElement>("#unlock-confirm");
+    this.emailText = req("#unlock-email-text");
+    this.codeText = req("#unlock-code-value");
+    this.codeField = req<HTMLInputElement>("#unlock-code");
+    this.emailField = req<HTMLInputElement>("#unlock-email");
+    this.errEl = req("#unlock-error");
+    this.cancelBtn = req("#unlock-cancel");
+    this.buyBtn = req("#unlock-buy");
+  }
+
+  /** 当前模式（renderLicense 写入：active=管理/注销态，inactive=激活态） */
+  get mode(): string {
+    return this.mask.dataset.mode ?? "";
+  }
+
+  get cancelButton(): HTMLElement {
+    return this.cancelBtn;
+  }
+
+  get confirmButton(): HTMLButtonElement {
+    return this.confirmBtn;
+  }
+
+  get buyButton(): HTMLElement {
+    return this.buyBtn;
+  }
+
+  get codeInput(): HTMLInputElement {
+    return this.codeField;
+  }
+
+  get emailInput(): HTMLInputElement {
+    return this.emailField;
+  }
+
+  /** 按授权状态渲染内容并打开（active=管理态，inactive=激活态） */
+  renderLicense(info: LicenseInfo): void {
+    const hasLocal = info.status === "pro" && Boolean(info.code && info.email);
+    this.mask.dataset.mode = hasLocal ? "active" : "inactive";
+    this.codeField.value = "";
+    this.emailField.value = "";
+    this.clearLicenseError();
+    this.confirmBtn.textContent = hasLocal ? "注销" : "激活";
+    this.confirmBtn.classList.toggle("btn-text-danger", hasLocal);
+    this.confirmBtn.classList.toggle("btn-text-accent", !hasLocal);
+
+    if (hasLocal) {
+      this.titleEl.textContent = "管理激活";
+      this.descEl.textContent = "当前设备已激活专业版，可查看激活信息或注销。";
+      this.emailText.textContent = info.email ?? "";
+      this.codeText.textContent = info.code ?? "";
+      this.infoBox.classList.remove("hidden");
+      this.formEl.classList.add("hidden");
+      this.buyRow.classList.add("hidden");
+    } else {
+      this.titleEl.textContent = "解锁专业版";
+      this.descEl.innerHTML = "解锁后可使用：<b>跨文件夹无缝浏览</b> 与 <b>预取缓存</b>（翻页更流畅）";
+      this.infoBox.classList.add("hidden");
+      this.formEl.classList.remove("hidden");
+      this.buyRow.classList.remove("hidden");
+    }
+
+    this.showModal(hasLocal ? this.confirmBtn : this.emailField);
+  }
+
+  /** 读取并 trim 输入（激活提交用；调用面不再直抓输入框） */
+  readInputs(): { code: string; email: string } {
+    return { code: this.codeField.value.trim(), email: this.emailField.value.trim() };
+  }
+
+  /** 错误条：隐藏（每次提交前清错） */
+  clearLicenseError(): void {
+    this.errEl.classList.add("hidden");
+  }
+
+  /** 错误条：显示文案 */
+  showLicenseError(msg: string): void {
+    this.errEl.textContent = msg;
+    this.errEl.classList.remove("hidden");
+  }
+
+  /** 确认按钮回到 idle 文案（注销两步确认的复位；随当前 mode） */
+  resetConfirmLabel(): void {
+    this.confirmBtn.textContent = this.mode === "active" ? "注销" : "激活";
+  }
+
+  /** 确认按钮进入注销二次确认态 */
+  armDeactivateConfirm(): void {
+    this.confirmBtn.textContent = "确认注销";
   }
 }

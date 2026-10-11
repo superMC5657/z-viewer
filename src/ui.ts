@@ -5,7 +5,7 @@
 
 import { ICONS, TOOLBAR_GROUPS, type ToolbarButton } from "./icons";
 import type { BrowseState, LicenseInfo } from "./types";
-import { Dialog } from "./components/dialog";
+import { LicenseDialog } from "./components/dialog";
 import { formatSize, truncateMiddle, formatPosition, formatFrame } from "./utils/format";
 
 const TOAST_MS = 1500; // 边界 Toast 持续 1.5s
@@ -17,7 +17,7 @@ export interface ToolbarHandlers {
 }
 
 export class UI {
-  readonly licenseDialog: Dialog;
+  readonly licenseDialog: LicenseDialog;
   private toolbar: HTMLElement;
   private slideshowBar: HTMLElement;
   private toast: HTMLElement;
@@ -56,7 +56,7 @@ export class UI {
     this.framePlayBtn = document.getElementById("frame-play")!;
     this.frameCountEl = document.getElementById("frame-count")!;
 
-    this.licenseDialog = new Dialog({ mask: "unlock-dialog" });
+    this.licenseDialog = new LicenseDialog();
   }
 
   /** 工具栏按钮 Map 缓存（消除高频 DOM 查询） */
@@ -261,46 +261,9 @@ export class UI {
     return this.licenseDialog.isOpen;
   }
 
-  /** 激活/管理对话框显隐（渲染内容并调用 Dialog 基类打开） */
+  /** 激活/管理对话框显隐（内容渲染与显隐归 LicenseDialog，本处只做薄转发） */
   showLicenseDialog(info: LicenseInfo): void {
-    const mask = this.licenseDialog.mask;
-    const hasLocal = info.status === "pro" && Boolean(info.code && info.email);
-    mask.dataset.mode = hasLocal ? "active" : "inactive";
-    const title = document.getElementById("unlock-title")!;
-    const desc = document.getElementById("unlock-desc")!;
-    const infoBox = document.getElementById("unlock-info")!;
-    const form = document.getElementById("unlock-form")!;
-    const buyRow = document.getElementById("unlock-buy-row")!;
-    const confirm = document.getElementById("unlock-confirm")!;
-    const emailText = document.getElementById("unlock-email-text")!;
-    const codeText = document.getElementById("unlock-code-value")!;
-    const input = document.getElementById("unlock-code") as HTMLInputElement;
-    const emailInput = document.getElementById("unlock-email") as HTMLInputElement;
-    input.value = "";
-    emailInput.value = "";
-    const err = document.getElementById("unlock-error")!;
-    err.classList.add("hidden");
-    confirm.textContent = hasLocal ? "注销" : "激活";
-    confirm.classList.toggle("btn-text-danger", hasLocal);
-    confirm.classList.toggle("btn-text-accent", !hasLocal);
-
-    if (hasLocal) {
-      title.textContent = "管理激活";
-      desc.textContent = "当前设备已激活专业版，可查看激活信息或注销。";
-      emailText.textContent = info.email ?? "";
-      codeText.textContent = info.code ?? "";
-      infoBox.classList.remove("hidden");
-      form.classList.add("hidden");
-      buyRow.classList.add("hidden");
-    } else {
-      title.textContent = "解锁专业版";
-      desc.innerHTML = "解锁后可使用：<b>跨文件夹无缝浏览</b> 与 <b>预取缓存</b>（翻页更流畅）";
-      infoBox.classList.add("hidden");
-      form.classList.remove("hidden");
-      buyRow.classList.remove("hidden");
-    }
-
-    this.licenseDialog.showModal(hasLocal ? confirm : emailInput);
+    this.licenseDialog.renderLicense(info);
   }
 
   hideLicenseDialog(): void {
