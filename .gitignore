@@ -31,3 +31,6 @@ backend-mock/data.json
 .reasonix/
 .zcode
 .omo
+
+# deepwork 进度文件（git-local，不入库）
+.slim/deepwork/
