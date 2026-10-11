@@ -96,7 +96,6 @@ sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file patchelf l
 src/                  # 前端代码
   main.ts             # 入口、状态机、IPC
   viewer.ts           # 渲染与变换（缩放/旋转/翻转，rAF 合并 60fps）
-  input.ts            # 快捷键 / 滚轮
   window-state.ts     # 沉浸模式 / 窗口置顶控制
   slideshow.ts        # 幻灯片播放器（间隔/边界/计时）
   ui.ts               # 信息条 / 工具栏 / Toast / 浮层 / 解锁对话框
