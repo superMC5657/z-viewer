@@ -11,7 +11,7 @@
 //! - 跨文件夹浏览（兄弟文件夹扫描、文件夹级跳转）
 //! - 预取缓存（DecodeCache / FolderFirstCache / get_context）
 //!
-//! dev（debug）构建恒为已解锁，开发调试不被门控干扰；release 才真正生效。
+//! dev 与 release 行为一致：无有效 license 即免费版，需激活后才解锁专业版。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -303,18 +303,16 @@ impl LicenseManager {
         self.store.clone()
     }
 
-    /// 是否已解锁专业版
-    /// - debug 构建恒为 true（开发调试用；`pnpm tauri build --debug` 亦解锁）
-    /// - release 构建：本地 JWT 验签有效 && 产品/设备/功能位匹配 && 未过期
+    /// 是否已解锁专业版（dev 与 release 行为一致）
+    /// 本地 JWT 验签有效 && 产品/设备/功能位匹配 && 未过期；无有效 license 即免费版。
     ///
-    /// 判定本体为纯函数 is_pro_with（可测）；此处只做 debug 短路 + 快照传入。
+    /// 判定本体为纯函数 is_pro_with（可测）；此处只做快照传入。
     pub fn is_pro(&self) -> bool {
-        cfg!(debug_assertions)
-            || is_pro_with(
-                &self.license.lock().ok().and_then(|g| g.clone()),
-                &self.store,
-                &device_id(),
-            )
+        is_pro_with(
+            &self.license.lock().ok().and_then(|g| g.clone()),
+            &self.store,
+            &device_id(),
+        )
     }
 
     /// 激活：调 soft-candy 换取 JWT → 验签 → 校验设备/等级/功能位 → 落盘
@@ -1072,9 +1070,8 @@ mod tests {
     }
 
     /// status() 同源派生表：features 永不脱离 status（free ⇒ 空）。
-    /// debug 下 is_pro() 恒短路 true，故 free 分支以一致性断言覆盖；
-    /// release 下追加严格断言。旧实现（未验签 claims 直出 features）在
-    /// release 下过期用例挂 free+非空，此表即抓该回归。
+    /// dev 与 release 行为一致，无条件严格断言。旧实现（未验签 claims 直出 features）在
+    /// 过期用例挂 free+非空，此表即抓该回归。
     #[test]
     fn status_features_co_derived() {
         let (pubkey, signing) = test_keypair();
@@ -1084,7 +1081,7 @@ mod tests {
         let storage = dir.join("license.json");
         let m = LicenseManager::load(storage, store);
 
-        // 合法 JWT → pro + 含 pro 位（双 profile 一致）。
+        // 合法 JWT → pro + 含 pro 位。
         let good_claims = claims(&dev, "pro", now() + 3600);
         let good = test_license(&good_claims, sign_jwt(&good_claims, &signing));
         *m.license.lock().unwrap() = Some(good);
@@ -1095,19 +1092,13 @@ mod tests {
             "合法应含 pro 位"
         );
 
-        // 过期 JWT → 一致性：free 必空（release 下严格断言 free+空）。
+        // 过期 JWT → free + 空。
         let bad_claims = claims(&dev, "pro", now() - 1);
         let bad = test_license(&bad_claims, sign_jwt(&bad_claims, &signing));
         *m.license.lock().unwrap() = Some(bad);
         let info = m.status();
-        assert!(
-            info.status == "pro" || info.features.is_empty(),
-            "free 时 features 必须为空"
-        );
-        #[cfg(not(debug_assertions))]
-        assert_eq!(info.status, "free", "过期在 release 下判 free");
-        #[cfg(not(debug_assertions))]
-        assert!(info.features.is_empty(), "过期在 release 下 features 置空");
+        assert_eq!(info.status, "free", "过期判 free");
+        assert!(info.features.is_empty(), "过期 features 置空");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1303,7 +1294,7 @@ mod tests {
         // 重启读回（temp-dir round-trip）。
         let m2 = LicenseManager::load(storage.clone(), m.store_config());
         assert_eq!(m2.license().expect("重启应读回"), lic);
-        // LicenseInfo 载荷（debug 下 status 恒 pro，只断言载荷字段；emit 留主边缘）。
+        // LicenseInfo 载荷断言。
         let info = m2.status();
         assert_eq!(info.level.as_deref(), Some("pro"));
         assert_eq!(info.level_label.as_deref(), Some("专业版"));
@@ -1347,7 +1338,6 @@ mod tests {
     }
 
     /// 在线续验吊销：401 + CDK_REVOKED → 清内存 + 删文件 + 判 free。
-    /// debug 下 status().status 恒 pro（cfg 短路），故断言 is_pro_with + 载荷清空。
     #[test]
     fn verify_online_revoked_clears() {
         let (pubkey, signing) = test_keypair();
