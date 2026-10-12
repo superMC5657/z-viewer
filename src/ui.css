@@ -353,20 +353,26 @@ body.immersive #info-bar {
 #toolbar {
   position: fixed;
   bottom: var(--floating-margin);
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: max-content;
+  max-width: calc(100vw - 24px);
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--btn-gap);
   padding: 6px;
   z-index: 40;
-  will-change: opacity, transform;
-  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+  visibility: visible;
+  transition: opacity var(--t-fade) var(--ease-out);
 }
 #toolbar.hidden {
   opacity: 0;
-  transform: translateX(-50%) translateY(6px);
   pointer-events: none;
+  visibility: hidden;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .tb-group {
@@ -462,14 +468,14 @@ body.immersive #info-bar {
   outline-offset: -1px;
 }
 
-/* ---- tooltip（含快捷键） ---- */
+/* ---- tooltip（含快捷键；仅 opacity 淡入淡出，无位移动画，减少合成触发） ---- */
 .btn-icon[data-tip]:not([data-tip=""])::after,
 .tb-btn-icon[data-tip]:not([data-tip=""])::after {
   content: attr(data-tip);
   position: absolute;
   bottom: calc(100% + 8px);
   left: 50%;
-  transform: translateX(-50%) translateY(3px);
+  transform: translateX(-50%);
   padding: 4px 10px;
   background: var(--tooltip-bg);
   border: 1px solid var(--glass-border);
@@ -479,13 +485,26 @@ body.immersive #info-bar {
   color: var(--text-primary);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out);
+  transition: opacity 120ms var(--ease-out);
   z-index: 80;
 }
 .btn-icon[data-tip]:not([data-tip=""]):hover::after,
 .tb-btn-icon[data-tip]:not([data-tip=""]):hover::after {
   opacity: 1;
-  transform: translateX(-50%) translateY(0);
+  transform: translateX(-50%);
+}
+/* tooltip 边缘钳制：首/尾按钮居中 tooltip 会溢出带 backdrop-filter 的 #toolbar 盒子，
+   Ubuntu WebKitGTK 下溢出区合成失败变透明穿洞，故贴边对齐不出盒（hover 态同样覆盖）。 */
+.tb-btn-icon[data-id="folder-prev"][data-tip]:not([data-tip=""])::after,
+.tb-btn-icon[data-id="folder-prev"][data-tip]:not([data-tip=""]):hover::after {
+  left: 0;
+  transform: none;
+}
+.tb-btn-icon[data-id="license"][data-tip]:not([data-tip=""])::after,
+.tb-btn-icon[data-id="license"][data-tip]:not([data-tip=""]):hover::after {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
 /* ============================================================
@@ -494,19 +513,26 @@ body.immersive #info-bar {
 #frame-bar {
   position: fixed;
   bottom: calc(var(--floating-margin) + 56px); /* 叠加在工具栏上方 */
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
+  margin-inline: auto;
+  width: max-content;
+  max-width: calc(100vw - 24px);
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: var(--btn-gap);
   padding: 6px;
   z-index: 41;
-  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+  visibility: visible;
+  transition: opacity var(--t-fade) var(--ease-out);
 }
 #frame-bar.hidden {
   opacity: 0;
-  transform: translateX(-50%) translateY(6px);
   pointer-events: none;
+  visibility: hidden;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .frame-count {
   padding: 0 10px;
@@ -532,7 +558,8 @@ body.immersive #info-bar {
   padding: 6px;
   z-index: 42;
   pointer-events: none;
-  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+  visibility: visible;
+  transition: opacity var(--t-fade) var(--ease-out);
 }
 /* 显式作用于玻璃容器：外层 pointer-events:none → 内层 auto 恢复可点；
    但 hidden（透明）期间内层同样禁点，避免误触底部中央控件 */
@@ -545,17 +572,22 @@ body.immersive #info-bar {
   gap: var(--btn-gap);
   padding: 6px;
   max-width: calc(100vw - 24px);
-  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+  visibility: visible;
+  transition: opacity var(--t-fade) var(--ease-out);
 }
 #slideshow-bar.hidden {
   opacity: 0;
-  transform: translateY(6px);
   pointer-events: none;
+  visibility: hidden;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 /* hidden 期间内层容器同样禁点（防透明时误触） */
 #slideshow-bar.hidden .bar-inner {
   pointer-events: none;
-  transform: translateY(6px);
+  visibility: hidden;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 .ss-interval {
   display: flex;
@@ -616,9 +648,11 @@ body.immersive #info-bar {
   color: var(--text-primary);
   z-index: 45;
   opacity: 0;
-  transform: translateY(-4px);
   pointer-events: none;
-  transition: opacity var(--t-fade) var(--ease-out), transform var(--t-fade) var(--ease-out);
+  visibility: hidden;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: opacity var(--t-fade) var(--ease-out);
 }
 /* 沉浸模式无标题栏：贴顶 16px */
 body.immersive #decoding {
@@ -626,7 +660,9 @@ body.immersive #decoding {
 }
 #decoding.show {
   opacity: 1;
-  transform: translateY(0);
+  visibility: visible;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 .decoding-spinner {
   width: 12px;
@@ -660,14 +696,22 @@ body.immersive #decoding {
   z-index: 70;
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--t-toast) var(--ease-out), transform var(--t-toast) var(--ease-out);
+  visibility: hidden;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  transition: opacity var(--t-toast) var(--ease-out);
 }
 #toast.show {
   opacity: 1;
+  visibility: visible;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 #toast.dismiss {
   opacity: 0;
-  transform: translate(-50%, calc(-50% - 8px)); /* 消失带 8px 上移 */
+  visibility: visible;
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
 }
 #toast svg,
 .toast-icon {
@@ -885,4 +929,15 @@ body.immersive #decoding {
 .tb-btn-icon.locked:hover {
   opacity: 0.85;
   background: var(--btn-hover);
+}
+
+/* 无 backdrop-filter 支持时的实色兜底（保持原有色值观感不变） */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .glass {
+    background: #1c1c1e;
+  }
+  .btn-icon[data-tip]:not([data-tip=""])::after,
+  .tb-btn-icon[data-tip]:not([data-tip=""])::after {
+    background: #121216;
+  }
 }
