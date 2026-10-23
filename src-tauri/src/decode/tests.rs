@@ -58,6 +58,36 @@ fn static_png_goes_asset() {
 }
 
 #[test]
+fn jxl_decode_test() {
+    let p = test_img("test-images/B/img_6.jxl");
+    let result = load_image(&p, false).expect("JXL 静态解码应成功");
+    assert_eq!(result.mode, "static");
+    assert_eq!(result.mime.as_deref(), Some("image/x-rgba"));
+    assert_eq!(result.width, Some(3));
+    assert_eq!(result.height, Some(3));
+    assert_eq!(result.bytes.len(), 3 * 3 * 4);
+}
+
+#[test]
+fn jxl_animation_test() {
+    let p = test_img("test-images/B/img_7_anim.jxl");
+    assert!(is_animated(&p), "is_animated 应识别 JXL 动画");
+    let p_static = test_img("test-images/B/img_6.jxl");
+    assert!(!is_animated(&p_static), "静态 JXL 不应识别为动画");
+
+    let result = load_image(&p, false).expect("JXL 动画解码应成功");
+    assert_eq!(result.mode, "animated");
+    assert_eq!(result.mime.as_deref(), Some("image/png"));
+    assert!(result.frame_sizes.len() >= 2, "至少 2 帧");
+    assert_eq!(result.frame_delays.len(), result.frame_sizes.len());
+    let total: u32 = result.frame_sizes.iter().sum();
+    assert_eq!(total, result.bytes.len() as u32);
+    for d in &result.frame_delays {
+        assert!(*d > 0, "帧延迟应 > 0，实际 {d}");
+    }
+}
+
+#[test]
 fn raw_ext_detection() {
     assert!(is_raw_ext("CR2"));
     assert!(is_raw_ext("nef"));
@@ -66,6 +96,12 @@ fn raw_ext_detection() {
     assert!(!is_raw_ext("png"));
     assert!(TIFF_EXTS.contains(&"tif"));
     assert!(TIFF_EXTS.contains(&"tiff"), "大小写不敏感判断由调用方负责");
+    assert!(is_jxl_ext("jxl"));
+    assert!(is_jxl_ext("JXL"));
+    assert_eq!(classify_ext("jxl"), ImageFormatCategory::Jxl);
+    assert_eq!(classify_ext("JXL"), ImageFormatCategory::Jxl);
+    assert!(is_image_file("sample.jxl"));
+    assert!(!is_asset("sample.jxl"));
 }
 
 #[test]

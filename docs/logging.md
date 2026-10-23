@@ -116,10 +116,10 @@ void initZLog().catch(() => undefined);
 
 ## 解码（`decode/mod.rs` 分发 + `commands/mod.rs` 命令层）
 
-- `warn` decode failed {basename} [raw|tiff|anim]: {原因首行}（通道侧：`decode/mod.rs` 分发点按通道记一次，通道后缀与命令层去重）
-- `warn` decode failed {basename}: {原因首行}（`load_image` 实时路径：RAW/TIFF/动画全通道收敛于此；
+- `warn` decode failed {basename} [raw|tiff|jxl|anim]: {原因首行}（通道侧：`decode/mod.rs` 分发点按通道记一次，通道后缀与命令层去重）
+- `warn` decode failed {basename}: {原因首行}（`load_image` 实时路径：RAW/TIFF/JXL/动画全通道收敛于此；
   预取后台调用走 `cache prefetch failed` 的 debug，见下）
-- 解码器内部（`raw.rs`/`tiff.rs`/`animation.rs`）零 log：底层错误（io/ImageError/rawler `Display`）
+- 解码器内部（`raw.rs`/`tiff.rs`/`jxl.rs`/`animation.rs`）零 log：底层错误（io/ImageError/rawler `Display`）
   均不含路径，只在分发点 + 命令层各记一次（后缀区分）。
 
 ## 缓存（`commands/mod.rs` + `commands/prefetch.rs` + `cache/*.rs`）
@@ -179,7 +179,7 @@ void initZLog().catch(() => undefined);
   原各调用点本地副本已删，调用方 `use` 转发）
 - `src-tauri/src/commands/mod.rs`（打开/边界/跳转/解码打点：
   边界 134、打开失败/成功、未知跳转目标、解码失败）
-- `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[anim]` 后缀，摘要辅助转发自 `util`，与命令层后缀去重）
+- `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[jxl]`/`[anim]` 后缀，摘要辅助转发自 `util`，与命令层后缀去重）
 - `src-tauri/src/browse/scan.rs`（门控拒绝原因码 info + 后台扫描计数 debug）
 - `src-tauri/src/cache/*.rs`（`DecodeCache::get_entry` hit/miss debug + `LruQueue` 淘汰计数 debug）
 - `src-tauri/src/commands/prefetch.rs`（预取失败 debug：`(ctx)`/`(first)` 分支后缀）

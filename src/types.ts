@@ -98,26 +98,25 @@ export function parseLoadEnvelope(buf: ArrayBuffer): { header: LoadEnvelope; pay
 }
 
 /**
- * 需走 Rust IPC 解码通道的扩展名（RAW + TIFF）。
+ * 需走 Rust IPC 解码通道的扩展名（RAW + TIFF + JXL）。
  * 动画由浏览器原生 <img> 播放，帧控制按需拆帧时走 load_image。
  */
 const RUST_EXTS = new Set([
   "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2", "pef", "srw", "raf", "raw", "x3f", "erf",
   "3fr", "kdc", "dcr", "mrw", "mef", "mos", "iiq", "fff", "ari",
   "tif", "tiff",
+  "jxl",
 ]);
 
-/** 以后端 decode::RAW_EXTS 更新扩展名集合 */
+/** 以后端 decode::ipc_exts 更新扩展名集合 */
 export function setRawExts(exts: string[]): void {
   RUST_EXTS.clear();
-  RUST_EXTS.add("tif");
-  RUST_EXTS.add("tiff");
   for (const e of exts) {
     RUST_EXTS.add(e.toLowerCase());
   }
 }
 
-/** 判断图片是否需走 IPC 通道（RAW/TIFF），false 则浏览器原生解码直接 asset */
+/** 判断图片是否需走 IPC 通道（RAW/TIFF/JXL），false 则浏览器原生解码直接 asset */
 export function needsIpc(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   return RUST_EXTS.has(ext);

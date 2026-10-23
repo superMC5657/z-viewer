@@ -19,6 +19,7 @@ serde_json = "1"
 natord = "1.0.9"
 rawler = "0.7"
 image = { version = "0.25", default-features = false, features = ["gif", "png", "jpeg", "webp", "tiff"] }
+jxl-oxide = { version = "0.12", features = ["image"] }
 kamadak-exif = "0.6"
 base64 = "0.22"
 zip = "2"
@@ -65,4 +66,6 @@ panic = "abort"          # 无 unwinding，减小体积
 [profile.release.package.image]
 opt-level = 3
 [profile.release.package.rawler]
+opt-level = 3
+[profile.release.package.jxl-oxide]
 opt-level = 3

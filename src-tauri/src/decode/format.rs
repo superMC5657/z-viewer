@@ -14,6 +14,9 @@ pub const RAW_EXTS: &[&str] = &[
 /// TIFF 扩展名（image crate 解码的静态通道）
 pub const TIFF_EXTS: &[&str] = &["tif", "tiff"];
 
+/// JPEG XL 扩展名（jxl-oxide 解码通道）
+pub const JXL_EXTS: &[&str] = &["jxl"];
+
 /// 潜在动画格式（默认原生 <img> 播放；帧控制按需拆帧）
 pub const ANIM_EXTS: &[&str] = &["gif", "png", "webp"];
 
@@ -32,6 +35,8 @@ pub enum ImageFormatCategory {
     Raw,
     /// 静态高位深格式（TIFF，通过 image crate 解码）
     Tiff,
+    /// JPEG XL 格式（通过 jxl-oxide 解码）
+    Jxl,
     /// 未知 / 非受支持格式
     Unknown,
 }
@@ -61,6 +66,8 @@ pub fn classify_ext(ext: &str) -> ImageFormatCategory {
         ImageFormatCategory::Asset
     } else if TIFF_EXTS.contains(&ext_str) {
         ImageFormatCategory::Tiff
+    } else if JXL_EXTS.contains(&ext_str) {
+        ImageFormatCategory::Jxl
     } else if is_raw_ext(ext) {
         ImageFormatCategory::Raw
     } else {
@@ -73,9 +80,23 @@ pub fn classify<P: AsRef<Path>>(path: P) -> ImageFormatCategory {
     classify_ext(&ext_of(path))
 }
 
+/// 需要经 Rust IPC 解码通道的扩展名（RAW + TIFF + JXL）
+pub fn ipc_exts() -> Vec<&'static str> {
+    let mut exts = Vec::with_capacity(RAW_EXTS.len() + TIFF_EXTS.len() + JXL_EXTS.len());
+    exts.extend_from_slice(RAW_EXTS);
+    exts.extend_from_slice(TIFF_EXTS);
+    exts.extend_from_slice(JXL_EXTS);
+    exts
+}
+
 /// 判定扩展名是否属于相机 RAW 格式
 pub fn is_raw_ext(ext: &str) -> bool {
     RAW_EXTS.iter().any(|r| r.eq_ignore_ascii_case(ext))
+}
+
+/// 判定扩展名是否属于 JXL 格式
+pub fn is_jxl_ext(ext: &str) -> bool {
+    JXL_EXTS.iter().any(|j| j.eq_ignore_ascii_case(ext))
 }
 
 /// 判定路径是否为浏览器原生解码通道格式（含动图格式）
@@ -99,10 +120,13 @@ pub fn is_potential_anim(ext: &str) -> bool {
 }
 
 /// 轻量判定是否多帧动画（不拆帧解码）：
-/// GIF 按魔数、WebP 扫 RIFF ANMF 块、PNG 扫 acTL 块；非动画格式/读取失败返回 false
+/// GIF 按魔数、WebP 扫 RIFF ANMF 块、PNG 扫 acTL 块、JXL 读头部元数据；非动画格式/读取失败返回 false
 pub fn is_animated(path: &str) -> bool {
     use std::io::{Read, Seek};
     let ext = ext_of(path);
+    if is_jxl_ext(&ext) {
+        return super::jxl::is_jxl_animated(path);
+    }
     if !is_potential_anim(&ext) {
         return false;
     }

@@ -76,8 +76,8 @@ mod tests {
         for ext in ["jpg", "jpeg", "png", "gif", "webp", "bmp", "JPG", "PNG"] {
             assert!(!should_prefetch(&format!("img.{ext}")), "{ext} 应走前端池");
         }
-        // RAW / TIFF → 值得预取（含大写）。
-        for ext in ["cr2", "CR2", "nef", "tif", "tiff", "dng"] {
+        // RAW / TIFF / JXL → 值得预取（含大写）。
+        for ext in ["cr2", "CR2", "nef", "tif", "tiff", "dng", "jxl", "JXL"] {
             assert!(should_prefetch(&format!("img.{ext}")), "{ext} 应预取");
         }
     }

@@ -14,11 +14,13 @@
 //! - raw.rs：RAW 解码通道（rawler + 内嵌预览快显 + 方向回正）
 //! - preview.rs：EXIF 辅助（内嵌预览提取 / 方向读取 / 方向回正）
 //! - tiff.rs：TIFF 静态解码通道（image crate）
+//! - jxl.rs：JXL 解码通道（jxl-oxide）
 //! - animation.rs：动画拆帧通道（GIF/APNG/WebP）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
 
 pub mod format;
 mod animation;
+mod jxl;
 mod preview;
 mod raw;
 #[cfg(test)]
@@ -134,6 +136,13 @@ pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
         ImageFormatCategory::Tiff => tiff::decode_static(path).inspect_err(|e| {
             log::warn!(
                 "decode failed {} [tiff]: {}",
+                basename_of(path),
+                first_line_of(e)
+            );
+        }),
+        ImageFormatCategory::Jxl => jxl::decode_jxl(path).inspect_err(|e| {
+            log::warn!(
+                "decode failed {} [jxl]: {}",
                 basename_of(path),
                 first_line_of(e)
             );

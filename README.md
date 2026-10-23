@@ -9,12 +9,12 @@
 - **应用框架**：Tauri 2.x（Rust 后端 + WebView2 前端）
 - **前端**：Vanilla TypeScript + Vite（无框架运行时开销）
 - **包管理**：pnpm
-- **图片解码**：rawler（RAW：CR2/CR3/NEF/ARW/DNG 等）+ image crate（GIF/APNG/WebP 动画拆帧）
+- **图片解码**：rawler（RAW：CR2/CR3/NEF/ARW/DNG 等）+ image crate（GIF/APNG/WebP 动画拆帧）+ jxl-oxide（JPEG XL）
 
 ## 功能
 
 - 跨同级文件夹无缝浏览（natord 自然排序，与资源管理器一致）— **专业版**
-- 常见格式：JPG / PNG / GIF / WebP / BMP / ICO / SVG / AVIF / TIFF
+- 常见格式：JPG / PNG / GIF / WebP / BMP / ICO / SVG / AVIF / TIFF / JXL
 - 看图观感：小图适应窗口不放大、高质量平滑缩放渲染、信息条实时缩放百分比、
   切图 150ms 交叉淡化、RAW 解码中指示
 - 相机 RAW：CR2 / CR3 / NEF / ARW / DNG 等（内嵌预览快显 → rawler demosaic 全量替换，首帧毫秒级）
@@ -109,7 +109,7 @@ src/                  # 前端代码
   lib/z-log.ts        # 前端统一日志转发
 src-tauri/            # Rust 后端
   src/browse/         # 浏览模型：目录枚举、自然排序、跨文件夹导航（含门控）
-  src/decode/         # 解码服务：RAW（预览快显 + rawler 全量）、TIFF、动画拆帧、EXIF 方向
+  src/decode/         # 解码服务：RAW（预览快显 + rawler 全量）、TIFF、JXL、动画拆帧、EXIF 方向
   src/cache/          # LRU 解码缓存 + 文件夹首图队列（专业版）
   src/cache_policy.rs # 缓存策略：写过滤与预取过滤纯规则
   src/navigator.rs    # 深导航：导航 + 预取 + 代次协议唯一实现
