@@ -86,6 +86,12 @@ pnpm build:linux                  # Linux 打包（deb + AppImage）
 sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file patchelf libxdo-dev libayatana-appindicator3-dev librsvg2-dev
 ```
 
+**JXL 解码引擎（libjxl vendored 构建）的前提**：构建机需 `cmake` + C++ 工具链。
+
+- Windows：优先用 PATH 上的 `clang-cl`（build.rs 自动比选最新版本；VS 18 的 STL 要求 clang ≥ 19），配合 Ninja。找不到 clang-cl 时回退 MSVC + 全局 `/arch:AVX2`（放弃 Haswell 之前的 CPU）。MSVC cl 直接构建会让 libjxl 的 SIMD 派发失效、解码慢 1-2 个数量级，不可用。
+- Linux：`build-essential`（gcc/g++）即可。
+- 构建机受限时可关闭特性仅用 jxl-oxide：`cargo build --no-default-features`（解码慢约 3 倍）。
+
 - 产物位于 `src-tauri/target/release/bundle/`（`deb/` 与 `appimage/` 子目录）
 - 自动更新（latest.json）在 Linux 上仅对 AppImage 生效，deb 需手动升级
 - 发版：打 `v*` tag 后 CI 自动构建 Windows/Linux 双平台安装包并发布（矩阵并行构建，统一生成双平台 latest.json，见 `.github/workflows/release-tauri.yml`）

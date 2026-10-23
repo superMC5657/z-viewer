@@ -242,16 +242,31 @@ export class Viewer {
     restorePrev: () => void,
   ): Promise<void> {
     if (header.frameSizes.length > 0) {
+      // 原始 RGBA 帧直通（Rust 端免二次编码，前端免 PNG 解码）
+      if (header.mime === "image/x-rgba" && header.width && header.height) {
+        try {
+          await this.loadRgbaFramesInternal(
+            payload,
+            header.frameSizes,
+            header.width,
+            header.height,
+            header.frameDelays,
+            seq,
+          );
+        } catch (e) {
+          revokePrev();
+          throw e;
+        }
+        // 接管完成或已被更新的加载覆盖，本次加载生命周期均已结束，prev 一律释放
+        revokePrev();
+        return;
+      }
       const blobs = this.splitFrames(payload, header.frameSizes, header.mime ?? "image/png");
       try {
         await this.loadAnimationInternal(blobs, header.frameDelays, seq);
       } catch (e) {
         revokePrev();
         throw e;
-      }
-      if (seq !== this.loadSeq) {
-        revokePrev();
-        return;
       }
       revokePrev();
       return;
@@ -493,7 +508,39 @@ export class Viewer {
   /** 动画帧解码实现：全部成功才接管画面，部分失败关闭已得位图并抛统一文案 */
   private async loadAnimationInternal(frameBlobs: Blob[], delays: number[], seq: number): Promise<void> {
     if (frameBlobs.length === 0) return;
-    const settled = await Promise.allSettled(frameBlobs.map((b) => createImageBitmap(b)));
+    await this.settleFrameBitmaps(frameBlobs, delays, seq);
+  }
+
+  /** 原始 RGBA 帧解码：payload 按 w×h×4 切分 → ImageData → ImageBitmap，
+   *  接管/失败清理语义与 loadAnimationInternal 一致 */
+  private async loadRgbaFramesInternal(
+    payload: Uint8Array,
+    sizes: number[],
+    w: number,
+    h: number,
+    delays: number[],
+    seq: number,
+  ): Promise<void> {
+    const frameLen = w * h * 4;
+    if (frameLen === 0) throw new Error("动画帧解码失败");
+    let off = payload.byteOffset;
+    const datas: ImageData[] = [];
+    for (const s of sizes) {
+      if (s !== frameLen) throw new Error("动画帧尺寸不一致");
+      datas.push(new ImageData(new Uint8ClampedArray(payload.buffer, off, frameLen), w, h));
+      off += frameLen;
+    }
+    await this.settleFrameBitmaps(datas, delays, seq);
+  }
+
+  /** 帧位图收尾（上两路共用）：代次过期静默释放；部分失败关闭已得位图并抛
+   *  统一文案；全部成功交动画接管（loadBitmapsAnimationInternal） */
+  private async settleFrameBitmaps(
+    sources: Array<Blob | ImageData>,
+    delays: number[],
+    seq: number,
+  ): Promise<void> {
+    const settled = await Promise.allSettled(sources.map((s) => createImageBitmap(s)));
     if (seq !== this.loadSeq) {
       for (const s of settled) {
         if (s.status === "fulfilled") s.value.close();

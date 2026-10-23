@@ -56,13 +56,13 @@ export interface StoreInfo {
 
 /** Rust 端二进制信封头（load_image 返回 ArrayBuffer，parseLoadEnvelope 解析） */
 export interface LoadEnvelope {
-  /** 加载模式："asset"（原生通道）| "raw"（RAW格式）| "static"（TIFF静态图）| "animated"（动画） */
+  /** 加载模式："asset"（原生通道）| "raw"（RAW格式）| "static"（TIFF/JXL静态图）| "animated"（动画） */
   mode: string;
-  /** payload 的 MIME（raw/static: image/jpeg；animated: image/png） */
+  /** payload 的 MIME（raw/static: image/jpeg 或 image/x-rgba；animated: image/png 或 image/x-rgba 原始帧直通） */
   mime: string | null;
   /** raw 通道内嵌预览位：true 表示 payload 是内嵌预览，全量仍在后台解码 */
   isPreview: boolean;
-  /** 图像尺寸（raw/static 通道提供） */
+  /** 图像尺寸（raw/static 通道与 image/x-rgba 动画通道提供） */
   width: number | null;
   height: number | null;
   /** animated：每帧延迟（ms） */

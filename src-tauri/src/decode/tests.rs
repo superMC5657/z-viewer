@@ -77,11 +77,20 @@ fn jxl_animation_test() {
 
     let result = load_image(&p, false).expect("JXL 动画解码应成功");
     assert_eq!(result.mode, "animated");
-    assert_eq!(result.mime.as_deref(), Some("image/png"));
+    // 小动画走原始 RGBA 帧直通通道（超预算大动画才回退 PNG）
+    assert_eq!(result.mime.as_deref(), Some("image/x-rgba"));
+    let (w, h) = (
+        result.width.expect("动画通道应提供宽度"),
+        result.height.expect("动画通道应提供高度"),
+    );
+    let frame_len = (w as u64) * (h as u64) * 4;
     assert!(result.frame_sizes.len() >= 2, "至少 2 帧");
     assert_eq!(result.frame_delays.len(), result.frame_sizes.len());
-    let total: u32 = result.frame_sizes.iter().sum();
-    assert_eq!(total, result.bytes.len() as u32);
+    for s in &result.frame_sizes {
+        assert_eq!(*s as u64, frame_len, "每帧应为 w×h×4 原始 RGBA");
+    }
+    let total: u64 = result.frame_sizes.iter().map(|s| *s as u64).sum();
+    assert_eq!(total, result.bytes.len() as u64);
     for d in &result.frame_delays {
         assert!(*d > 0, "帧延迟应 > 0，实际 {d}");
     }
@@ -223,4 +232,158 @@ fn preview_isobmff_cr3_extracts_embedded_jpeg() {
     assert_eq!((p.width, p.height), (5, 4));
     assert!(p.jpeg.starts_with(&[0xFF, 0xD8]));
     std::fs::remove_file(&dir).ok();
+}
+
+// ============================================================
+// JXL 引擎性能基准（jxl-libjxl 特性下）：libjxl 编码器现场生成
+// 确定性纹理素材 → 双引擎解码计时。libjxl 静态库恒为 Release 构建
+// （build.rs 显式锁定 CMAKE_BUILD_TYPE）、jxl-oxide 依赖在 dev 下已 O3，
+// 数字可直接对比。
+// ============================================================
+
+#[cfg(feature = "jxl-libjxl")]
+fn encode_jxl_fixture(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
+    use super::jxl::libjxl_ffi as ffi;
+
+    unsafe {
+        let enc = ffi::JxlEncoderCreate(std::ptr::null());
+        assert!(!enc.is_null());
+        let mut info = ffi::JxlBasicInfo::zeroed();
+        info.xsize = w;
+        info.ysize = h;
+        info.bits_per_sample = 8;
+        info.exponent_bits_per_sample = 0;
+        info.orientation = ffi::JXL_ORIENT_IDENTITY;
+        info.num_color_channels = 3;
+        // 素材为 4 通道 RGBA，BasicInfo 须同步声明 alpha 通道
+        info.num_extra_channels = 1;
+        info.alpha_bits = 8;
+        info.alpha_exponent_bits = 0;
+        info.alpha_premultiplied = 0;
+        info.uses_original_profile = 0;
+        assert_eq!(ffi::JxlEncoderSetBasicInfo(enc, &info), ffi::JXL_ENC_SUCCESS);
+        let color = ffi::srgb_color_encoding();
+        assert_eq!(
+            ffi::JxlEncoderSetColorEncoding(enc, &color),
+            ffi::JXL_ENC_SUCCESS
+        );
+        let fs = ffi::JxlEncoderFrameSettingsCreate(enc, std::ptr::null());
+        assert!(!fs.is_null());
+        // effort 3（cheetah）：基准只关心解码速度，编码够快即可
+        assert_eq!(
+            ffi::JxlEncoderFrameSettingsSetOption(
+                fs,
+                ffi::JXL_ENC_FRAME_SETTING_EFFORT,
+                3
+            ),
+            ffi::JXL_ENC_SUCCESS
+        );
+        assert_eq!(ffi::JxlEncoderSetFrameDistance(fs, 1.0), ffi::JXL_ENC_SUCCESS);
+        let fmt = ffi::JxlPixelFormat {
+            num_channels: 4,
+            data_type: ffi::JXL_TYPE_UINT8,
+            endianness: ffi::JXL_NATIVE_ENDIAN,
+            align: 0,
+        };
+        assert_eq!(
+            ffi::JxlEncoderAddImageFrame(fs, &fmt, rgba.as_ptr(), rgba.len()),
+            ffi::JXL_ENC_SUCCESS
+        );
+        ffi::JxlEncoderCloseInput(enc);
+
+        let mut out = vec![0u8; 1 << 20];
+        let mut next = out.as_mut_ptr();
+        let mut avail = out.len();
+        loop {
+            match ffi::JxlEncoderProcessOutput(enc, &mut next, &mut avail) {
+                ffi::JXL_ENC_SUCCESS => break,
+                ffi::JXL_ENC_NEED_MORE_OUTPUT => {
+                    let used = out.len() - avail;
+                    out.resize(out.len() * 2, 0);
+                    next = out.as_mut_ptr().add(used);
+                    avail = out.len() - used;
+                }
+                st => panic!("JXL 编码失败 status={st}"),
+            }
+        }
+        ffi::JxlEncoderDestroy(enc);
+        out.truncate(out.len() - avail);
+        out
+    }
+}
+
+#[cfg(feature = "jxl-libjxl")]
+#[test]
+fn jxl_engine_bench() {
+    use super::jxl::libjxl_engine;
+    use std::time::Instant;
+
+    const W: u32 = 3000;
+    const H: u32 = 2000;
+
+    // 确定性纹理（渐变 + 伪噪声），非平坦内容避免压缩器走捷径
+    let mut rgba = vec![0u8; (W as usize) * (H as usize) * 4];
+    for y in 0..H {
+        for x in 0..W {
+            let i = ((y as usize) * (W as usize) + x as usize) * 4;
+            let n = ((x.wrapping_mul(2654435761) ^ y.wrapping_mul(2246822519)) & 0x3f) as u8;
+            rgba[i] = ((x * 255 / W) as u8).wrapping_add(n);
+            rgba[i + 1] = ((y * 255 / H) as u8).wrapping_add(n);
+            rgba[i + 2] = (((x + y) & 0xff) as u8).wrapping_add(n);
+            rgba[i + 3] = 255;
+        }
+    }
+
+    let jxl_bytes = encode_jxl_fixture(&rgba, W, H);
+
+    let tmp = std::env::temp_dir().join("z_viewer_bench.jxl");
+    std::fs::write(&tmp, &jxl_bytes).expect("写入基准素材");
+    let path = tmp.to_str().unwrap();
+
+    // 各解码 3 次取最优（排除首跑冷启动/缓存效应）
+    let mut t_libjxl = None;
+    for _ in 0..3 {
+        let t0 = Instant::now();
+        let out = libjxl_engine::decode(path).expect("libjxl 引擎应解码成功");
+        t_libjxl = Some(t_libjxl.map_or(t0.elapsed(), |best: std::time::Duration| {
+            best.min(t0.elapsed())
+        }));
+        assert_eq!((out.width, out.height), (W, H));
+        assert_eq!(out.frames[0].len(), rgba.len());
+    }
+    let t_libjxl = t_libjxl.unwrap();
+
+    // jxl-oxide 对照（纯 Rust + rayon）
+    let mut t_oxide = None;
+    for _ in 0..3 {
+        let t1 = Instant::now();
+        let img = jxl_oxide::JxlImage::builder()
+            .open(path)
+            .expect("jxl-oxide 应解码成功");
+        let render = img.render_frame(0).expect("jxl-oxide 应渲染成功");
+        let mut s = render.stream();
+        let mut buf =
+            vec![0u8; (s.width() as usize) * (s.height() as usize) * (s.channels() as usize)];
+        s.write_to_buffer(&mut buf);
+        t_oxide = Some(t_oxide.map_or(t1.elapsed(), |best: std::time::Duration| {
+            best.min(t1.elapsed())
+        }));
+    }
+    let t_oxide = t_oxide.unwrap();
+
+    let _ = std::fs::remove_file(&tmp);
+
+    let mpx = (W as f64) * (H as f64) / 1e6;
+    println!(
+        "JXL 解码基准 {W}×{H}（{mpx:.0} MP，码流 {:.0} KB）",
+        jxl_bytes.len() as f64 / 1024.0
+    );
+    println!(
+        "libjxl   : {t_libjxl:?}  ({:.0} MP/s)",
+        mpx / t_libjxl.as_secs_f64()
+    );
+    println!(
+        "jxl-oxide: {t_oxide:?}  ({:.0} MP/s)",
+        mpx / t_oxide.as_secs_f64()
+    );
 }

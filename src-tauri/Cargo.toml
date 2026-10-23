@@ -6,6 +6,17 @@ edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cmake = "0.1"
+# libjxl 官方源码包（BSD-3，内含 v0.12.0 源码），仅作 build.rs 的源码载体；
+# 构建逻辑在本项目 build.rs（jpegxl-src 自带构建在 Windows 硬编码 ClangCL 工具集，
+# 未安装该 VS 组件的环境无法使用，故用默认 MSVC 工具集自行 cmake）
+jpegxl-src = { version = "=0.12.0", optional = true }
+
+[features]
+default = ["jxl-libjxl"]
+# JXL 解码主引擎：vendored libjxl 静态构建（手写 SIMD + 多线程并行 runner），
+# 需要构建机具备 cmake 与 C++ 工具链；关闭后仅用 jxl-oxide 纯 Rust 解码。
+jxl-libjxl = ["dep:jpegxl-src"]
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -67,5 +78,36 @@ panic = "abort"          # 无 unwinding，减小体积
 opt-level = 3
 [profile.release.package.rawler]
 opt-level = 3
+
+# jxl-oxide 是 workspace 门面，解码热点在其独立子 crate 中；
+# per-package override 不作用于传递依赖，必须逐个列出（漏掉的仍吃全局 -Os）
 [profile.release.package.jxl-oxide]
+opt-level = 3
+[profile.release.package.jxl-oxide-common]
+opt-level = 3
+[profile.release.package.jxl-bitstream]
+opt-level = 3
+[profile.release.package.jxl-coding]
+opt-level = 3
+[profile.release.package.jxl-color]
+opt-level = 3
+[profile.release.package.jxl-frame]
+opt-level = 3
+[profile.release.package.jxl-grid]
+opt-level = 3
+[profile.release.package.jxl-image]
+opt-level = 3
+[profile.release.package.jxl-jbr]
+opt-level = 3
+[profile.release.package.jxl-modular]
+opt-level = 3
+[profile.release.package.jxl-render]
+opt-level = 3
+[profile.release.package.jxl-threadpool]
+opt-level = 3
+[profile.release.package.jxl-vardct]
+opt-level = 3
+[profile.release.package.rayon]
+opt-level = 3
+[profile.release.package.rayon-core]
 opt-level = 3

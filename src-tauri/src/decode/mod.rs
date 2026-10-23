@@ -14,7 +14,7 @@
 //! - raw.rs：RAW 解码通道（rawler + 内嵌预览快显 + 方向回正）
 //! - preview.rs：EXIF 辅助（内嵌预览提取 / 方向读取 / 方向回正）
 //! - tiff.rs：TIFF 静态解码通道（image crate）
-//! - jxl.rs：JXL 解码通道（jxl-oxide）
+//! - jxl.rs：JXL 解码通道（libjxl 主引擎 + jxl-oxide 回退；动画帧 RGBA 直通）
 //! - animation.rs：动画拆帧通道（GIF/APNG/WebP）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
 
@@ -114,6 +114,26 @@ impl LoadResult {
             bytes,
         }
     }
+
+    /// 动画原始 RGBA8 帧直通：payload 为 w×h×4 对齐帧的拼接，
+    /// 前端按 ImageData→ImageBitmap 零转码上屏（JXL 动画通道专用）
+    pub fn animated_rgba(frames: Vec<Vec<u8>>, delays: Vec<u32>, w: u32, h: u32) -> Self {
+        let sizes = frames.iter().map(|f| f.len() as u32).collect();
+        let mut bytes = Vec::new();
+        for f in &frames {
+            bytes.extend_from_slice(f);
+        }
+        Self {
+            mode: "animated".into(),
+            mime: Some("image/x-rgba".into()),
+            is_preview: false,
+            width: Some(w),
+            height: Some(h),
+            frame_delays: delays,
+            frame_sizes: sizes,
+            bytes,
+        }
+    }
 }
 
 /// 统一入口：按扩展名与内容分发到各通道
@@ -140,7 +160,16 @@ pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
                 first_line_of(e)
             );
         }),
-        ImageFormatCategory::Jxl => jxl::decode_jxl(path).inspect_err(|e| {
+        ImageFormatCategory::Jxl => jxl::decode_jxl(path).map(|(result, fallback)| {
+            if let Some(reason) = fallback {
+                log::warn!(
+                    "decode fallback {} [jxl]: {}",
+                    basename_of(path),
+                    first_line_of(&reason)
+                );
+            }
+            result
+        }).inspect_err(|e| {
             log::warn!(
                 "decode failed {} [jxl]: {}",
                 basename_of(path),
