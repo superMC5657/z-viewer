@@ -219,19 +219,23 @@ extern "C" {
     pub fn JxlDecoderVersion() -> u32;
     pub fn JxlDecoderCreate(memory_manager: *const c_void) -> *mut JxlDecoder;
     pub fn JxlDecoderDestroy(dec: *mut JxlDecoder);
-    pub fn JxlDecoderSubscribeEvents(
-        dec: *mut JxlDecoder,
-        event_mask: u32,
-    ) -> JxlDecoderStatus;
+    pub fn JxlDecoderSubscribeEvents(dec: *mut JxlDecoder, event_mask: u32) -> JxlDecoderStatus;
     pub fn JxlDecoderSetParallelRunner(
         dec: *mut JxlDecoder,
         parallel_runner: JxlParallelRunner,
         runner_opaque: *mut c_void,
     ) -> JxlDecoderStatus;
-    pub fn JxlDecoderSetInput(dec: *mut JxlDecoder, data: *const u8, size: size_t) -> JxlDecoderStatus;
+    pub fn JxlDecoderSetInput(
+        dec: *mut JxlDecoder,
+        data: *const u8,
+        size: size_t,
+    ) -> JxlDecoderStatus;
     pub fn JxlDecoderCloseInput(dec: *mut JxlDecoder);
     pub fn JxlDecoderProcessInput(dec: *mut JxlDecoder) -> JxlDecoderStatus;
-    pub fn JxlDecoderGetBasicInfo(dec: *const JxlDecoder, info: *mut JxlBasicInfo) -> JxlDecoderStatus;
+    pub fn JxlDecoderGetBasicInfo(
+        dec: *const JxlDecoder,
+        info: *mut JxlBasicInfo,
+    ) -> JxlDecoderStatus;
     /// 请求解码输出色彩档（decode.h `JxlDecoderSetPreferredColorProfile`，2 参）。
     /// 注意区别于 4 参的 `JxlDecoderSetOutputColorProfile(dec, enc, icc, icc_size)`，
     /// 两者不可混转录；仅在 JXL_DEC_COLOR_ENCODING 事件时点可调用。
@@ -239,7 +243,10 @@ extern "C" {
         dec: *mut JxlDecoder,
         color_encoding: *const JxlColorEncoding,
     ) -> JxlDecoderStatus;
-    pub fn JxlDecoderGetFrameHeader(dec: *const JxlDecoder, info: *mut JxlFrameHeader) -> JxlDecoderStatus;
+    pub fn JxlDecoderGetFrameHeader(
+        dec: *const JxlDecoder,
+        info: *mut JxlFrameHeader,
+    ) -> JxlDecoderStatus;
     pub fn JxlDecoderSetImageOutBuffer(
         dec: *mut JxlDecoder,
         format: *const JxlPixelFormat,
@@ -284,7 +291,10 @@ extern "C" {
         option: c_int,
         value: i32,
     ) -> JxlEncoderStatus;
-    pub fn JxlEncoderSetBasicInfo(enc: *mut JxlEncoder, info: *const JxlBasicInfo) -> JxlEncoderStatus;
+    pub fn JxlEncoderSetBasicInfo(
+        enc: *mut JxlEncoder,
+        info: *const JxlBasicInfo,
+    ) -> JxlEncoderStatus;
     pub fn JxlEncoderSetColorEncoding(
         enc: *mut JxlEncoder,
         color_encoding: *const JxlColorEncoding,

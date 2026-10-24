@@ -11,8 +11,8 @@
 ;   3. App Capabilities（HKCU\Software\RegisteredApplications）：
 ;      让 ZViewer 以应用名出现在 Windows 默认应用搜索/列表里。
 ;
-; 扩展名清单与 src/browse/mod.rs COMMON_EXTS + src/decode/mod.rs
-; RAW_EXTS 保持一致，修改图片格式支持时需同步此处。
+; 扩展名清单与 src-tauri/src/decode/format.rs（ASSET_EXTS + RAW_EXTS + TIFF_EXTS
+; + JXL_EXTS）保持一致，修改图片格式支持时需同步此处。
 ; ============================================================
 
 !define ZVIEWER_PROGID "ZViewer.Image"
@@ -58,6 +58,7 @@
   !insertmacro ZViewerRegisterExt "bmp"
   !insertmacro ZViewerRegisterExt "ico"
   !insertmacro ZViewerRegisterExt "svg"
+  !insertmacro ZViewerRegisterExt "avif"
   !insertmacro ZViewerRegisterExt "jxl"
   !insertmacro ZViewerRegisterExt "tif"
   !insertmacro ZViewerRegisterExt "tiff"
@@ -101,6 +102,7 @@
   WriteRegStr HKCU "${ZVIEWER_CAPABILITIES}\FileAssociations" ".bmp" "${ZVIEWER_PROGID}"
   WriteRegStr HKCU "${ZVIEWER_CAPABILITIES}\FileAssociations" ".ico" "${ZVIEWER_PROGID}"
   WriteRegStr HKCU "${ZVIEWER_CAPABILITIES}\FileAssociations" ".svg" "${ZVIEWER_PROGID}"
+  WriteRegStr HKCU "${ZVIEWER_CAPABILITIES}\FileAssociations" ".avif" "${ZVIEWER_PROGID}"
   WriteRegStr HKCU "${ZVIEWER_CAPABILITIES}\FileAssociations" ".jxl" "${ZVIEWER_PROGID}"
   WriteRegStr HKCU "${ZVIEWER_CAPABILITIES}\FileAssociations" ".tif" "${ZVIEWER_PROGID}"
   WriteRegStr HKCU "${ZVIEWER_CAPABILITIES}\FileAssociations" ".tiff" "${ZVIEWER_PROGID}"
@@ -143,6 +145,7 @@
   !insertmacro ZViewerUnregisterExt "bmp"
   !insertmacro ZViewerUnregisterExt "ico"
   !insertmacro ZViewerUnregisterExt "svg"
+  !insertmacro ZViewerUnregisterExt "avif"
   !insertmacro ZViewerUnregisterExt "jxl"
   !insertmacro ZViewerUnregisterExt "tif"
   !insertmacro ZViewerUnregisterExt "tiff"

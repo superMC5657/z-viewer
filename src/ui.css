@@ -620,6 +620,21 @@ body.immersive #info-bar {
   background: var(--select-option-bg);
   color: var(--text-primary);
 }
+/* 自定义间隔：下拉原位替换为数字输入（Enter/失焦提交，Esc 取消） */
+.ss-interval input[type="number"] {
+  width: 56px;
+  background: var(--select-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+  text-align: center;
+}
+.ss-interval input[type="number"]:hover {
+  background-color: var(--select-bg-hover);
+}
 .ss-progress {
   padding: 0 10px;
   font-size: 12px;

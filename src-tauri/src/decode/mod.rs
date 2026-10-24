@@ -18,8 +18,8 @@
 //! - animation.rs：动画拆帧通道（GIF/APNG/WebP）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
 
-pub mod format;
 mod animation;
+pub mod format;
 mod jxl;
 mod preview;
 mod raw;
@@ -27,16 +27,26 @@ mod raw;
 mod tests;
 mod tiff;
 
-pub use format::*;
 use crate::util::{basename_of, first_line_of};
+pub use format::*;
 
 /// IPC 二进制信封魔数（与前端 parseLoadEnvelope 对应）
 pub const ENVELOPE_MAGIC: &[u8; 4] = b"IMGV";
 
+/// LoadResult.mode 取值常量：比较点一律引用常量，不写字面量
+/// （与前端 types.ts `LoadMode` 联合类型一一对应，两侧修改需同步）
+pub mod load_mode {
+    pub const ASSET: &str = "asset";
+    pub const RAW: &str = "raw";
+    pub const STATIC: &str = "static";
+    pub const ANIMATED: &str = "animated";
+}
+
 /// 解码结果：所有 Rust 通道的产物，payload 为原始字节
 #[derive(Clone)]
 pub struct LoadResult {
-    /// "asset"（前端 asset 协议直读）| "raw" | "static"(TIFF) | "animated"（帧序列）
+    /// 通道标识，取值见 [`load_mode`]（asset=前端直读 / raw / static=TIFF / animated=帧序列），
+    /// 经信封 JSON 透出为前端 `LoadEnvelope.mode`
     pub mode: String,
     /// payload 的 MIME（raw/static: image/jpeg；animated: image/png）
     pub mime: Option<String>,
@@ -160,22 +170,24 @@ pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
                 first_line_of(e)
             );
         }),
-        ImageFormatCategory::Jxl => jxl::decode_jxl(path).map(|(result, fallback)| {
-            if let Some(reason) = fallback {
+        ImageFormatCategory::Jxl => jxl::decode_jxl(path)
+            .map(|(result, fallback)| {
+                if let Some(reason) = fallback {
+                    log::warn!(
+                        "decode fallback {} [jxl]: {}",
+                        basename_of(path),
+                        first_line_of(&reason)
+                    );
+                }
+                result
+            })
+            .inspect_err(|e| {
                 log::warn!(
-                    "decode fallback {} [jxl]: {}",
+                    "decode failed {} [jxl]: {}",
                     basename_of(path),
-                    first_line_of(&reason)
+                    first_line_of(e)
                 );
-            }
-            result
-        }).inspect_err(|e| {
-            log::warn!(
-                "decode failed {} [jxl]: {}",
-                basename_of(path),
-                first_line_of(e)
-            );
-        }),
+            }),
         ImageFormatCategory::Asset => {
             if is_potential_anim(&ext) {
                 let frames = animation::decode_animation(path).inspect_err(|e| {

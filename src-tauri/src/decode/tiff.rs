@@ -7,8 +7,8 @@ pub(super) fn decode_static(path: &str) -> Result<LoadResult, String> {
     use std::io::BufReader;
 
     // EXIF 头在文件前部：open_with_orientation 读方向后已 seek 回开头（省一次 open）
-    let (file, orientation) = super::preview::open_with_orientation(path)
-        .map_err(|e| format!("TIFF 打开失败: {e}"))?;
+    let (file, orientation) =
+        super::preview::open_with_orientation(path).map_err(|e| format!("TIFF 打开失败: {e}"))?;
     let img = image::ImageReader::new(BufReader::new(&file))
         .with_guessed_format()
         .map_err(|e| format!("TIFF 打开失败: {e}"))?

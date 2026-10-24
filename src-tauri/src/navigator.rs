@@ -37,8 +37,8 @@
 //! leverage / locality 见实现注释。
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use crate::browse::{Boundary, BrowseModel, BrowseState, FolderTarget, Nav};
 use crate::cache::{DecodeCache, FolderFirst, FolderFirstCache};
@@ -756,7 +756,11 @@ mod tests {
         for i in 0..10 {
             let key = format!("/nonexistent-dir-{i}");
             assert!(cache.begin_prefetch(&key));
-            nav_first.prefetch_first(PathBuf::from(&key), key.clone(), nav_first.current_generation());
+            nav_first.prefetch_first(
+                PathBuf::from(&key),
+                key.clone(),
+                nav_first.current_generation(),
+            );
         }
 
         // 若任一路径泄漏登记/计数，门控此时将拒绝新登记。

@@ -14,12 +14,12 @@
 //! should_prefetch 因此保持 I/O-free 的纯扩展名查表（gif 照例走前端池——
 //! 若某 gif 解码后确为多帧，demand 路径的 should_cache 仍会收留它）。
 
-use crate::decode::{is_asset_ext, LoadResult};
+use crate::decode::{is_asset_ext, load_mode, LoadResult};
 
 /// 解码结果是否值得占缓存槽位：非 asset 全量 / 静态 / 动画帧序列。
 /// 单帧降级（mode == asset）与内嵌预览（后续全量会覆盖）不占槽位。
 pub fn should_cache(result: &LoadResult) -> bool {
-    result.mode != "asset" && !result.is_preview
+    result.mode != load_mode::ASSET && !result.is_preview
 }
 
 /// 该路径是否值得派生预取任务：仅扩展名查表（无 I/O）。

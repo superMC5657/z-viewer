@@ -9,6 +9,8 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use log::LevelFilter;
+
+use crate::util::{basename_of, first_line_of};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy, WEBVIEW_TARGET};
 
 const MAX_FILE_SIZE: u128 = 5 * 1024 * 1024; // 5MB
@@ -48,18 +50,14 @@ pub(crate) fn resolve_level(default: LevelFilter) -> LevelFilter {
 fn parsed_tauri_config() -> &'static serde_json::Value {
     static CACHE: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| {
-        serde_json::from_str(include_str!("../tauri.conf.json"))
-            .unwrap_or(serde_json::Value::Null)
+        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap_or(serde_json::Value::Null)
     })
 }
 
 /// 从配置文件（tauri.conf.json）读取字符串字段：解析结果进程内缓存，
 /// 取 trim 后非空值，字段缺失/为空时回退 fallback。
 fn config_str_field(key: &str, fallback: &str) -> String {
-    if let Some(v) = parsed_tauri_config()
-        .get(key)
-        .and_then(|v| v.as_str())
-    {
+    if let Some(v) = parsed_tauri_config().get(key).and_then(|v| v.as_str()) {
         let v = v.trim();
         if !v.is_empty() {
             return v.to_string();
@@ -167,10 +165,7 @@ fn mask_emails(s: &str) -> String {
     let mut res = String::with_capacity(s.len());
     let mut cur = String::new();
     let flush = |cur: &mut String, res: &mut String| {
-        if cur.contains('@')
-            && cur.chars().any(|c| c.is_alphanumeric())
-            && cur.len() >= 5
-        {
+        if cur.contains('@') && cur.chars().any(|c| c.is_alphanumeric()) && cur.len() >= 5 {
             res.push_str("[redacted-email]");
         } else {
             res.push_str(cur);
@@ -212,7 +207,13 @@ fn mask_token_keyword(s: &str, keyword: &str) -> String {
                     j += 1;
                 }
                 let val_start = j;
-                while j < s.len() && !bytes[j].is_ascii_whitespace() && bytes[j] != b'"' && bytes[j] != b'\'' && bytes[j] != b',' && bytes[j] != b';' {
+                while j < s.len()
+                    && !bytes[j].is_ascii_whitespace()
+                    && bytes[j] != b'"'
+                    && bytes[j] != b'\''
+                    && bytes[j] != b','
+                    && bytes[j] != b';'
+                {
                     j += 1;
                 }
                 if val_start < j {
@@ -349,9 +350,10 @@ fn mask_license_keys(s: &str) -> String {
 /// 判定路径是否为日志或崩溃文件（仅看文件名/扩展名，不做 is_file 检查）。
 fn is_log_or_crash_file(p: &Path) -> bool {
     p.extension().is_some_and(|x| x == "log")
-        || (p.file_name().is_some_and(|n| {
-            n.to_string_lossy().starts_with("crash-")
-        }) && p.extension().is_some_and(|x| x == "txt"))
+        || (p
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("crash-"))
+            && p.extension().is_some_and(|x| x == "txt"))
 }
 
 /// 修剪日志目录：删 14 天前文件，总量超 25MB 时按 mtime 从旧到新删到预算内。
@@ -376,7 +378,7 @@ pub fn prune(dir: &Path, max_age_days: u64, max_total_bytes: u64) {
         let age = now.duration_since(mtime).unwrap_or_default();
         if age > max_age {
             let _ = std::fs::remove_file(&p);
-            log::debug!("zlog prune: 删除过期日志 {}", p.display());
+            log::debug!("zlog prune: removed expired {}", basename_of(&p));
         } else {
             kept.push((p, len, mtime));
         }
@@ -392,7 +394,7 @@ pub fn prune(dir: &Path, max_age_days: u64, max_total_bytes: u64) {
         }
         if std::fs::remove_file(&p).is_ok() {
             total = total.saturating_sub(len);
-            log::debug!("zlog prune: 超预算删除 {}", p.display());
+            log::debug!("zlog prune: over budget removed {}", basename_of(&p));
         }
     }
 }
@@ -455,6 +457,21 @@ pub fn install_panic_hook() {
     }));
 }
 
+/// crash 报告的 `last_viewed` 字段：只留 basename。诊断包会原样带出 crash 文件，
+/// 全路径等于泄漏「用户崩溃时在看什么」（redact 只折叠家目录，非家目录路径拦不住）。
+fn crash_last_viewed(raw: Option<String>) -> String {
+    raw.map(|p| basename_of(Path::new(&p)))
+        .unwrap_or_else(|| "<none>".to_string())
+}
+
+/// crash 报告的 `payload` 字段：只取首行并截断。panic 文案是自由文本，可能内嵌
+/// 路径或大段错误原文，整段落盘绕过「路径只许 basename」「不记全文」红线。
+/// （backtrace 只含构建机源码路径且 release `panic = "abort"` 不产 crash 文件，
+/// 见 logging.md 已知限制，故维持全量保留诊断价值。）
+fn crash_payload(raw: String) -> String {
+    first_line_of(&raw)
+}
+
 fn write_crash_report(info: &std::panic::PanicHookInfo) {
     let payload = if let Some(s) = info.payload().downcast_ref::<&str>() {
         (*s).to_string()
@@ -463,6 +480,7 @@ fn write_crash_report(info: &std::panic::PanicHookInfo) {
     } else {
         "<non-string panic payload>".to_string()
     };
+    let payload = crash_payload(payload);
     let location = info
         .location()
         .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
@@ -471,7 +489,7 @@ fn write_crash_report(info: &std::panic::PanicHookInfo) {
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
     let app_name = app_name_from_config();
     let identifier = app_identifier_from_config();
-    let last_image = get_last_viewed().unwrap_or_else(|| "<none>".to_string());
+    let last_image = crash_last_viewed(get_last_viewed());
     let body = format!(
         "product: {}\nversion: {}\nidentifier: {}\ntime: {}\nthread: {:?}\nlocation: {}\nlast_viewed: {}\npayload: {}\nbacktrace:\n{}\n",
         app_name,
@@ -527,8 +545,8 @@ fn export_bundle_inner(dir: &Path, out_path: &Path) -> Result<(), String> {
 
     let f = std::fs::File::create(out_path).map_err(|e| e.to_string())?;
     let mut zip = zip::ZipWriter::new(f);
-    let opts =
-        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
 
     for src in &files {
         let name = src
@@ -540,8 +558,7 @@ fn export_bundle_inner(dir: &Path, out_path: &Path) -> Result<(), String> {
         let text = String::from_utf8_lossy(&raw);
         let clean = redact(&text);
         zip.start_file(name, opts).map_err(|e| e.to_string())?;
-        zip.write_all(clean.as_bytes())
-            .map_err(|e| e.to_string())?;
+        zip.write_all(clean.as_bytes()).map_err(|e| e.to_string())?;
     }
     let app_name = app_name_from_config();
     let identifier = app_identifier_from_config();
@@ -569,7 +586,8 @@ mod tests {
 
     fn temp_dir() -> PathBuf {
         let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("z-viewer-test-log-{}-{n}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("z-viewer-test-log-{}-{n}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         dir
     }
@@ -599,6 +617,29 @@ mod tests {
     fn test_redact_license_keys() {
         let input = "License key is ZV-PRO-ABCD-1234-EFGH";
         assert_eq!(redact(input), "License key is [redacted-key]");
+    }
+
+    #[test]
+    fn test_crash_last_viewed_basename_only() {
+        // crash 报告红线：last_viewed 只落 basename，不落全路径
+        assert_eq!(crash_last_viewed(None), "<none>");
+        assert_eq!(
+            crash_last_viewed(Some("/home/u/photos/a.jpg".into())),
+            "a.jpg"
+        );
+        // 无文件名/空路径走 basename_of 的 unknown 回退
+        assert_eq!(crash_last_viewed(Some("".into())), "unknown");
+    }
+
+    #[test]
+    fn test_crash_payload_first_line() {
+        // crash 报告红线：payload 只落首行并截断（panic 文案可能内嵌路径/大段原文）
+        assert_eq!(
+            crash_payload("first line\nsecond line".into()),
+            "first line"
+        );
+        let long = "x".repeat(500);
+        assert_eq!(crash_payload(long).chars().count(), 200);
     }
 
     #[test]
@@ -751,11 +792,19 @@ mod tests {
         // 验证 zip 内二次脱敏生效
         use std::io::Read as _;
         let mut app_content = String::new();
-        archive.by_name(&log_file_name).unwrap().read_to_string(&mut app_content).unwrap();
+        archive
+            .by_name(&log_file_name)
+            .unwrap()
+            .read_to_string(&mut app_content)
+            .unwrap();
         assert_eq!(app_content, "Hello Bearer [redacted]");
 
         let mut crash_content = String::new();
-        archive.by_name("crash-20260916.txt").unwrap().read_to_string(&mut crash_content).unwrap();
+        archive
+            .by_name("crash-20260916.txt")
+            .unwrap()
+            .read_to_string(&mut crash_content)
+            .unwrap();
         assert_eq!(crash_content, "Panic at [redacted-email]");
 
         let _ = std::fs::remove_dir_all(&dir);

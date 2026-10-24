@@ -52,11 +52,8 @@ fn setup_runner(dec: *mut ffi::JxlDecoder) -> Result<RunnerGuard, String> {
     }
     unsafe {
         ffi::JxlResizableParallelRunnerSetThreads(runner, threads);
-        let st = ffi::JxlDecoderSetParallelRunner(
-            dec,
-            Some(ffi::JxlResizableParallelRunner),
-            runner,
-        );
+        let st =
+            ffi::JxlDecoderSetParallelRunner(dec, Some(ffi::JxlResizableParallelRunner), runner);
         if st != ffi::JXL_DEC_SUCCESS {
             ffi::JxlResizableParallelRunnerDestroy(runner);
             return Err(format!("JXL 并行 runner 绑定失败（status={st}）"));
@@ -102,8 +99,7 @@ pub(super) fn probe_animated(path: &str) -> Option<bool> {
 }
 
 pub(in crate::decode) fn decode(path: &str) -> Result<EngineOutput, String> {
-    let data =
-        std::fs::read(path).map_err(|e| format!("JXL 文件读取失败: {e}"))?;
+    let data = std::fs::read(path).map_err(|e| format!("JXL 文件读取失败: {e}"))?;
     let dec = unsafe { ffi::JxlDecoderCreate(ptr::null()) };
     if dec.is_null() {
         return Err("JXL 解码器创建失败".into());
@@ -111,12 +107,10 @@ pub(in crate::decode) fn decode(path: &str) -> Result<EngineOutput, String> {
     let _dec = DecoderGuard(dec);
     let _runner = setup_runner(dec)?;
 
-    let mask = (
-        ffi::JXL_DEC_BASIC_INFO
+    let mask = (ffi::JXL_DEC_BASIC_INFO
         | ffi::JXL_DEC_COLOR_ENCODING
         | ffi::JXL_DEC_FRAME
-        | ffi::JXL_DEC_FULL_IMAGE
-    ) as u32;
+        | ffi::JXL_DEC_FULL_IMAGE) as u32;
     check_status(unsafe { ffi::JxlDecoderSubscribeEvents(dec, mask) })?;
 
     let mut frames: Vec<Vec<u8>> = Vec::new();
@@ -148,8 +142,7 @@ pub(in crate::decode) fn decode(path: &str) -> Result<EngineOutput, String> {
                 }
                 ffi::JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
                     let info = basic.as_ref().ok_or("JXL 基础信息缺失")?;
-                    let size =
-                        (info.xsize as usize) * (info.ysize as usize) * 4;
+                    let size = (info.xsize as usize) * (info.ysize as usize) * 4;
                     buf = vec![0u8; size];
                     check_status(ffi::JxlDecoderSetImageOutBuffer(
                         dec,

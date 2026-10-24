@@ -50,6 +50,15 @@ export interface ContentState {
   playing: boolean;
 }
 
+/** 一次加载的代次与 transient URL 归属簿记：seq 供代次比对；prevOwned 为
+ *  取走前的 ownedBlobUrl（成功接管后 revokePrev() 释放 / 失败保旧画面时 restorePrev() 还原） */
+interface LoadSlot {
+  readonly seq: number;
+  readonly prevOwned: string | null;
+  revokePrev: () => void;
+  restorePrev: () => void;
+}
+
 export class Viewer {
   private imgA: HTMLImageElement;
   private imgB: HTMLImageElement;
@@ -141,6 +150,26 @@ export class Viewer {
     return this.active === "canvas" && this.animFrames.length > 0;
   }
 
+  /** 加载开局簿记单一实现（show/showEnvelope 共用）：推进代次 + 作废在飞加载 +
+   *  接管 ownedBlobUrl 归槽持有，消除两入口重复的 seq/prevOwned/闭包三件套。 */
+  private beginLoad(): LoadSlot {
+    this.stopAnimation();
+    this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
+    const seq = ++this.loadSeq;
+    const prevOwned = this.ownedBlobUrl;
+    this.ownedBlobUrl = null;
+    return {
+      seq,
+      prevOwned,
+      revokePrev: () => {
+        if (prevOwned) URL.revokeObjectURL(prevOwned);
+      },
+      restorePrev: () => {
+        this.ownedBlobUrl = prevOwned;
+      },
+    };
+  }
+
   /** Narrow loader seam (generation guard cannot be bypassed).
    *  loadSeq++ + settlePending() happen exactly once per entry, not per branch.
    *  Superseded generations resolve silently; only the latest writes DOM/closes bitmaps.
@@ -152,41 +181,27 @@ export class Viewer {
       await this.showEnvelope(content.header, content.payload, false);
       return;
     }
-    this.stopAnimation();
-    this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
-    const seq = ++this.loadSeq;
-    const prevOwned = this.ownedBlobUrl;
-    this.ownedBlobUrl = null;
-    const revokePrev = () => {
-      if (prevOwned) URL.revokeObjectURL(prevOwned);
-    };
-    const restorePrev = () => {
-      this.ownedBlobUrl = prevOwned;
-    };
+    const slot = this.beginLoad();
 
     if (content.kind === "frames") {
       // 空序列：no-op resolve（不碰 DOM/回调，恢复 ownership）
       if (content.bitmaps.length === 0) {
-        restorePrev();
+        slot.restorePrev();
         return;
       }
-      await this.loadBitmapsAnimationInternal(content.bitmaps, content.delays, seq);
+      await this.loadBitmapsAnimationInternal(content.bitmaps, content.delays, slot.seq);
       // supersede 检查：静默 resolve，只让最新代次保留画面
-      revokePrev();
+      slot.revokePrev();
       return;
     }
-    if (content.kind === "url") {
-      // caller-owned URL：Viewer 永不 revoke 入参，只回收自己此前的 transient
-      try {
-        await this.loadStaticInternal(content.url, false, seq);
-      } catch (e) {
-        revokePrev();
-        throw e;
-      }
-      revokePrev();
-      return;
+    // caller-owned URL：Viewer 永不 revoke 入参，只回收自己此前的 transient
+    try {
+      await this.loadStaticInternal(content.url, false, slot.seq);
+    } catch (e) {
+      slot.revokePrev();
+      throw e;
     }
-    // url 分支结束；envelope 已在入口处分流至共核
+    slot.revokePrev();
   }
 
   /** 全量升级（预览→全量替换，变换保持）：keep 决策归 Viewer 所有，
@@ -197,26 +212,8 @@ export class Viewer {
 
   /** 信封入口共核（show/showUpgrade 共享同一代次守卫与归属权处理，不可绕过） */
   private async showEnvelope(header: LoadEnvelope, payload: Uint8Array, keepTransform: boolean): Promise<void> {
-    this.stopAnimation();
-    this.settlePending(); // 作废进行中的加载（静默 resolve，由新加载覆盖显示）
-    const seq = ++this.loadSeq;
-    const prevOwned = this.ownedBlobUrl;
-    this.ownedBlobUrl = null;
-    const revokePrev = () => {
-      if (prevOwned) URL.revokeObjectURL(prevOwned);
-    };
-    const restorePrev = () => {
-      this.ownedBlobUrl = prevOwned;
-    };
-    await this.showEnvelopeInternal(
-      header,
-      payload,
-      keepTransform,
-      seq,
-      prevOwned,
-      revokePrev,
-      restorePrev,
-    );
+    const slot = this.beginLoad();
+    await this.showEnvelopeInternal(header, payload, keepTransform, slot);
   }
 
   /** 内容状态推送：对照当前画面快照上报（dims/动画/播放），调用方存快照派生 UI */
@@ -236,11 +233,9 @@ export class Viewer {
     header: LoadEnvelope,
     payload: Uint8Array,
     keepTransform: boolean,
-    seq: number,
-    prevOwned: string | null,
-    revokePrev: () => void,
-    restorePrev: () => void,
+    slot: LoadSlot,
   ): Promise<void> {
+    const { seq, prevOwned, revokePrev, restorePrev } = slot;
     if (header.frameSizes.length > 0) {
       // 原始 RGBA 帧直通（Rust 端免二次编码，前端免 PNG 解码）
       if (header.mime === "image/x-rgba" && header.width && header.height) {

@@ -173,7 +173,7 @@ pub fn open_path(
     path: String,
 ) -> Result<NavResult, String> {
     let p = Path::new(&path);
-    let pro = require_pro(license.is_pro(), false, || true);
+    let pro = license.is_pro();
     let on_ready = Some(on_ready_callback(app.clone()));
     let model = open_model_from_path(p, on_ready, pro);
     let Some(model) = model else {
@@ -291,7 +291,7 @@ pub async fn load_image(
 ) -> Result<tauri::ipc::Response, String> {
     crate::z_log::set_last_viewed(&path);
     let enabled = settings.read(|s| s.is_enabled())?;
-    let caching = enabled && require_pro(license.is_pro(), false, || true);
+    let caching = enabled && license.is_pro();
     if caching {
         // 命中：信封已打包一次缓存于条目内，这里只做一次缓冲拷贝进 IPC 响应
         if let Some(hit) = cache.get_entry(&path) {
@@ -391,7 +391,8 @@ pub fn get_settings(
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
 ) -> AppSettings {
-    let mut s = *settings.0.lock().unwrap_or_else(|e| e.into_inner());
+    // 统一走 SettingsState::read（锁收口）；中毒时回退默认值（查询命令，不值得 panic）
+    let mut s = settings.read(|g| *g).unwrap_or_default();
     let level = s.cache_level;
     s.cache_level = require_pro(license.is_pro(), 0, || level);
     s
@@ -403,6 +404,13 @@ pub fn get_settings(
 #[tauri::command]
 pub fn get_raw_extensions() -> Vec<&'static str> {
     crate::decode::ipc_exts()
+}
+
+/// 潜在动画扩展名列表（前端帧条判定的唯一真源：同源自 decode::format::ANIM_EXTS）。
+/// 与 get_raw_extensions 同理：后端新增动画格式时前端帧条无需改代码。
+#[tauri::command]
+pub fn get_anim_extensions() -> Vec<&'static str> {
+    crate::decode::ANIM_EXTS.to_vec()
 }
 
 /// 查询当前图片上下文路径（按缓存强度），供前端预解码池预热
@@ -417,7 +425,7 @@ pub async fn get_context(
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
 ) -> Result<Vec<String>, String> {
-    if !require_pro(license.is_pro(), false, || true) {
+    if !license.is_pro() {
         return Ok(Vec::new());
     }
     // 快照模型后释放 AppState 锁，再单次快照策略（绝不在内部持锁）。

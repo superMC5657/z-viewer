@@ -21,13 +21,13 @@ panic hook 拿不到 `AppHandle`，用 `resolve_log_dir_fallback()` 按同样规
 | 文件 | 来源 | 说明 |
 | --- | --- | --- |
 | `<productName>.log`（如 `ZViewer.log`，+轮转兄弟 `ZViewer_*.log`） | Rust 侧 + 前端经 `plugin:log|log` | 统一日志（文件名从配置文件 `tauri.conf.json` 的 `productName` 动态获取；统一因果时间轴） |
-| `crash-<ts>.txt` | panic hook | 版本/identifier/时间/线程/位置/payload/Backtrace，写盘前已脱敏 |
+| `crash-<ts>.txt` | panic hook | 版本/identifier/时间/线程/位置/last_viewed（仅 basename）/payload（首行截断）/Backtrace（仅 dev 构建，见已知限制），写盘前已脱敏 |
 | `<productName>-logs-<ts>.zip` | `zlog_export_bundle` | 诊断包（见下），下次导出时不被重复打包（只收 `*.log` + `crash-*.txt`） |
 
 单文件 5MB 轮转（`max_file_size`），策略 `KeepSome(5)`（插件层只留 5 个轮转兄弟）；
 `prune`：删 14 天前文件，总量超 25MB 时按 mtime 从旧到新删到预算内，
 只处理 `*.log` 与 `crash-*.txt`，失败只记 `log` 不抛 panic。
-prune 内两条打点均为 `debug`（过期删除 / 超预算删除，release 不落盘）。
+prune 内两条打点均为 `debug`（`removed expired` / `over budget removed`，只记 basename，release 不落盘）。
 水位由 `z_log.rs` 常量锁定（`MAX_FILE_SIZE`/`ROTATION_KEEP`/`PRUNE_KEEP_DAYS`/`PRUNE_MAX_BYTES`），
 `test_converged_waterline` 回归锁定；`main.rs` 启动修剪复用同一常量。
 
@@ -99,7 +99,7 @@ void initZLog().catch(() => undefined);
 - `debug` browse boundary {first-image|last-image|first-folder|last-folder}（导航触底边界，debug 级别）
 - `warn` browse jump failed: unknown target（未知跳转目标）
 
-## 前端交互与功能状态（`src/main.ts` + `src/viewer.ts` + `src/window-state.ts` + `src/services/updater.ts`）
+## 前端交互与功能状态（`src/main.ts` + `src/viewer.ts` + `src/presence.ts` + `src/services/updater.ts`）
 
 所有常规翻页统一由 Rust 后端处理，前端仅在**关键视图模式变更**与**功能周期**时输出 INFO（低频、关键）：
 - `info` [ui] immersive mode: on / off（沉浸模式切换）
@@ -149,7 +149,7 @@ void initZLog().catch(() => undefined);
 - `info` license status changed {pro|free}（启动后台续验发现吊销/失效并广播事件时，只记目标状态；`main.rs`）
 - `info` license deactivated（注销成功）/ `warn` license deactivate failed（注销失败，静态文案）
 - `debug` license load invalid fallback to free（启动 `load()` 文件存在但解析/验签失败回退免费版；
-  静态文案，不记路径不记内容；`license.rs:238`；文件不存在正常回退不记）
+  静态文案，不记路径不记内容；`LicenseManager::load`；文件不存在正常回退不记）
 
 ## 埋点（`analytics.rs`）
 
@@ -171,22 +171,24 @@ void initZLog().catch(() => undefined);
   panic hook（`crash-*.txt`）仅 dev/unwind 构建有效。如需 release 崩溃报告，
   需另议 panic 策略（不在本文范围内，不动 release profile）。
 
-## 相关文件（行号索引）
+## 相关文件（符号索引）
 
-- `src-tauri/src/z_log.rs`（插件构建、门槛覆盖 `resolve_level`、prune、redact、panic hook、导出命令；
-  回归：`test_converged_waterline` 锁水位、`test_format_path_masks` 锁脱敏、`test_resolve_level_dual_branch` 锁双分支）
-- `src-tauri/src/main.rs`（启动参数跳过 debug：62；启动打开打点；授权状态变迁 info；启动修剪复用水位常量）
+行号天生易腐，本节按符号定位（grep 符号名即达）；新增打点时在此补符号而非行号。
+
+- `src-tauri/src/z_log.rs`（插件构建、门槛覆盖 `resolve_level`、`prune`（basename 打点）、`redact`、panic hook `write_crash_report`、导出命令 `zlog_get_dir`/`zlog_export_bundle`；
+  回归：`test_converged_waterline` 锁水位、`test_format_path_masks` 锁脱敏、`test_crash_last_viewed_basename_only`/`test_crash_payload_first_line` 锁 crash 字段、`test_resolve_level_dual_branch` 锁双分支）
+- `src-tauri/src/main.rs`（`startup_image_path` 启动参数跳过 debug；`setup` 内 startup/open 打点与授权状态变迁；启动修剪复用水位常量）
 - `src-tauri/src/util.rs`（日志摘要辅助单一实现：`basename_of`/`first_line_of`/`now`；
   原各调用点本地副本已删，调用方 `use` 转发）
-- `src-tauri/src/commands/mod.rs`（打开/边界/跳转/解码打点：
-  边界 134、打开失败/成功、未知跳转目标、解码失败）
+- `src-tauri/src/commands/mod.rs`（`navigate` 边界/跨越/单图切换、`open_path` 打开成败、`jump_folder` 未知跳转目标、`load_image` 解码失败）
 - `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[jxl]`/`[anim]` 后缀 + `[jxl]` 引擎回退，摘要辅助转发自 `util`，与命令层后缀去重）
 - `src-tauri/src/browse/scan.rs`（门控拒绝原因码 info + 后台扫描计数 debug）
 - `src-tauri/src/cache/*.rs`（`DecodeCache::get_entry` hit/miss debug + `LruQueue` 淘汰计数 debug）
 - `src-tauri/src/commands/prefetch.rs`（预取失败 debug：`(ctx)`/`(first)` 分支后缀）
-- `src-tauri/src/license.rs`（授权事件打点：启动加载回退 238、离线降级 402、吊销 416/433/439、
-  推迟 421/425、续验成功 458、激活 701/707/709、注销 721/725）
-- `src-tauri/src/analytics.rs`（上报失败 debug：154/161/164；退出小结 info：133）
+- `src-tauri/src/license.rs`（授权事件打点：`LicenseManager::load` 启动加载回退、
+  `verify_online` 离线降级/吊销三态/推迟/续验成功、`activate_license` 激活与验签失败、
+  `deactivate_license` 注销）
+- `src-tauri/src/analytics.rs`（`report_exit`：退出小结 info + 上报失败 debug（client/request/send 后缀））
 - `src-tauri/src/browse/*.rs`、`src-tauri/src/decode/*.rs`、`src-tauri/src/cache/*.rs`
   （零 log：错误上浮到命令层记一次，热路径不记）
 - `src/lib/z-log.ts`、`src/main.ts`（前端接入；业务不加打点）

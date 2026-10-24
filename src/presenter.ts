@@ -14,8 +14,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import type { ContentState, FitMode, Viewer } from "./viewer";
 import type { UI } from "./ui";
-import { needsIpc, parseLoadEnvelope } from "./types";
-import type { BrowseState, LoadEnvelope, NavResult } from "./types";
+import { isPotentialAnim, needsIpc, parseLoadEnvelope } from "./types";
+import type { BoundaryKind, BrowseState, LoadEnvelope, NavResult } from "./types";
 
 export interface ImagePresenterOptions {
   /** 成功显示一张图片后（导航/直显通用，调用面接 presence.notifyManualNav） */
@@ -26,17 +26,14 @@ export interface ImagePresenterOptions {
 
 type FrameOp = "first" | "prev" | "toggle" | "next" | "last";
 
-/** 边界 Toast 文案（图片级 / 文件夹级） */
-const BOUNDARY_TEXT: Record<string, string> = {
+/** 边界 Toast 文案（图片级 / 文件夹级；键与 types.ts BoundaryKind 对齐） */
+const BOUNDARY_TEXT: Record<BoundaryKind, string> = {
   "first-image": "已经是第一张了",
   "last-image": "已经是最后一张了",
   "first-folder": "已经是第一个文件夹了",
   "last-folder": "已经是最后一个文件夹了",
   "pro-required": "跨文件夹浏览是专业版功能",
 };
-
-/** 潜在动画格式（原生 <img> 播放；仅这些格式需要 check_animation 判定） */
-const ANIM_EXTS = new Set(["gif", "png", "webp"]);
 
 /** check_animation 结果缓存：同路径重复显示免重复 IPC + 文件扫描；
  *  会话内至多保留 1000 条（满时删最旧一条近似 LRU，防浏览大文件夹时无界增长） */
@@ -272,7 +269,7 @@ export class ImagePresenter {
 
   /** check_animation 按路径缓存：翻回同一张图时免重复 IPC + 后端文件扫描 */
   private checkAnimated(path: string, ext: string): Promise<boolean> {
-    if (!ANIM_EXTS.has(ext)) return Promise.resolve(false);
+    if (!isPotentialAnim(ext)) return Promise.resolve(false);
     const cached = this.animCheckCache.get(path);
     if (cached !== undefined) return Promise.resolve(cached);
     return invoke<boolean>("check_animation", { path })
@@ -440,6 +437,14 @@ export class ImagePresenter {
       if (typeof ImageDecoder !== "undefined") {
         const bitmaps: ImageBitmap[] = [];
         let decoder: ImageDecoder | null = null;
+        // 单一清理路径：丢弃已得位图 + 关解码器（所有中途退出共用；成功路径只关
+        // 解码器，位图所有权随 show({kind:"frames"}) 移交 Viewer）
+        const dispose = (): void => {
+          for (const b of bitmaps) b.close();
+          bitmaps.length = 0;
+          decoder?.close();
+          decoder = null;
+        };
         try {
           const ext = state.path.split(".").pop()?.toLowerCase() ?? "";
           const mime = ext === "gif" ? "image/gif" : ext === "webp" ? "image/webp" : "image/png";
@@ -455,8 +460,7 @@ export class ImagePresenter {
             const frameCount = track?.frameCount ?? 0;
 
             if (frameCount <= 1) {
-              decoder.close();
-              decoder = null;
+              dispose();
               this.ui.setFrameBarVisible(false);
               this.animCandidate = false;
               this.ui.showToast("该文件不是多帧动画");
@@ -466,9 +470,7 @@ export class ImagePresenter {
             const delays: number[] = [];
             for (let i = 0; i < frameCount; i++) {
               if (gen !== this.gen) {
-                for (const b of bitmaps) b.close();
-                decoder.close();
-                decoder = null;
+                dispose();
                 return;
               }
               const res = await decoder.decode({ frameIndex: i });
@@ -480,9 +482,7 @@ export class ImagePresenter {
             }
 
             if (gen !== this.gen) {
-              for (const b of bitmaps) b.close();
-              decoder.close();
-              decoder = null;
+              dispose();
               return;
             }
 
@@ -494,8 +494,7 @@ export class ImagePresenter {
           }
         } catch {
           // 异常（含中途解码失败）：释放已得位图与解码器，降级走 Rust 通道
-          for (const b of bitmaps) b.close();
-          decoder?.close();
+          dispose();
         }
       }
 

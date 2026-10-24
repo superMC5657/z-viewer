@@ -70,7 +70,12 @@ impl SessionStats {
     pub fn summary(&self) -> (i64, u64, usize, usize) {
         let g = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let duration = (now() - g.session_start).max(0);
-        (duration, g.images_viewed, g.unique_images.len(), g.folders.len())
+        (
+            duration,
+            g.images_viewed,
+            g.unique_images.len(),
+            g.folders.len(),
+        )
     }
 
     /// 组装上报负载（聚合统计，无路径信息）

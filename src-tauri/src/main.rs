@@ -165,6 +165,7 @@ fn main() {
             commands::set_cache_level,
             commands::get_settings,
             commands::get_raw_extensions,
+            commands::get_anim_extensions,
             commands::get_context,
             license::activate_license,
             license::deactivate_license,

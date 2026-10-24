@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::decode::LoadResult;
+use crate::decode::{load_mode, LoadResult};
 
 use super::LruQueue;
 
@@ -147,7 +147,7 @@ impl DecodeCache {
     /// 写入缓存；动画结果进独立单槽（互相替换），其余进 LRU（已存在则更新并
     /// 移到末尾，超出容量淘汰队首）
     pub fn put(&self, path: String, result: Arc<LoadResult>) {
-        if result.mode == "animated" {
+        if result.mode == load_mode::ANIMATED {
             if let Ok(mut g) = self.animated.lock() {
                 *g = Some((path, CachedEntry::new(result)));
             }

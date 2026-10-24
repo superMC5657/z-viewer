@@ -146,7 +146,10 @@ fn build_libjxl() {
             }
             None => {
                 config
-                    .define("CMAKE_VS_GLOBALS", "UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true")
+                    .define(
+                        "CMAKE_VS_GLOBALS",
+                        "UseMultiToolTask=true;EnforceProcessCountAcrossBuilds=true",
+                    )
                     .cxxflag("/arch:AVX2");
             }
         }

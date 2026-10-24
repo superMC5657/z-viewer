@@ -261,7 +261,10 @@ fn encode_jxl_fixture(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
         info.alpha_exponent_bits = 0;
         info.alpha_premultiplied = 0;
         info.uses_original_profile = 0;
-        assert_eq!(ffi::JxlEncoderSetBasicInfo(enc, &info), ffi::JXL_ENC_SUCCESS);
+        assert_eq!(
+            ffi::JxlEncoderSetBasicInfo(enc, &info),
+            ffi::JXL_ENC_SUCCESS
+        );
         let color = ffi::srgb_color_encoding();
         assert_eq!(
             ffi::JxlEncoderSetColorEncoding(enc, &color),
@@ -271,14 +274,13 @@ fn encode_jxl_fixture(rgba: &[u8], w: u32, h: u32) -> Vec<u8> {
         assert!(!fs.is_null());
         // effort 3（cheetah）：基准只关心解码速度，编码够快即可
         assert_eq!(
-            ffi::JxlEncoderFrameSettingsSetOption(
-                fs,
-                ffi::JXL_ENC_FRAME_SETTING_EFFORT,
-                3
-            ),
+            ffi::JxlEncoderFrameSettingsSetOption(fs, ffi::JXL_ENC_FRAME_SETTING_EFFORT, 3),
             ffi::JXL_ENC_SUCCESS
         );
-        assert_eq!(ffi::JxlEncoderSetFrameDistance(fs, 1.0), ffi::JXL_ENC_SUCCESS);
+        assert_eq!(
+            ffi::JxlEncoderSetFrameDistance(fs, 1.0),
+            ffi::JXL_ENC_SUCCESS
+        );
         let fmt = ffi::JxlPixelFormat {
             num_channels: 4,
             data_type: ffi::JXL_TYPE_UINT8,

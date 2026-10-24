@@ -14,9 +14,17 @@ export interface BrowseState {
   loading: boolean;
 }
 
+/** 导航边界类型（与 Rust navigator::Boundary 序列化值一一对应，后端新增取值时两侧同步） */
+export type BoundaryKind =
+  | "first-image"
+  | "last-image"
+  | "first-folder"
+  | "last-folder"
+  | "pro-required";
+
 export interface NavResult {
-  /** 边界类型："first-image" | "last-image" | "first-folder" | "last-folder" | null */
-  boundary: string | null;
+  /** 边界类型（见 BoundaryKind） */
+  boundary: BoundaryKind | null;
   state: BrowseState | null;
 }
 
@@ -54,10 +62,13 @@ export interface StoreInfo {
   buyUrl: string | null;
 }
 
+/** 解码加载模式（与 Rust decode::load_mode 常量一一对应，两侧修改需同步） */
+export type LoadMode = "asset" | "raw" | "static" | "animated";
+
 /** Rust 端二进制信封头（load_image 返回 ArrayBuffer，parseLoadEnvelope 解析） */
 export interface LoadEnvelope {
-  /** 加载模式："asset"（原生通道）| "raw"（RAW格式）| "static"（TIFF/JXL静态图）| "animated"（动画） */
-  mode: string;
+  /** 加载模式（见 LoadMode） */
+  mode: LoadMode;
   /** payload 的 MIME（raw/static: image/jpeg 或 image/x-rgba；animated: image/png 或 image/x-rgba 原始帧直通） */
   mime: string | null;
   /** raw 通道内嵌预览位：true 表示 payload 是内嵌预览，全量仍在后台解码 */
@@ -120,4 +131,21 @@ export function setRawExts(exts: string[]): void {
 export function needsIpc(path: string): boolean {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   return RUST_EXTS.has(ext);
+}
+
+/** 潜在动画格式（原生 <img> 播放；仅这些格式需要 check_animation 判定）。
+ *  兜底集：真源为后端 decode::format::ANIM_EXTS，启动时经 get_anim_extensions 替换 */
+const ANIM_EXTS = new Set(["gif", "png", "webp"]);
+
+/** 以后端 decode::ANIM_EXTS 更新动画扩展名集合（帧条判定唯一真源，避免前后端两份清单） */
+export function setAnimExts(exts: string[]): void {
+  ANIM_EXTS.clear();
+  for (const e of exts) {
+    ANIM_EXTS.add(e.toLowerCase());
+  }
+}
+
+/** 判断扩展名是否为潜在动画格式（帧条显示/按需拆帧判定的前置闸） */
+export function isPotentialAnim(ext: string): boolean {
+  return ANIM_EXTS.has(ext);
 }

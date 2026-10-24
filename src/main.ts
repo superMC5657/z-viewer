@@ -18,7 +18,7 @@ import { UI } from "./ui";
 import { ImagePresenter } from "./presenter";
 import { Presence, loadSlideshowInterval, raceWithTimeout, type InputIntent, type NavigateKind } from "./presence";
 import { ICONS } from "./icons";
-import { setRawExts } from "./types";
+import { setAnimExts, setRawExts } from "./types";
 import type { AppSettings, BrowseState, LicenseInfo, NavResult } from "./types";
 import { checkForUpdate } from "./services/updater";
 import { LicenseService } from "./services/license";
@@ -289,13 +289,75 @@ function buildSlideshowBar(): void {
 
   const intervalSel = document.getElementById("ss-interval") as HTMLSelectElement;
   // 间隔初始值与持久化归 Presence；此处只做下拉框显示同步、变更转发与启动应用
-  const initialInterval = loadSlideshowInterval();
-  intervalSel.value = String(initialInterval);
-  presence.setIntervalMs(initialInterval);
-  intervalSel.addEventListener("change", () => {
-    const ms = Number(intervalSel.value);
+  const FIXED_INTERVALS = new Set(["1000", "2000", "5000", "10000"]);
+  /** 自定义间隔范围（整秒），与 presence 的最小 1000ms 校验对齐 */
+  const CUSTOM_MIN_S = 1;
+  const CUSTOM_MAX_S = 3600;
+
+  /** 同步下拉显示：非固定档位写入动态选项（自定义值重启后仍正确回显） */
+  function syncIntervalDisplay(ms: number): void {
+    const v = String(ms);
+    if (!FIXED_INTERVALS.has(v)) {
+      let opt = intervalSel.querySelector<HTMLOptionElement>("option[data-dynamic]");
+      if (!opt) {
+        opt = document.createElement("option");
+        opt.dataset.dynamic = "";
+        intervalSel.insertBefore(opt, intervalSel.querySelector('option[value="custom"]'));
+      }
+      opt.value = v;
+      opt.textContent = `${ms / 1000}s`;
+    }
+    intervalSel.value = v;
+  }
+
+  /** 应用间隔：转发 Presence（含持久化）并回显到下拉 */
+  function applyInterval(ms: number): void {
     presence.setIntervalMs(ms);
     console.info(`[slideshow] interval changed to ${ms}ms`);
+    syncIntervalDisplay(ms);
+  }
+
+  /** 自定义间隔：下拉原位替换为数字输入，Enter/失焦提交，Esc 取消 */
+  function promptCustomInterval(): void {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = String(CUSTOM_MIN_S);
+    input.max = String(CUSTOM_MAX_S);
+    input.step = "1";
+    input.value = String(Math.round(loadSlideshowInterval() / 1000));
+    let done = false;
+    const finish = (commit: boolean): void => {
+      if (done) return;
+      done = true;
+      input.replaceWith(intervalSel);
+      const sec = Number(input.value);
+      if (commit && Number.isInteger(sec) && sec >= CUSTOM_MIN_S && sec <= CUSTOM_MAX_S) {
+        applyInterval(sec * 1000);
+      } else {
+        // 取消/非法输入：回显当前生效间隔
+        syncIntervalDisplay(loadSlideshowInterval());
+      }
+    };
+    input.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // 输入中不让 Presence 键盘意图抢走按键
+      if (e.key === "Enter") finish(true);
+      else if (e.key === "Escape") finish(false);
+    });
+    input.addEventListener("blur", () => finish(true));
+    intervalSel.replaceWith(input);
+    input.focus();
+    input.select();
+  }
+
+  const initialInterval = loadSlideshowInterval();
+  syncIntervalDisplay(initialInterval);
+  presence.setIntervalMs(initialInterval);
+  intervalSel.addEventListener("change", () => {
+    if (intervalSel.value === "custom") {
+      promptCustomInterval();
+      return;
+    }
+    applyInterval(Number(intervalSel.value));
   });
 
   // 播放器回调
@@ -310,8 +372,6 @@ function buildSlideshowBar(): void {
     if (!result) {
       return true;
     }
-    // 调试探针：记录每次 advance 的返回（CDP 可读）
-    (window as unknown as Record<string, unknown>).__lastAdvance = result;
     if (result.boundary === "last-image") {
       // 播放到全局最后一张：自动停止并提醒（需求 2.4），退出幻灯片模式回到浏览
       console.info("[slideshow] finished: reached last image");
@@ -502,6 +562,12 @@ async function init(): Promise<void> {
   try {
     // RAW 扩展名注册：同步自后端 decode::RAW_EXTS
     setRawExts(await invoke<string[]>("get_raw_extensions"));
+  } catch {
+  }
+
+  try {
+    // 动画扩展名注册：同步自后端 decode::ANIM_EXTS（帧条判定唯一真源）
+    setAnimExts(await invoke<string[]>("get_anim_extensions"));
   } catch {
   }
 

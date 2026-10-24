@@ -394,12 +394,7 @@ impl LicenseManager {
             let status = resp.status();
             let body = resp.json::<serde_json::Value>().await.unwrap_or_default();
             let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
-            if status.as_u16() == 401
-                || matches!(
-                    error,
-                    "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE"
-                )
-            {
+            if status.as_u16() == 401 || is_revocation_error(error) {
                 // 吊销：只记静态文案，不记 error/message 原文与授权值
                 log::warn!("license revoked, credentials removed (http-status)");
                 self.clear_license();
@@ -414,10 +409,7 @@ impl LicenseManager {
             return None; // 响应异常保守视为有效，不误伤付费用户
         };
         let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
-        if matches!(
-            error,
-            "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE"
-        ) {
+        if is_revocation_error(error) {
             log::warn!("license revoked, credentials removed (body-error)");
             self.clear_license();
             return Some(self.status());
@@ -728,7 +720,9 @@ impl LicenseManager {
     pub fn status(&self) -> LicenseInfo {
         let dev = device_id();
         let lic = self.license();
-        // 单快照取 pro：status 与 features 同源派生，避免两次 is_pro() 的 TOCTOU；
+        // lic 与 pro 为相邻两次独立快照（license()/is_pro() 各自短暂加锁后即释放）：
+        // 两读之间若恰有注销/吊销写入，单次返回内部可能短暂失配（pro=true 而凭证已空），
+        // 下一次查询自愈；本地写路径（激活/注销/吊销清理）频率极低，不为此引入快照锁。
         // free 时 features 强制空（过期/篡改/失配但 device/app 匹配时不泄露权益位）。
         let pro = self.is_pro();
         let claims = lic
@@ -755,12 +749,23 @@ impl LicenseManager {
             code,
             email,
             features: if pro {
-                claims.as_ref().map(|c| c.features.clone()).unwrap_or_default()
+                claims
+                    .as_ref()
+                    .map(|c| c.features.clone())
+                    .unwrap_or_default()
             } else {
                 Vec::new()
             },
         }
     }
+}
+
+/// 服务端吊销/失效错误码：出现即删本地凭证（verify_online 的 HTTP 状态与 body 两条分流共用）
+fn is_revocation_error(error: &str) -> bool {
+    matches!(
+        error,
+        "CDK_REVOKED" | "DEVICE_NOT_ACTIVATED" | "INVALID_SIGNATURE"
+    )
 }
 
 fn email_matches_claims(email: &str, claims: &Claims) -> bool {
