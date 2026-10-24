@@ -259,16 +259,36 @@ pub(super) fn finalize_rgba(img: image::DynamicImage, orientation: u8, mode: &st
     LoadResult::rgba(mode, rgba, w, h, false)
 }
 
-/// 超限降采样：长边 > MAX_DIM 时按比例缩到上限（Triangle 滤波）
-pub(super) fn cap_dimensions(mut img: image::DynamicImage) -> image::DynamicImage {
+/// 超限降采样：长边 > MAX_DIM 时按比例缩到上限（Triangle 卷积）。
+/// 走 fast_image_resize（SIMD + rayon 并行）——image crate 的单线程 resize
+/// 在 12–24MP 上要 1.2–1.4s（票 06 剖析），是冷翻延迟的大头。
+pub(super) fn cap_dimensions(img: image::DynamicImage) -> image::DynamicImage {
     let (w, h) = (img.width(), img.height());
-    if w.max(h) > MAX_DIM {
-        let scale = MAX_DIM as f32 / w.max(h) as f32;
-        img = img.resize(
-            (w as f32 * scale).round() as u32,
-            (h as f32 * scale).round() as u32,
-            image::imageops::FilterType::Triangle,
-        );
+    if w.max(h) <= MAX_DIM {
+        return img;
     }
-    img
+    let scale = MAX_DIM as f32 / w.max(h) as f32;
+    let dw = (w as f32 * scale).round() as u32;
+    let dh = (h as f32 * scale).round() as u32;
+    let src = fast_image_resize::images::Image::from_vec_u8(
+        w,
+        h,
+        img.to_rgba8().into_raw(),
+        fast_image_resize::PixelType::U8x4,
+    )
+    .expect("降采样源缓冲");
+    let mut dst = fast_image_resize::images::Image::new(dw, dh, fast_image_resize::PixelType::U8x4);
+    let options = fast_image_resize::ResizeOptions::new()
+        .resize_alg(fast_image_resize::ResizeAlg::Convolution(
+            // Bilinear == 原 image::resize 的 Triangle 滤波（同一 tent 核）
+            fast_image_resize::FilterType::Bilinear,
+        ))
+        .use_alpha(false); // 与原 image::resize 行为一致（非预乘）
+    let mut resizer = fast_image_resize::Resizer::new();
+    resizer
+        .resize(&src, &mut dst, &options)
+        .expect("降采样失败");
+    image::DynamicImage::ImageRgba8(
+        image::RgbaImage::from_raw(dw, dh, dst.into_vec()).expect("降采样目标缓冲"),
+    )
 }

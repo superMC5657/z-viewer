@@ -328,6 +328,7 @@ fn jxl_engine_bench() {
 #[test]
 #[ignore = "手动剖析：cargo test --release --ignored decode_component_profile -- --nocapture"]
 fn decode_component_profile() {
+    use super::jxl::libjxl_engine;
     use std::time::Instant;
 
     let cores = std::thread::available_parallelism()

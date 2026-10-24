@@ -10,7 +10,7 @@
 //! image crate 无压缩 RGB）；RAW 需真实机内文件无法合成，见票 02 的 Answer。
 //! 数字解读与决策用途见 `.scratch/pm-followup-20261024/issues/02`。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -56,7 +56,7 @@ impl Drop for TempDir {
     }
 }
 
-fn gen_jxl(dir: &PathBuf) {
+fn gen_jxl(dir: &Path) {
     use crate::decode::bench_util::encode_jxl_fixture;
     for i in 0..N_FILES {
         let mut rgba = vec![0u8; JXL_W as usize * JXL_H as usize * 4];
@@ -75,7 +75,7 @@ fn gen_jxl(dir: &PathBuf) {
     }
 }
 
-fn gen_tiff(dir: &PathBuf) {
+fn gen_tiff(dir: &Path) {
     for i in 0..N_FILES {
         let img = image::RgbImage::from_fn(TIFF_W, TIFF_H, |x, y| {
             let n = noise(x, y, i as u32);
@@ -147,7 +147,7 @@ fn record(run: &mut Run, ms: f64, hit: bool) {
 
 /// 一次往返扫描：open → 首图 → next×(N-1) → prev×(N-1)。
 /// `look = Some(..)` 正常浏览节奏（预取有消化窗口），None 快速连翻（最坏情况）。
-fn run_scan(dir: &PathBuf, level: usize, look: Option<Duration>) -> Run {
+fn run_scan(dir: &Path, level: usize, look: Option<Duration>) -> Run {
     let cache = DecodeCache::new(0);
     let first_cache = FolderFirstCache::new(0);
     let settings = AppSettings {
@@ -240,7 +240,7 @@ fn report(label: &str, run: &Run) {
     );
 }
 
-fn run_format(label: &str, dir: &PathBuf) {
+fn run_format(label: &str, dir: &Path) {
     println!("== {label} ×{N_FILES}（往返扫描） ==");
     report("level 0 免费(冷)", &run_scan(dir, 0, None));
     report("level 1 正常节奏", &run_scan(dir, 1, Some(LOOK)));
