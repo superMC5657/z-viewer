@@ -89,8 +89,8 @@ impl SettingsState {
 
 /// 专业版门控唯一入口（Top4 收口）：pro 则执行 pro()，否则返回 free。
 /// 调用方传入 license.is_pro() 快照——纯布尔可测，LicenseManager 不再漏进门控。
-/// 各命令的 free 契约保持不变：
-/// - jump_folder → Ok(pro-required)、get_context → Ok(空)
+/// 各命令的 free 契约保持不变（jump_folder 已按 ADR 0003 开放至免费版，不再走此门）：
+/// - get_context → Ok(空)
 /// - set_cache_level → Err(解锁提示)、get_settings/load_image → 降级值
 pub(crate) fn require_pro<T>(pro: bool, free: T, pf: impl FnOnce() -> T) -> T {
     if pro {
@@ -110,18 +110,17 @@ pub fn on_ready_callback(app: tauri::AppHandle) -> crate::browse::OnReady {
     })
 }
 
-/// 按路径形态分发打开浏览模型：目录 → open_first_in_dir_gated（取首图），
-/// 文件 → open_gated（定位到该文件）；main.rs 启动注入与 open_path 共用。
+/// 按路径形态分发打开浏览模型：目录 → open_first_in_dir（取首图），
+/// 文件 → open（定位到该文件）；main.rs 启动注入与 open_path 共用。
 /// 只做分发：日志、代次推进、预取统一归 Navigator（open_path 经 did_open）。
 pub fn open_model_from_path(
     p: &Path,
     on_ready: Option<crate::browse::OnReady>,
-    pro: bool,
 ) -> Option<BrowseModel> {
     if p.is_dir() {
-        BrowseModel::open_first_in_dir_gated(p, on_ready, pro)
+        BrowseModel::open_first_in_dir(p, on_ready)
     } else {
-        BrowseModel::open_gated(p, on_ready, pro)
+        BrowseModel::open(p, on_ready)
     }
 }
 
@@ -169,13 +168,11 @@ pub fn open_path(
     cache: State<'_, DecodeCache>,
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
-    license: State<'_, crate::license::LicenseManager>,
     path: String,
 ) -> Result<NavResult, String> {
     let p = Path::new(&path);
-    let pro = license.is_pro();
     let on_ready = Some(on_ready_callback(app.clone()));
-    let model = open_model_from_path(p, on_ready, pro);
+    let model = open_model_from_path(p, on_ready);
     let Some(model) = model else {
         // 浏览模型打开失败：error，只记 basename
         log::error!("browse open failed {}", basename_of(&path));
@@ -229,40 +226,37 @@ pub fn prev_image(
 }
 
 /// 文件夹级跳转：target ∈ "first" | "prev" | "next" | "last"
-/// 专业版功能：免费版返回 pro-required（前端弹解锁引导）
+/// （ADR 0003 起全版本可用；无目标时由模型返回文件夹边界）
 #[tauri::command]
 pub fn jump_folder(
     state: State<'_, AppState>,
     cache: State<'_, DecodeCache>,
     first_cache: State<'_, FolderFirstCache>,
     settings: State<'_, SettingsState>,
-    license: State<'_, crate::license::LicenseManager>,
     target: String,
 ) -> Result<NavResult, String> {
-    require_pro(license.is_pro(), Ok(NavResult::pro_required()), || {
-        let t = match target.as_str() {
-            "first" => FolderTarget::First,
-            "prev" => FolderTarget::Prev,
-            "next" => FolderTarget::Next,
-            "last" => FolderTarget::Last,
-            _ => {
-                log::warn!("browse jump failed: unknown target");
-                return Err(format!("未知跳转目标: {target}"));
-            }
-        };
-        let r = navigate(
-            state.inner(),
-            cache.inner(),
-            first_cache.inner(),
-            settings.inner(),
-            NavStep::Folder(t),
-        )?;
-        if let Some(st) = r.state.as_ref() {
-            // 文件夹级跳转成功：低频关键定位变更，记 info
-            log::info!("browse jump folder {target} ok {}", st.folder_name);
+    let t = match target.as_str() {
+        "first" => FolderTarget::First,
+        "prev" => FolderTarget::Prev,
+        "next" => FolderTarget::Next,
+        "last" => FolderTarget::Last,
+        _ => {
+            log::warn!("browse jump failed: unknown target");
+            return Err(format!("未知跳转目标: {target}"));
         }
-        Ok(r)
-    })
+    };
+    let r = navigate(
+        state.inner(),
+        cache.inner(),
+        first_cache.inner(),
+        settings.inner(),
+        NavStep::Folder(t),
+    )?;
+    if let Some(st) = r.state.as_ref() {
+        // 文件夹级跳转成功：低频关键定位变更，记 info
+        log::info!("browse jump folder {target} ok {}", st.folder_name);
+    }
+    Ok(r)
 }
 
 /// 启动时查询初始状态（命令行参数已由 main.rs 注入模型）

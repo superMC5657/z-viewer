@@ -161,7 +161,7 @@ fn run_scan(dir: &PathBuf, level: usize, look: Option<Duration>) -> Run {
         cache.set_capacity(if level >= 2 { 8 } else { 4 });
         first_cache.set_capacity(4);
     }
-    let model = BrowseModel::open_first_in_dir_gated(dir, None, true).expect("打开素材文件夹");
+    let model = BrowseModel::open_first_in_dir(dir, None).expect("打开素材文件夹");
     let nav = Navigator::new(cache.clone(), first_cache.clone());
     if caching {
         nav.did_open(&model, &policy);

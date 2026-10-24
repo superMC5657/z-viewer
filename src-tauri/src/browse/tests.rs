@@ -164,14 +164,13 @@ fn open_case_insensitive() {
 
 #[cfg(windows)]
 #[test]
-fn open_free_mode_wrong_case_folder_name() {
+fn open_wrong_case_folder_name() {
     let base = build_tree();
-    // 免费版（cross_folder=false）：文件夹名大小写与磁盘不一致（磁盘上是 A）也应能打开。
-    // 回归：曾用大小写敏感 OsStr == 比较文件夹名，导致 open_gated 返回 None（误报"不是支持的图片格式"）
+    // 文件夹名大小写与磁盘不一致（磁盘上是 A）也应能打开。
+    // 回归：曾用大小写敏感 OsStr == 比较文件夹名，导致 open 返回 None（误报"不是支持的图片格式"）
     let typed = base.join("a").join("a1.png");
     assert!(typed.exists(), "Windows 大小写不敏感，路径应存在");
-    let m = BrowseModel::open_gated(&typed, None, false)
-        .expect("免费版：文件夹名大小写不一致也应能打开");
+    let m = BrowseModel::open(&typed, None).expect("文件夹名大小写不一致也应能打开");
     assert_eq!(m.state().file_name, "a1.png");
     cleanup(&base);
 }
@@ -361,63 +360,21 @@ fn nav_during_scan_never_panics() {
     cleanup(&base);
 }
 
-// ---------- 专业版门控：免费版单文件夹模式 ----------
+// ---------- 跨文件夹（ADR 0003 起全版本可用） ----------
 
 #[test]
-fn free_mode_single_folder_no_cross() {
+fn cross_folder_from_file_open() {
     let base = build_tree();
-    // 免费版（cross_folder=false）：打开 A/a1.png 只浏览当前文件夹
-    let m = BrowseModel::open_gated(&base.join("A/a1.png"), None, false).unwrap();
+    let m = BrowseModel::open(&base.join("A/a10.png"), None).unwrap();
     let st = m.state();
-    assert_eq!(st.folder_total, 1, "免费版 folders 只含当前文件夹");
-    assert!(!st.loading, "免费版无后台扫描，loading=false");
-    assert_eq!(
-        st.global_total, 3,
-        "全局总数 = 当前文件夹图片数（不累计兄弟）"
-    );
-    // next 到文件夹末尾即停（不跨到 B）
-    assert_eq!(m.state().file_name, "a1.png");
-    for _ in 0..2 {
-        assert_eq!(m.next(), Nav::Ok, "文件夹内翻页正常");
-    }
-    assert_eq!(
-        m.next(),
-        Nav::Boundary(Boundary::LastImage),
-        "文件夹末尾即全局边界（不跨文件夹）"
-    );
-    // prev 回退正常，回到开头后再 prev 撞全局边界
-    assert_eq!(m.prev(), Nav::Ok);
-    assert_eq!(m.prev(), Nav::Ok);
-    assert_eq!(
-        m.prev(),
-        Nav::Boundary(Boundary::FirstImage),
-        "文件夹开头即全局边界"
-    );
-    // jump_folder 无目标可跳
-    assert_eq!(
-        m.jump_folder(FolderTarget::Next),
-        Nav::Boundary(Boundary::LastFolder)
-    );
-    cleanup(&base);
-}
-
-#[test]
-fn pro_mode_cross_folder_still_works() {
-    let base = build_tree();
-    // 专业版（cross_folder=true）：可跨到兄弟文件夹
-    let m = BrowseModel::open_gated(&base.join("A/a10.png"), None, true).unwrap();
-    let st = m.state();
-    assert_eq!(
-        st.folder_total, 4,
-        "专业版扫描全部同级目录（含空目录，后台压缩）"
-    );
+    assert_eq!(st.folder_total, 4, "扫描全部同级目录（含空目录，后台压缩）");
     assert!(st.loading);
     wait_ready(&m);
     assert_eq!(m.state().folder_total, 3, "后台压缩后无图文件夹被排除");
     // A 末张 a10.png → next 跨到 B/b1.jpg
     let nav = m.next();
     assert_eq!(nav, Nav::Ok);
-    assert_eq!(m.state().file_name, "b1.jpg", "专业版跨文件夹衔接");
+    assert_eq!(m.state().file_name, "b1.jpg", "跨文件夹衔接");
     cleanup(&base);
 }
 

@@ -89,7 +89,7 @@ void initZLog().catch(() => undefined);
 - `info` zviewer startup: version {ver} (os: {os}, arch: {arch})（应用启动与运行环境）
 - `info` zviewer exit: session duration {dur}s, images viewed: {v}, unique: {u}, folders: {f}（正常退出时会话统计小结）
 - `info` browse open ok {basename} (folder: {folder_name}, total: {total})（打开图片成功，包含所属文件夹与总图片数）
-- `info` browse open gated reject {not-image|no-parent|unknown-image|unknown-folder|empty-dir} {basename}（门控拒绝原因码，只记 basename）
+- `info` browse open reject {not-image|no-parent|unknown-image|unknown-folder|empty-dir} {basename}（打开拒绝原因码，只记 basename）
 - `debug` browse scan done folders {n} total {m}（后台兄弟扫描完成计数，只记数量；全空防御分支另带 `(all-empty)` 后缀）
 - `warn` browse open failed {basename}（启动路径打不开：非图片/空目录）
 - `error` browse open failed {basename}（`open_path` 模型建立失败，直接返回前端错误）
@@ -185,7 +185,7 @@ void initZLog().catch(() => undefined);
 - `src-tauri/src/commands/mod.rs`（`navigate` 边界/跨越/单图切换、`open_path` 打开成败、`jump_folder` 未知跳转目标、`load_image` 解码失败）
 - `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[jxl]`/`[anim]` 后缀 + `[jxl]` 引擎回退，
   `decode done` 通道耗时 debug，摘要辅助转发自 `util`，与命令层后缀去重）
-- `src-tauri/src/browse/scan.rs`（门控拒绝原因码 info + 后台扫描计数 debug）
+- `src-tauri/src/browse/scan.rs`（打开拒绝原因码 info + 后台扫描计数 debug）
 - `src-tauri/src/cache/*.rs`（`DecodeCache::get_entry` hit/miss debug + `LruQueue` 淘汰计数 debug）
 - `src-tauri/src/navigator.rs`（预取派生与代次协议：`cache prefetch failed (ctx)`/`(first)` debug、
   `navigate`/`did_open`/`frontend_context`；翻页延迟基准 `flip_latency_bench`）

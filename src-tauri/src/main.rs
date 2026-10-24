@@ -133,7 +133,7 @@ fn main() {
                 let p = Path::new(&path);
                 let base = util::basename_of(p);
                 let on_ready = Some(commands::on_ready_callback(app.handle().clone()));
-                let model = commands::open_model_from_path(p, on_ready, pro);
+                let model = commands::open_model_from_path(p, on_ready);
                 match model {
                     // 启动打开结果：成功 info / 失败 warn，只记 basename
                     Some(model) => {

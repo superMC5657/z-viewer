@@ -108,7 +108,7 @@ pub enum NavStep {
 }
 
 /// 导航结果：boundary 为 Some 时表示撞到全局边界（前端弹 Toast），state 不变。
-/// boundary 取值："first-image" | "last-image" | "first-folder" | "last-folder" | "pro-required"
+/// boundary 取值："first-image" | "last-image" | "first-folder" | "last-folder"
 #[derive(serde::Serialize)]
 pub struct NavResult {
     pub boundary: Option<String>,
@@ -132,13 +132,6 @@ impl NavResult {
         Self {
             boundary: Some(msg.into()),
             state: Some(state),
-        }
-    }
-    /// 专业版功能锁定（免费版调用 jump_folder）：前端弹出解锁引导。
-    pub fn pro_required() -> Self {
-        Self {
-            boundary: Some("pro-required".into()),
-            state: None,
         }
     }
     pub(crate) fn none() -> Self {

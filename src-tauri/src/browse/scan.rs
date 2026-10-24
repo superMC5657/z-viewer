@@ -9,39 +9,29 @@ use super::{canonical, is_image_file, BrowseModel, Folder, InnerData, ModelInner
 use crate::util::basename_of;
 
 impl BrowseModel {
-    /// 以某张图片为起点建立浏览模型（完整功能：跨文件夹扫描）
-    /// 等价于 open_gated(..., cross_folder=true)；仅测试使用
-    #[cfg(test)]
+    /// 以某张图片为起点建立浏览模型：同步枚举当前文件夹定位首图，
+    /// 同级文件夹后台填充（跨文件夹无缝浏览，ADR 0003 起全版本可用）。
     pub fn open(path: &Path, on_ready: Option<OnReady>) -> Option<Self> {
-        Self::open_gated(path, on_ready, true)
-    }
-
-    /// 门控打开：cross_folder=false（免费版）时只浏览当前文件夹 ——
-    /// 兄弟文件夹不扫描、不后台填充、不启动扫描线程，
-    /// next/prev 自然停在文件夹边界，jump_folder 亦无目标可跳。
-    /// 付费解锁（专业版）后调用方传入 true 恢复跨文件夹无缝浏览。
-    pub fn open_gated(path: &Path, on_ready: Option<OnReady>, cross_folder: bool) -> Option<Self> {
         if !path.is_file() || !is_image_file(path) {
             // 打开拒绝（低频）：原因码 + basename，不记全路径
-            log::info!("browse open gated reject not-image {}", basename_of(path));
+            log::info!("browse open reject not-image {}", basename_of(path));
             return None;
         }
         let parent = path.parent()?;
         if !parent.is_dir() {
-            log::info!("browse open gated reject no-parent {}", basename_of(path));
+            log::info!("browse open reject no-parent {}", basename_of(path));
             return None;
         }
         let current_images = Self::list_images(parent);
-        Self::open_with_current_images(path, current_images, on_ready, cross_folder)
+        Self::open_with_current_images(path, current_images, on_ready)
     }
 
-    /// 共享实现：open_gated 与 open_first_in_dir_gated 都走这里，
+    /// 共享实现：open 与 open_first_in_dir 都走这里，
     /// 当前文件夹图片列表由调用方传入（各自场景只枚举一次，见 A3）
     fn open_with_current_images(
         path: &Path,
         current_images: Vec<PathBuf>,
         on_ready: Option<OnReady>,
-        cross_folder: bool,
     ) -> Option<Self> {
         let parent = path.parent()?;
 
@@ -53,44 +43,34 @@ impl BrowseModel {
             .to_string_lossy()
             .to_string();
 
-        // 同级文件夹（含自身）：免费版仅当前文件夹；专业版枚举兄弟目录
-        // （免费版不枚举兄弟：既不泄露功能存在，也省一次目录遍历）
+        // 同级文件夹（含自身）：枚举兄弟目录（跨文件夹无缝浏览，全版本可用）
         let mut dirs: Vec<(String, PathBuf)> = Vec::new();
-        if cross_folder {
-            match parent.parent() {
-                Some(base) => {
-                    if let Ok(rd) = std::fs::read_dir(base) {
-                        for entry in rd.flatten() {
-                            let p = entry.path();
-                            // file_type 快路径：目录枚举元数据直接判定（Windows 零额外 stat）
-                            let is_dir = match entry.file_type() {
-                                Ok(ft) => ft.is_dir(),
-                                Err(_) => p.is_dir(),
-                            };
-                            if is_dir {
-                                if let Some(name) = p.file_name() {
-                                    dirs.push((name.to_string_lossy().to_string(), p));
-                                }
+        match parent.parent() {
+            Some(base) => {
+                if let Ok(rd) = std::fs::read_dir(base) {
+                    for entry in rd.flatten() {
+                        let p = entry.path();
+                        // file_type 快路径：目录枚举元数据直接判定（Windows 零额外 stat）
+                        let is_dir = match entry.file_type() {
+                            Ok(ft) => ft.is_dir(),
+                            Err(_) => p.is_dir(),
+                        };
+                        if is_dir {
+                            if let Some(name) = p.file_name() {
+                                dirs.push((name.to_string_lossy().to_string(), p));
                             }
                         }
                     }
                 }
-                None => {
-                    let name = parent
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    dirs.push((name, parent.to_path_buf()));
-                }
             }
-        } else {
-            let name = parent
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            dirs.push((name, parent.to_path_buf()));
+            None => {
+                let name = parent
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                dirs.push((name, parent.to_path_buf()));
+            }
         }
         dirs.sort_by(|a, b| natord::compare(&a.0, &b.0));
         let dirs: Vec<PathBuf> = dirs.into_iter().map(|(_, p)| p).collect();
@@ -108,17 +88,14 @@ impl BrowseModel {
             None => false,
         });
         let Some(image_index) = image_index else {
-            log::info!(
-                "browse open gated reject unknown-image {}",
-                basename_of(path)
-            );
+            log::info!("browse open reject unknown-image {}", basename_of(path));
             return None;
         };
 
         // 构建 folders：当前文件夹已填充，其余 None（后台填充）
         // 定位当前文件夹：先按名字比较（大小写不敏感，与 Windows 文件系统语义
-        // 及下方图片定位一致）；全不匹配再退回 canonicalize 比较 —— 免费版的
-        // dirs 名来自用户传入路径（大小写可能任意），经 junction/符号链接打开时
+        // 及下方图片定位一致）；全不匹配再退回 canonicalize 比较 —— 用户传入
+        // 路径的 dirs 名可能大小写任意，经 junction/符号链接打开时
         // canonicalize 会解析到目标路径，名字可能与 read_dir 条目完全不同。
         // 快路径零额外系统调用；canonicalize 兜底仅在名字全不匹配时触发（罕见）。
         let folder_index = dirs
@@ -142,15 +119,12 @@ impl BrowseModel {
             });
         }
         let Some(folder_index) = folder_index else {
-            log::info!(
-                "browse open gated reject unknown-folder {}",
-                basename_of(path)
-            );
+            log::info!("browse open reject unknown-folder {}", basename_of(path));
             return None;
         };
         let pending_total = folders.len();
-        // 免费版（cross_folder=false）无待填充文件夹，loading=false
-        let loading = cross_folder && pending_total > 1;
+        // 仅当前文件夹时无待填充项，loading=false
+        let loading = pending_total > 1;
 
         let inner = Arc::new(ModelInner {
             m: std::sync::Mutex::new(InnerData {
@@ -167,31 +141,27 @@ impl BrowseModel {
             file_sizes: std::sync::Mutex::new(HashMap::new()),
         });
 
-        // 后台扫描兄弟文件夹（免费版无兄弟可扫，跳过）
-        if cross_folder && pending_total > 1 {
+        // 后台扫描兄弟文件夹
+        if pending_total > 1 {
             let scan_inner = Arc::clone(&inner);
             std::thread::spawn(move || background_scan(scan_inner, on_ready));
         } else if let Some(cb) = on_ready {
-            // 免费版/单文件夹：无后台扫描，立即回调（状态即最终态）
+            // 单文件夹：无后台扫描，立即回调（状态即最终态）
             cb(BrowseModel::state_from_inner(&inner));
         }
 
         Some(Self { inner })
     }
 
-    /// 打开目录（门控）：取目录内第一张图片（自然排序）作为起点。
+    /// 打开目录：取目录内第一张图片（自然排序）作为起点。
     /// 当前文件夹图片列表只枚举一次：首图与定位列表复用同一份。
-    pub fn open_first_in_dir_gated(
-        dir: &Path,
-        on_ready: Option<OnReady>,
-        cross_folder: bool,
-    ) -> Option<Self> {
+    pub fn open_first_in_dir(dir: &Path, on_ready: Option<OnReady>) -> Option<Self> {
         let current_images = Self::list_images(dir);
         let Some(first) = current_images.first().cloned() else {
-            log::info!("browse open gated reject empty-dir {}", basename_of(dir));
+            log::info!("browse open reject empty-dir {}", basename_of(dir));
             return None;
         };
-        Self::open_with_current_images(&first, current_images, on_ready, cross_folder)
+        Self::open_with_current_images(&first, current_images, on_ready)
     }
 
     fn list_images(dir: &Path) -> Vec<PathBuf> {
