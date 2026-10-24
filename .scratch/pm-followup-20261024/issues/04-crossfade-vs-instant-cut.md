@@ -1,6 +1,6 @@
 # 04. 裁决:切图 0ms 瞬切 vs 规格 150ms crossfade
 
-Status: ready-for-human
+Status: resolved
 Source: 产品视角复盘(体验视角);code review 20261024 票13(以改文档收尾的三条降级之一)
 Type: grilling
 
@@ -22,6 +22,12 @@ B 或 C;若实测出现闪烁/拖影/掉帧则回退 A 并在文档记录原因�
 
 - 裁决写入 `## Answer`;若改代码,新立实现票并同步需求文档 §3 与规划文档。
 
+## Answer
+
+2026-10-24 裁决:**维持现状(选项 A)**——切图 0ms 瞬切(响应优先),不恢复
+crossfade。需求文档 §3 与 README 已按现状记载,无代码改动。
+
 ## Comments
 
 - 2026-10-24 建档。
+- 2026-10-24 用户裁决:维持现状,本票关闭。
