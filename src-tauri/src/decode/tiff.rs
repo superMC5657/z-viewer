@@ -1,7 +1,7 @@
 //! TIFF 静态解码通道：image crate 解码 → 方向回正 → 降采样 → 原始 RGBA8 像素
 //! （Chromium 不解码 TIFF，走 Rust 通道原始像素直通，免二次 JPEG 有损压缩与编解码开销）
 
-use super::{finalize_rgba, LoadResult};
+use super::{finalize_rgba, load_mode, LoadResult};
 
 pub(super) fn decode_static(path: &str) -> Result<LoadResult, String> {
     use std::io::BufReader;
@@ -15,5 +15,5 @@ pub(super) fn decode_static(path: &str) -> Result<LoadResult, String> {
         .decode()
         .map_err(|e| format!("TIFF 解码失败: {e}"))?;
 
-    Ok(finalize_rgba(img, orientation, "static"))
+    Ok(finalize_rgba(img, orientation, load_mode::STATIC))
 }

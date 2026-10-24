@@ -224,23 +224,31 @@ fn render_to_rgba(
     let rgba: Vec<u8> = match image.pixel_format() {
         jxl_oxide::PixelFormat::Gray => buf,
         jxl_oxide::PixelFormat::Graya => buf
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .collect(),
         jxl_oxide::PixelFormat::Rgb => buf
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|p| [p[0], p[1], p[2], 255])
             .collect(),
         jxl_oxide::PixelFormat::Rgba => buf,
         jxl_oxide::PixelFormat::Cmyk => buf
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| {
                 let (r, g, b) = cmyk_to_rgb(p[0], p[1], p[2], p[3]);
                 [r, g, b, 255]
             })
             .collect(),
         jxl_oxide::PixelFormat::Cmyka => buf
-            .chunks_exact(5)
+            .as_chunks::<5>()
+            .0
+            .iter()
             .flat_map(|p| {
                 let (r, g, b) = cmyk_to_rgb(p[0], p[1], p[2], p[3]);
                 [r, g, b, p[4]]

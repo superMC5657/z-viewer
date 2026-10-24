@@ -120,10 +120,12 @@ void initZLog().catch(() => undefined);
 - `warn` decode fallback {basename} [jxl]: {原因首行}（libjxl 主引擎失败、jxl-oxide 回退成功；回退原因经 `decode_jxl` 返回值上浮，分发点记录）
 - `warn` decode failed {basename}: {原因首行}（`load_image` 实时路径：RAW/TIFF/JXL/动画全通道收敛于此；
   预取后台调用走 `cache prefetch failed` 的 debug，见下）
+- `debug` decode done {basename} in {ms}ms（通道耗时打点：raw/tiff/jxl/anim 通道成功后记一次，
+  asset 通道零解码不记；release 不可见，翻页延迟分析用，见 `flip_latency_bench`）
 - 解码器内部（`raw.rs`/`tiff.rs`/`jxl.rs`/`animation.rs`）零 log：底层错误（io/ImageError/rawler `Display`）
   均不含路径，只在分发点 + 命令层各记一次（后缀区分）。
 
-## 缓存（`commands/mod.rs` + `commands/prefetch.rs` + `cache/*.rs`）
+## 缓存（`commands/mod.rs` + `navigator.rs` + `cache/*.rs`）
 
 - `info` cache level set {level}（缓存等级切换：0=关闭、1=开启、2=高，配置变迁留痕）
 - `debug` cache prefetch failed (ctx) {basename}: {原因首行}（队列 B 上下文预取；
@@ -181,10 +183,12 @@ void initZLog().catch(() => undefined);
 - `src-tauri/src/util.rs`（日志摘要辅助单一实现：`basename_of`/`first_line_of`/`now`；
   原各调用点本地副本已删，调用方 `use` 转发）
 - `src-tauri/src/commands/mod.rs`（`navigate` 边界/跨越/单图切换、`open_path` 打开成败、`jump_folder` 未知跳转目标、`load_image` 解码失败）
-- `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[jxl]`/`[anim]` 后缀 + `[jxl]` 引擎回退，摘要辅助转发自 `util`，与命令层后缀去重）
+- `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[jxl]`/`[anim]` 后缀 + `[jxl]` 引擎回退，
+  `decode done` 通道耗时 debug，摘要辅助转发自 `util`，与命令层后缀去重）
 - `src-tauri/src/browse/scan.rs`（门控拒绝原因码 info + 后台扫描计数 debug）
 - `src-tauri/src/cache/*.rs`（`DecodeCache::get_entry` hit/miss debug + `LruQueue` 淘汰计数 debug）
-- `src-tauri/src/commands/prefetch.rs`（预取失败 debug：`(ctx)`/`(first)` 分支后缀）
+- `src-tauri/src/navigator.rs`（预取派生与代次协议：`cache prefetch failed (ctx)`/`(first)` debug、
+  `navigate`/`did_open`/`frontend_context`；翻页延迟基准 `flip_latency_bench`）
 - `src-tauri/src/license.rs`（授权事件打点：`LicenseManager::load` 启动加载回退、
   `verify_online` 离线降级/吊销三态/推迟/续验成功、`activate_license` 激活与验签失败、
   `deactivate_license` 注销）

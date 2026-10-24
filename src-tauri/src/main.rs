@@ -7,6 +7,8 @@ mod cache;
 mod cache_policy;
 mod commands;
 mod decode;
+#[cfg(test)]
+mod flip_latency_bench;
 mod license;
 mod navigator;
 mod util;

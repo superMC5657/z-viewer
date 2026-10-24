@@ -82,18 +82,17 @@ pub(super) fn probe_animated(path: &str) -> Option<bool> {
         }
         ffi::JxlDecoderCloseInput(dec);
 
-        loop {
-            match ffi::JxlDecoderProcessInput(dec) {
-                ffi::JXL_DEC_BASIC_INFO => {
-                    let mut info = ffi::JxlBasicInfo::zeroed();
-                    if ffi::JxlDecoderGetBasicInfo(dec, &mut info) != ffi::JXL_DEC_SUCCESS {
-                        return None;
-                    }
-                    return Some(info.have_animation == ffi::JXL_TRUE);
+        // 每个分支都会立即返回：订阅的只有 BASIC_INFO 事件，一次 ProcessInput 即出结果
+        match ffi::JxlDecoderProcessInput(dec) {
+            ffi::JXL_DEC_BASIC_INFO => {
+                let mut info = ffi::JxlBasicInfo::zeroed();
+                if ffi::JxlDecoderGetBasicInfo(dec, &mut info) != ffi::JXL_DEC_SUCCESS {
+                    return None;
                 }
-                ffi::JXL_DEC_SUCCESS => return Some(false),
-                _ => return None,
+                Some(info.have_animation == ffi::JXL_TRUE)
             }
+            ffi::JXL_DEC_SUCCESS => Some(false),
+            _ => None,
         }
     }
 }

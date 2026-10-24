@@ -19,6 +19,8 @@
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
 
 mod animation;
+#[cfg(test)]
+pub(crate) mod bench_util;
 pub mod format;
 mod jxl;
 mod preview;
@@ -153,6 +155,22 @@ impl LoadResult {
 /// 的通用 `decode failed` 与此按通道后缀去重（`[raw]`/`[tiff]`/`[anim]`），只看
 /// 通道维度时无需翻命令层日志。
 pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
+    let started = std::time::Instant::now();
+    let result = load_image_dispatch(path, full);
+    if let Ok(r) = &result {
+        if r.mode != load_mode::ASSET {
+            // 通道耗时打点（debug：dev 可见 release 不落盘；asset 通道零解码，不记）
+            log::debug!(
+                "decode done {} in {}ms",
+                basename_of(path),
+                started.elapsed().as_millis()
+            );
+        }
+    }
+    result
+}
+
+fn load_image_dispatch(path: &str, full: bool) -> Result<LoadResult, String> {
     let ext = ext_of(path);
 
     match classify_ext(&ext) {

@@ -5,13 +5,19 @@
 
 use rawler::Orientation;
 
-use super::{finalize_rgba, LoadResult};
+use super::{finalize_rgba, load_mode, LoadResult};
 
 pub(super) fn decode_raw(path: &str, full: bool) -> Result<LoadResult, String> {
     // 非全量拍：优先返回内嵌 JPEG 预览；提取失败回退全量 develop
     if !full {
         if let Some(p) = super::preview::extract_preview(path) {
-            return Ok(LoadResult::jpeg("raw", p.jpeg, p.width, p.height, true));
+            return Ok(LoadResult::jpeg(
+                load_mode::RAW,
+                p.jpeg,
+                p.width,
+                p.height,
+                true,
+            ));
         }
     }
 
@@ -25,7 +31,7 @@ pub(super) fn decode_raw(path: &str, full: bool) -> Result<LoadResult, String> {
         .to_dynamic_image()
         .ok_or_else(|| "RAW 图像转换失败".to_string())?;
 
-    Ok(finalize_rgba(img, orientation, "raw"))
+    Ok(finalize_rgba(img, orientation, load_mode::RAW))
 }
 
 /// rawler Orientation → EXIF 1-8（Unknown 按 1 正常处理）
