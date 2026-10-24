@@ -319,3 +319,114 @@ fn jxl_engine_bench() {
         mpx / t_oxide.as_secs_f64()
     );
 }
+
+// ============================================================
+// 解码分段剖析（票 06）：冷解码的耗时构成（读盘/引擎解码/收尾/信封）。
+// 数字解读与优化决策见 .scratch/pm-followup-20261024/issues/06。
+// ============================================================
+
+#[test]
+#[ignore = "手动剖析：cargo test --release --ignored decode_component_profile -- --nocapture"]
+fn decode_component_profile() {
+    use std::time::Instant;
+
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(0);
+    println!("可用并行度: {cores}（JXL 引擎线程钳制 ≤8）");
+
+    // ---- JXL 24MP（与 flip_latency_bench 同款确定性噪声纹理）----
+    let (w, h) = (6000u32, 4000u32);
+    let mut rgba = vec![0u8; w as usize * h as usize * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let o = (y as usize * w as usize + x as usize) * 4;
+            let n = ((x.wrapping_mul(2654435761) ^ y.wrapping_mul(2246822519)) & 0x3f) as u8;
+            rgba[o] = ((x * 255 / w) as u8).wrapping_add(n);
+            rgba[o + 1] = ((y * 255 / h) as u8).wrapping_add(n);
+            rgba[o + 2] = (((x + y) & 0xff) as u8).wrapping_add(n);
+            rgba[o + 3] = 255;
+        }
+    }
+    let bytes = encode_jxl_fixture(&rgba, w, h);
+    let tmp = std::env::temp_dir().join("zviewer-profile.jxl");
+    std::fs::write(&tmp, &bytes).unwrap();
+    let path = tmp.to_str().unwrap();
+
+    let t = Instant::now();
+    let _raw = std::fs::read(path).unwrap();
+    let t_read = t.elapsed();
+
+    let t = Instant::now();
+    let out = libjxl_engine::decode(path).expect("libjxl 解码成功");
+    let t_engine = t.elapsed();
+    assert_eq!(out.frames[0].len(), rgba.len());
+
+    let t = Instant::now();
+    let img = image::RgbaImage::from_raw(out.width, out.height, out.frames[0].clone())
+        .map(image::DynamicImage::ImageRgba8)
+        .unwrap();
+    let result = finalize_rgba(img, 1, load_mode::STATIC);
+    let t_finalize = t.elapsed();
+
+    let t = Instant::now();
+    let envelope = pack_envelope(&result);
+    let t_pack = t.elapsed();
+
+    println!(
+        "JXL {w}×{h}（24MP，码流 {:.1} MB）",
+        bytes.len() as f64 / 1048576.0
+    );
+    println!("  读盘                 : {t_read:?}");
+    println!("  引擎解码             : {t_engine:?}");
+    println!(
+        "  收尾(方向+缩放+RGBA) : {t_finalize:?} → {}×{}",
+        result.width.unwrap_or(0),
+        result.height.unwrap_or(0)
+    );
+    println!(
+        "  信封打包             : {t_pack:?}（{:.1} MB）",
+        envelope.len() as f64 / 1048576.0
+    );
+    let _ = std::fs::remove_file(&tmp);
+
+    // ---- TIFF 12MP ----
+    let (tw, th) = (4000u32, 3000u32);
+    let tif_img = image::RgbImage::from_fn(tw, th, |x, y| {
+        let n = ((x.wrapping_mul(2654435761) ^ y.wrapping_mul(2246822519)) & 0x3f) as u8;
+        image::Rgb([
+            ((x * 255 / tw) as u8).wrapping_add(n),
+            ((y * 255 / th) as u8).wrapping_add(n),
+            (((x + y) & 0xff) as u8).wrapping_add(n),
+        ])
+    });
+    let tif_tmp = std::env::temp_dir().join("zviewer-profile.tif");
+    tif_img
+        .save_with_format(&tif_tmp, image::ImageFormat::Tiff)
+        .unwrap();
+    let tif_path = tif_tmp.to_str().unwrap();
+
+    let t = Instant::now();
+    let (file, orientation) = preview::open_with_orientation(tif_path).unwrap();
+    let t_open = t.elapsed();
+    let t = Instant::now();
+    let decoded = image::ImageReader::new(std::io::BufReader::new(&file))
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .unwrap();
+    let t_decode = t.elapsed();
+    let t = Instant::now();
+    let result2 = finalize_rgba(decoded, orientation, load_mode::STATIC);
+    let t_finalize2 = t.elapsed();
+
+    println!("TIFF {tw}×{th}（12MP 无压缩）");
+    println!("  open(含 EXIF 方向)   : {t_open:?}");
+    println!("  image 解码           : {t_decode:?}");
+    println!(
+        "  收尾(缩放+RGBA)      : {t_finalize2:?} → {}×{}",
+        result2.width.unwrap_or(0),
+        result2.height.unwrap_or(0)
+    );
+    let _ = std::fs::remove_file(&tif_tmp);
+}
