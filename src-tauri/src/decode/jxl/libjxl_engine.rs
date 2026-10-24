@@ -186,6 +186,7 @@ pub(in crate::decode) fn decode(path: &str) -> Result<EngineOutput, String> {
             height: h,
             frames: vec![std::mem::take(&mut frames[0])],
             delays_ms: vec![0],
+            capped: false,
         });
     }
 
@@ -195,6 +196,7 @@ pub(in crate::decode) fn decode(path: &str) -> Result<EngineOutput, String> {
         height: h,
         frames,
         delays_ms,
+        capped: false,
     })
 }
 

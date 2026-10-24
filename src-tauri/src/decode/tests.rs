@@ -132,6 +132,7 @@ fn envelope_roundtrip() {
     let header: serde_json::Value = serde_json::from_slice(&buf[8..8 + hlen]).unwrap();
     assert_eq!(header["mode"], "animated");
     assert_eq!(header["frame_sizes"], serde_json::json!([3, 2]));
+    assert_eq!(header["capped"], serde_json::json!(false));
     assert_eq!(&buf[8 + hlen..], &result.bytes[..], "payload 原样透传");
 }
 
@@ -367,7 +368,7 @@ fn decode_component_profile() {
     let img = image::RgbaImage::from_raw(out.width, out.height, out.frames[0].clone())
         .map(image::DynamicImage::ImageRgba8)
         .unwrap();
-    let result = finalize_rgba(img, 1, load_mode::STATIC);
+    let result = finalize_rgba(img, 1, load_mode::STATIC, MAX_DIM);
     let t_finalize = t.elapsed();
 
     let t = Instant::now();
@@ -418,7 +419,7 @@ fn decode_component_profile() {
         .unwrap();
     let t_decode = t.elapsed();
     let t = Instant::now();
-    let result2 = finalize_rgba(decoded, orientation, load_mode::STATIC);
+    let result2 = finalize_rgba(decoded, orientation, load_mode::STATIC, MAX_DIM);
     let t_finalize2 = t.elapsed();
 
     println!("TIFF {tw}×{th}（12MP 无压缩）");
@@ -430,4 +431,27 @@ fn decode_component_profile() {
         result2.height.unwrap_or(0)
     );
     let _ = std::fs::remove_file(&tif_tmp);
+}
+
+#[test]
+fn original_decode_bypasses_display_cap() {
+    // 4000×2800 TIFF：常规解码 capped 到 3840 且带 capped 标记；
+    // original 解码（深放大真像素）保持原始尺寸且不标记
+    let dir = std::env::temp_dir().join(format!("zviewer-cap-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let p = dir.join("big.tif");
+    let img = image::RgbImage::from_fn(4000, 2800, |x, y| {
+        image::Rgb([(x % 255) as u8, (y % 255) as u8, ((x + y) % 255) as u8])
+    });
+    img.save_with_format(&p, image::ImageFormat::Tiff).unwrap();
+    let path = p.to_str().unwrap();
+
+    let r = load_image(path, false).unwrap();
+    assert_eq!(r.width, Some(3840), "常规解码应 capped 到显示帽");
+    assert!(r.capped, "常规解码应标记已降采样");
+
+    let o = load_image_original(path).unwrap();
+    assert_eq!(o.width, Some(4000), "original 解码应保持原始尺寸");
+    assert!(!o.capped, "original 解码未降采样");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -3,7 +3,7 @@
 
 use super::{finalize_rgba, load_mode, LoadResult};
 
-pub(super) fn decode_static(path: &str) -> Result<LoadResult, String> {
+pub(super) fn decode_static(path: &str, cap: u32) -> Result<LoadResult, String> {
     use std::io::BufReader;
 
     // EXIF 头在文件前部：open_with_orientation 读方向后已 seek 回开头（省一次 open）
@@ -15,5 +15,5 @@ pub(super) fn decode_static(path: &str) -> Result<LoadResult, String> {
         .decode()
         .map_err(|e| format!("TIFF 解码失败: {e}"))?;
 
-    Ok(finalize_rgba(img, orientation, load_mode::STATIC))
+    Ok(finalize_rgba(img, orientation, load_mode::STATIC, cap))
 }

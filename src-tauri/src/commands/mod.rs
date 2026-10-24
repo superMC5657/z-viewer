@@ -269,23 +269,27 @@ pub fn get_initial_state(state: State<'_, AppState>) -> Option<BrowseState> {
         .flatten()
 }
 
-/// 图片加载通道分发：常见格式 → asset（前端直读）；RAW/静态 → JPEG 字节；
+/// 图片加载通道分发：常见格式 → asset（前端直读）；RAW/静态 → RGBA 字节；
 /// 动画 → 帧序列（按需拆帧）。命中缓存直接返回（≤50ms 目标）；
 /// spawn_blocking 避免 CPU 密集解码占用 runtime 线程。
-/// 缓存关闭（enabled=false / 免费版）时跳过缓存读写（不缓存）。
+/// 缓存关闭（enabled=false / 免费版）时跳过缓存读写（不缓存）；
+/// `original=true`（深放大真像素）：绕过 3840 显示帽按 ZOOM_MAX_DIM 解码，
+/// 且不读写缓存（单张原图可达数百 MB，进 LRU 会挤爆容量预算）。
 /// 返回值是二进制信封（pack_envelope）：前端 invoke 收到 ArrayBuffer 解析。
 /// `full=false`：RAW 优先返回内嵌预览（毫秒级）；预览**不写缓存**，仅全量写缓存。
 #[tauri::command]
 pub async fn load_image(
     path: String,
     full: bool,
+    original: Option<bool>,
     cache: State<'_, DecodeCache>,
     settings: State<'_, SettingsState>,
     license: State<'_, crate::license::LicenseManager>,
 ) -> Result<tauri::ipc::Response, String> {
     crate::z_log::set_last_viewed(&path);
+    let original = original.unwrap_or(false);
     let enabled = settings.read(|s| s.is_enabled())?;
-    let caching = enabled && license.is_pro();
+    let caching = enabled && license.is_pro() && !original;
     if caching {
         // 命中：信封已打包一次缓存于条目内，这里只做一次缓冲拷贝进 IPC 响应
         if let Some(hit) = cache.get_entry(&path) {
@@ -299,7 +303,12 @@ pub async fn load_image(
     let path2 = path.clone();
     let base = basename_of(&path);
     let result = tauri::async_runtime::spawn_blocking(move || {
-        crate::decode::load_image(&path2, full).map(Arc::new)
+        if original {
+            crate::decode::load_image_original(&path2)
+        } else {
+            crate::decode::load_image(&path2, full)
+        }
+        .map(Arc::new)
     })
     .await
     .map_err(|e| {

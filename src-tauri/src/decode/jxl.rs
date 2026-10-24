@@ -12,7 +12,7 @@ use std::io::Cursor;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
 
-use super::{cap_dimensions, LoadResult, MAX_DIM};
+use super::{cap_dimensions, LoadResult};
 
 /// JXL 动画帧未指定延迟或异常时的默认帧间隔（100ms = 10fps）
 pub(super) const DEFAULT_ANIM_FRAME_DELAY_MS: u32 = 100;
@@ -39,6 +39,8 @@ pub(in crate::decode) struct EngineOutput {
     pub frames: Vec<Vec<u8>>,
     /// animated 时与 frames 等长（ms）；静态为 [0]
     pub delays_ms: Vec<u32>,
+    /// 交付帧是否由更大原图降采样而来（深放大真像素升级的判定依据）
+    pub capped: bool,
 }
 
 #[cfg(feature = "jxl-libjxl")]
@@ -57,8 +59,8 @@ pub(super) fn is_jxl_animated(path: &str) -> bool {
 
 /// JXL 通道入口：解码 + 收尾打包；`Ok.1` 为引擎回退说明（None = 未回退），
 /// 交分发点记录（解码通道内部零 log，见 docs/logging.md）
-pub(super) fn decode_jxl(path: &str) -> Result<(LoadResult, Option<String>), String> {
-    let (out, fallback) = decode_with_engine(path)?;
+pub(super) fn decode_jxl(path: &str, cap: u32) -> Result<(LoadResult, Option<String>), String> {
+    let (out, fallback) = decode_with_engine(path, cap)?;
     Ok((finish(out), fallback))
 }
 
@@ -66,38 +68,42 @@ pub(super) fn decode_jxl(path: &str) -> Result<(LoadResult, Option<String>), Str
 /// 回退成功时把 libjxl 失败原因交给分发点记 warn；双引擎皆失败时把
 /// libjxl 原因并入错误串上浮，避免只留 oxide 报错丢线索
 #[cfg(feature = "jxl-libjxl")]
-fn decode_with_engine(path: &str) -> Result<(EngineOutput, Option<String>), String> {
+fn decode_with_engine(path: &str, cap: u32) -> Result<(EngineOutput, Option<String>), String> {
     match libjxl_engine::decode(path) {
-        Ok(out) => Ok((cap_engine_output(out), None)),
+        Ok(out) => Ok((cap_engine_output(out, cap), None)),
         Err(libjxl_err) => {
-            let out = cap_engine_output(oxide_decode(path).map_err(|oxide_err| {
-                format!("{oxide_err}（libjxl 主引擎亦失败: {libjxl_err}）")
-            })?);
+            let out = cap_engine_output(
+                oxide_decode(path, cap).map_err(|oxide_err| {
+                    format!("{oxide_err}（libjxl 主引擎亦失败: {libjxl_err}）")
+                })?,
+                cap,
+            );
             Ok((out, Some(libjxl_err)))
         }
     }
 }
 
 #[cfg(not(feature = "jxl-libjxl"))]
-fn decode_with_engine(path: &str) -> Result<(EngineOutput, Option<String>), String> {
-    Ok((oxide_decode(path)?, None))
+fn decode_with_engine(path: &str, cap: u32) -> Result<(EngineOutput, Option<String>), String> {
+    Ok((oxide_decode(path, cap)?, None))
 }
 
-/// libjxl 引擎产物统一按 MAX_DIM 封顶（jxl-oxide 通道已在 oxide_decode 内逐帧封顶）
+/// libjxl 引擎产物统一按 cap 封顶（jxl-oxide 通道已在 oxide_decode 内逐帧封顶）
 #[cfg(feature = "jxl-libjxl")]
-fn cap_engine_output(mut out: EngineOutput) -> EngineOutput {
-    if out.width.max(out.height) <= MAX_DIM {
+fn cap_engine_output(mut out: EngineOutput, cap: u32) -> EngineOutput {
+    if out.width.max(out.height) <= cap {
         return out;
     }
     let (mut w, mut h) = (out.width, out.height);
     let mut frames = Vec::with_capacity(out.frames.len());
     for rgba in out.frames.drain(..) {
-        let (capped, cw, ch) = cap_rgba_frame(w, h, rgba);
+        let (capped, cw, ch, resized) = cap_rgba_frame(w, h, rgba, cap);
         if frames.is_empty() {
             w = cw;
             h = ch;
         }
         frames.push(capped);
+        out.capped = out.capped || resized;
     }
     out.width = w;
     out.height = h;
@@ -116,7 +122,9 @@ fn finish(out: EngineOutput) -> LoadResult {
         } else {
             frames.remove(0)
         };
-        LoadResult::rgba("static", rgba, out.width, out.height, false)
+        let mut result = LoadResult::rgba("static", rgba, out.width, out.height, false);
+        result.capped = out.capped;
+        result
     }
 }
 
@@ -126,7 +134,9 @@ fn finish_animation(out: EngineOutput) -> LoadResult {
     let total = frame_bytes.saturating_mul(out.frames.len());
 
     if total <= RAW_ANIM_BUDGET_BYTES {
-        return LoadResult::animated_rgba(out.frames, out.delays_ms, w, h);
+        let mut result = LoadResult::animated_rgba(out.frames, out.delays_ms, w, h);
+        result.capped = out.capped;
+        return result;
     }
 
     // 超预算：PNG 快速压缩回退（体积优先于编码速度，此时内存压力是主要矛盾）
@@ -143,7 +153,9 @@ fn finish_animation(out: EngineOutput) -> LoadResult {
             .expect("内存内 PNG 编码不应失败");
         pngs.push(png);
     }
-    LoadResult::animated(pngs, out.delays_ms)
+    let mut result = LoadResult::animated(pngs, out.delays_ms);
+    result.capped = out.capped;
+    result
 }
 
 // ============================================================
@@ -258,7 +270,7 @@ fn render_to_rgba(
     Ok(rgba)
 }
 
-fn oxide_decode(path: &str) -> Result<EngineOutput, String> {
+fn oxide_decode(path: &str, cap: u32) -> Result<EngineOutput, String> {
     let image = jxl_oxide::JxlImage::builder()
         .open(path)
         .map_err(|e| format!("JXL 打开失败: {e}"))?;
@@ -278,6 +290,7 @@ fn oxide_decode(path: &str) -> Result<EngineOutput, String> {
         let mut frames = Vec::with_capacity(num_keyframes);
         let mut delays_ms = Vec::with_capacity(num_keyframes);
         let mut dims = (0u32, 0u32);
+        let mut capped = false;
 
         for idx in 0..num_keyframes {
             let render = image
@@ -285,7 +298,8 @@ fn oxide_decode(path: &str) -> Result<EngineOutput, String> {
                 .map_err(|e| format!("JXL 帧 {idx} 渲染失败: {e}"))?;
             let rgba = render_to_rgba(&image, &render)?;
             let (w, h) = (render.stream().width(), render.stream().height());
-            let (rgba, w, h) = cap_rgba_frame(w, h, rgba);
+            let (rgba, w, h, resized) = cap_rgba_frame(w, h, rgba, cap);
+            capped = capped || resized;
             if dims == (0, 0) {
                 dims = (w, h);
             }
@@ -301,6 +315,7 @@ fn oxide_decode(path: &str) -> Result<EngineOutput, String> {
             height: dims.1,
             frames,
             delays_ms,
+            capped,
         })
     } else {
         let render = image
@@ -308,27 +323,29 @@ fn oxide_decode(path: &str) -> Result<EngineOutput, String> {
             .map_err(|e| format!("JXL 渲染失败: {e}"))?;
         let (w, h) = (render.stream().width(), render.stream().height());
         let rgba = render_to_rgba(&image, &render)?;
-        let (rgba, w, h) = cap_rgba_frame(w, h, rgba);
+        let (rgba, w, h, capped) = cap_rgba_frame(w, h, rgba, cap);
         Ok(EngineOutput {
             animated: false,
             width: w,
             height: h,
             frames: vec![rgba],
             delays_ms: vec![0],
+            capped,
         })
     }
 }
 
-/// RGBA 帧按 MAX_DIM 封顶：超出时长边缩至上限并重采像素，返回（像素, 新宽, 新高）
-fn cap_rgba_frame(w: u32, h: u32, rgba: Vec<u8>) -> (Vec<u8>, u32, u32) {
-    if w.max(h) <= MAX_DIM || rgba.is_empty() {
-        return (rgba, w, h);
+/// RGBA 帧按 cap 封顶：超出时长边缩至上限并重采像素，
+/// 返回（像素, 新宽, 新高, 是否发生降采样）
+fn cap_rgba_frame(w: u32, h: u32, rgba: Vec<u8>, cap: u32) -> (Vec<u8>, u32, u32, bool) {
+    if w.max(h) <= cap || rgba.is_empty() {
+        return (rgba, w, h, false);
     }
     let img = image::RgbaImage::from_raw(w, h, rgba)
         .map(image::DynamicImage::ImageRgba8)
         .expect("RGBA 帧长度与尺寸匹配");
-    let capped = cap_dimensions(img);
+    let (capped, capped_flag) = cap_dimensions(img, cap);
     let (cw, ch) = (capped.width(), capped.height());
     let rgba = capped.into_rgba8().into_raw();
-    (rgba, cw, ch)
+    (rgba, cw, ch, capped_flag)
 }

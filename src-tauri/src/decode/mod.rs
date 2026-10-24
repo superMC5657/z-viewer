@@ -63,6 +63,8 @@ pub struct LoadResult {
     pub frame_sizes: Vec<u32>,
     /// payload：raw/static = 单张 JPEG；animated = 帧 PNG 拼接
     pub bytes: Vec<u8>,
+    /// 显示位图是否由更大原图降采样而来（深放大真像素升级的判定依据）
+    pub capped: bool,
 }
 
 impl LoadResult {
@@ -77,6 +79,7 @@ impl LoadResult {
             frame_delays: Vec::new(),
             frame_sizes: Vec::new(),
             bytes: Vec::new(),
+            capped: false,
         }
     }
 
@@ -91,6 +94,7 @@ impl LoadResult {
             frame_delays: Vec::new(),
             frame_sizes: Vec::new(),
             bytes,
+            capped: false,
         }
     }
 
@@ -105,6 +109,7 @@ impl LoadResult {
             frame_delays: Vec::new(),
             frame_sizes: Vec::new(),
             bytes,
+            capped: false,
         }
     }
 
@@ -124,6 +129,7 @@ impl LoadResult {
             frame_delays: delays,
             frame_sizes: sizes,
             bytes,
+            capped: false,
         }
     }
 
@@ -144,6 +150,7 @@ impl LoadResult {
             frame_delays: delays,
             frame_sizes: sizes,
             bytes,
+            capped: false,
         }
     }
 }
@@ -155,8 +162,18 @@ impl LoadResult {
 /// 的通用 `decode failed` 与此按通道后缀去重（`[raw]`/`[tiff]`/`[anim]`），只看
 /// 通道维度时无需翻命令层日志。
 pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
+    load_image_inner(path, full, MAX_DIM)
+}
+
+/// 深放大真像素解码：绕过 3840 显示帽，改按 ZOOM_MAX_DIM 封顶。
+/// 原图可达数百 MB，调用方不得写入 LRU 缓存（`capped` 标记为 false）。
+pub fn load_image_original(path: &str) -> Result<LoadResult, String> {
+    load_image_inner(path, true, ZOOM_MAX_DIM)
+}
+
+fn load_image_inner(path: &str, full: bool, cap: u32) -> Result<LoadResult, String> {
     let started = std::time::Instant::now();
-    let result = load_image_dispatch(path, full);
+    let result = load_image_dispatch(path, full, cap);
     if let Ok(r) = &result {
         if r.mode != load_mode::ASSET {
             // 通道耗时打点（debug：dev 可见 release 不落盘；asset 通道零解码，不记）
@@ -170,25 +187,25 @@ pub fn load_image(path: &str, full: bool) -> Result<LoadResult, String> {
     result
 }
 
-fn load_image_dispatch(path: &str, full: bool) -> Result<LoadResult, String> {
+fn load_image_dispatch(path: &str, full: bool, cap: u32) -> Result<LoadResult, String> {
     let ext = ext_of(path);
 
     match classify_ext(&ext) {
-        ImageFormatCategory::Raw => raw::decode_raw(path, full).inspect_err(|e| {
+        ImageFormatCategory::Raw => raw::decode_raw(path, full, cap).inspect_err(|e| {
             log::warn!(
                 "decode failed {} [raw]: {}",
                 basename_of(path),
                 first_line_of(e)
             );
         }),
-        ImageFormatCategory::Tiff => tiff::decode_static(path).inspect_err(|e| {
+        ImageFormatCategory::Tiff => tiff::decode_static(path, cap).inspect_err(|e| {
             log::warn!(
                 "decode failed {} [tiff]: {}",
                 basename_of(path),
                 first_line_of(e)
             );
         }),
-        ImageFormatCategory::Jxl => jxl::decode_jxl(path)
+        ImageFormatCategory::Jxl => jxl::decode_jxl(path, cap)
             .map(|(result, fallback)| {
                 if let Some(reason) = fallback {
                     log::warn!(
@@ -237,6 +254,7 @@ pub fn pack_envelope(result: &LoadResult) -> Vec<u8> {
         "height": result.height,
         "frame_delays": result.frame_delays,
         "frame_sizes": result.frame_sizes,
+        "capped": result.capped,
     }))
     .unwrap_or_default();
     let mut buf = Vec::with_capacity(8 + header.len() + result.bytes.len());
@@ -250,24 +268,36 @@ pub fn pack_envelope(result: &LoadResult) -> Vec<u8> {
 /// 长边降采样上限（覆盖 4K 超清 3840×2160，保证高分屏 1:1 清晰呈现同时严格防爆显存）
 pub(super) const MAX_DIM: u32 = 3840;
 
-/// 解码通道收尾：先按 EXIF 方向回正，再超限降采样，最后输出原始 RGBA8
-/// （raw/static 共用；mode 由调用方指定：raw="raw"、tiff="static"）
-pub(super) fn finalize_rgba(img: image::DynamicImage, orientation: u8, mode: &str) -> LoadResult {
-    let img = cap_dimensions(preview::apply_orientation(img, orientation));
+/// 深放大真像素解码的降采样上限：GPU 纹理安全线（跨设备保守值 8192）。
+/// 超过此长边的全景图仍插值显示，单图 tile 化属后续立项。
+pub(super) const ZOOM_MAX_DIM: u32 = 8192;
+
+/// 解码通道收尾：先按 EXIF 方向回正，再按 cap 超限降采样，最后输出原始 RGBA8
+/// （raw/static 共用；mode 由调用方指定：raw="raw"、tiff="static"；cap = MAX_DIM 常规 /
+/// ZOOM_MAX_DIM 深放大）。`capped` 标记交付位图是否小于原图（前端深放大升级判定依据）。
+pub(super) fn finalize_rgba(
+    img: image::DynamicImage,
+    orientation: u8,
+    mode: &str,
+    cap: u32,
+) -> LoadResult {
+    let (img, capped) = cap_dimensions(preview::apply_orientation(img, orientation), cap);
     let (w, h) = (img.width(), img.height());
-    let rgba = img.to_rgba8().into_raw();
-    LoadResult::rgba(mode, rgba, w, h, false)
+    let mut result = LoadResult::rgba(mode, img.to_rgba8().into_raw(), w, h, false);
+    result.capped = capped;
+    result
 }
 
-/// 超限降采样：长边 > MAX_DIM 时按比例缩到上限（Triangle 卷积）。
+/// 超限降采样：长边 > cap 时按比例缩到上限（Triangle/Bilinear 卷积）。
 /// 走 fast_image_resize（SIMD + rayon 并行）——image crate 的单线程 resize
 /// 在 12–24MP 上要 1.2–1.4s（票 06 剖析），是冷翻延迟的大头。
-pub(super) fn cap_dimensions(img: image::DynamicImage) -> image::DynamicImage {
+/// 返回 (图, 是否发生降采样)。
+pub(super) fn cap_dimensions(img: image::DynamicImage, cap: u32) -> (image::DynamicImage, bool) {
     let (w, h) = (img.width(), img.height());
-    if w.max(h) <= MAX_DIM {
-        return img;
+    if w.max(h) <= cap {
+        return (img, false);
     }
-    let scale = MAX_DIM as f32 / w.max(h) as f32;
+    let scale = cap as f32 / w.max(h) as f32;
     let dw = (w as f32 * scale).round() as u32;
     let dh = (h as f32 * scale).round() as u32;
     let src = fast_image_resize::images::Image::from_vec_u8(
@@ -288,7 +318,8 @@ pub(super) fn cap_dimensions(img: image::DynamicImage) -> image::DynamicImage {
     resizer
         .resize(&src, &mut dst, &options)
         .expect("降采样失败");
-    image::DynamicImage::ImageRgba8(
+    let out = image::DynamicImage::ImageRgba8(
         image::RgbaImage::from_raw(dw, dh, dst.into_vec()).expect("降采样目标缓冲"),
-    )
+    );
+    (out, true)
 }

@@ -73,6 +73,8 @@ export interface LoadEnvelope {
   mime: string | null;
   /** raw 通道内嵌预览位：true 表示 payload 是内嵌预览，全量仍在后台解码 */
   isPreview: boolean;
+  /** 显示位图是否由更大原图降采样而来（深放大真像素升级的判定依据） */
+  capped: boolean;
   /** 图像尺寸（raw/static 通道与 image/x-rgba 动画通道提供） */
   width: number | null;
   height: number | null;
@@ -99,6 +101,7 @@ export function parseLoadEnvelope(buf: ArrayBuffer): { header: LoadEnvelope; pay
       mode: h.mode,
       mime: h.mime ?? null,
       isPreview: !!h.is_preview,
+      capped: h.capped === true,
       width: h.width ?? null,
       height: h.height ?? null,
       frameDelays: h.frame_delays ?? [],

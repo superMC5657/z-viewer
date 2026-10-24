@@ -196,7 +196,7 @@ export class Viewer {
     }
     // caller-owned URL：Viewer 永不 revoke 入参，只回收自己此前的 transient
     try {
-      await this.loadStaticInternal(content.url, false, slot.seq);
+      await this.loadStaticInternal(content.url, false, slot.seq, null);
     } catch (e) {
       slot.revokePrev();
       throw e;
@@ -204,16 +204,27 @@ export class Viewer {
     slot.revokePrev();
   }
 
-  /** 全量升级（预览→全量替换，变换保持）：keep 决策归 Viewer 所有，
-   *  调用方只说"升级"，不再拼装 keepTransform 变体细节；代次守卫与 show 同规。 */
+  /** 全量升级（预览→全量 / 3840→原图替换）：按新旧尺寸比回正总倍率，
+   *  升级前后屏幕视图逐像素不变（同区域、同视觉放大率，仅更锐）——
+   *  baseScale 随新位图尺寸重算，userScale 反比补偿，缩放读数转为新位图基准。
+   *  keep 决策归 Viewer 所有；代次守卫与 show 同规。 */
   async showUpgrade(header: LoadEnvelope, payload: Uint8Array): Promise<void> {
-    await this.showEnvelope(header, payload, true);
+    const targetTotal =
+      this.loaded && header.width && header.width > 0 && this.naturalW > 0
+        ? this.currentScale * (this.naturalW / header.width)
+        : null;
+    await this.showEnvelope(header, payload, true, targetTotal);
   }
 
   /** 信封入口共核（show/showUpgrade 共享同一代次守卫与归属权处理，不可绕过） */
-  private async showEnvelope(header: LoadEnvelope, payload: Uint8Array, keepTransform: boolean): Promise<void> {
+  private async showEnvelope(
+    header: LoadEnvelope,
+    payload: Uint8Array,
+    keepTransform: boolean,
+    targetTotal: number | null = null,
+  ): Promise<void> {
     const slot = this.beginLoad();
-    await this.showEnvelopeInternal(header, payload, keepTransform, slot);
+    await this.showEnvelopeInternal(header, payload, keepTransform, slot, targetTotal);
   }
 
   /** 内容状态推送：对照当前画面快照上报（dims/动画/播放），调用方存快照派生 UI */
@@ -234,6 +245,7 @@ export class Viewer {
     payload: Uint8Array,
     keepTransform: boolean,
     slot: LoadSlot,
+    targetTotal: number | null,
   ): Promise<void> {
     const { seq, prevOwned, revokePrev, restorePrev } = slot;
     if (header.frameSizes.length > 0) {
@@ -290,7 +302,7 @@ export class Viewer {
         revokePrev();
         return;
       }
-      await this.loadBitmapInternal(bitmap, keepTransform, seq);
+      await this.loadBitmapInternal(bitmap, keepTransform, seq, targetTotal);
       if (seq !== this.loadSeq) {
         revokePrev();
         return;
@@ -306,7 +318,7 @@ export class Viewer {
       return;
     }
     try {
-      await this.loadStaticInternal(url, keepTransform, seq);
+      await this.loadStaticInternal(url, keepTransform, seq, targetTotal);
     } catch (e) {
       URL.revokeObjectURL(url);
       if (keepTransform && prevOwned) {
@@ -337,8 +349,14 @@ export class Viewer {
     return blobs;
   }
 
-  /** img 双缓冲加载实现（ bodies 与原公开 loader 一致，仅 generation 由 show 统一供给） */
-  private loadStaticInternal(url: string, keepTransform: boolean, seq: number): Promise<void> {
+  /** img 双缓冲加载实现（ bodies 与原公开 loader 一致，仅 generation 由 show 统一供给；
+   *  targetTotal 非空时为升级路径：换位图后按目标总倍率回正缩放，屏幕视图逐像素不变） */
+  private loadStaticInternal(
+    url: string,
+    keepTransform: boolean,
+    seq: number,
+    targetTotal: number | null,
+  ): Promise<void> {
     this.active = "img";
     // 注意：不在此处立即隐藏 canvas，保证新图解码期间旧画面依然停留在屏幕上，杜绝黑屏空档
 
@@ -373,7 +391,18 @@ export class Viewer {
         this.loaded = true;
         this.activeImg = incoming;
         if (keep) {
-          if (this.fitMode === "fit" && Math.abs(this.userScale - 1) < 0.005) {
+          if (targetTotal !== null) {
+            // 升级换位图：重算基准倍率并按目标总倍率回正 userScale
+            if (this.fitMode === "fit") {
+              this.userScale = 1;
+              this.fit();
+              this.userScale = clamp(targetTotal / this.baseScale, MIN_SCALE, MAX_SCALE);
+            } else {
+              this.userScale = clamp(targetTotal, MIN_SCALE, MAX_SCALE);
+              this.apply();
+              this.clampPan();
+            }
+          } else if (this.fitMode === "fit" && Math.abs(this.userScale - 1) < 0.005) {
             this.fit();
           } else {
             this.apply();
@@ -431,7 +460,12 @@ export class Viewer {
   }
 
   /** 单张位图实现（原始 RGBA 直通，免 JPEG 二次编解码开销；实现与原 loader 一致） */
-  private async loadBitmapInternal(bitmap: ImageBitmap, keepTransform: boolean, seq: number): Promise<void> {
+  private async loadBitmapInternal(
+    bitmap: ImageBitmap,
+    keepTransform: boolean,
+    seq: number,
+    targetTotal: number | null,
+  ): Promise<void> {
     this.active = "canvas";
     // 延迟隐藏 imgA/imgB：待 canvas 绘制并 fit 完成后再统一隐藏，避免中间黑屏
 
@@ -455,7 +489,18 @@ export class Viewer {
 
     this.loaded = true;
     if (keep) {
-      if (this.fitMode === "fit" && Math.abs(this.userScale - 1) < 0.005) {
+      if (targetTotal !== null) {
+        // 升级换位图：重算基准倍率并按目标总倍率回正 userScale
+        if (this.fitMode === "fit") {
+          this.userScale = 1;
+          this.fit();
+          this.userScale = clamp(targetTotal / this.baseScale, MIN_SCALE, MAX_SCALE);
+        } else {
+          this.userScale = clamp(targetTotal, MIN_SCALE, MAX_SCALE);
+          this.apply();
+          this.clampPan();
+        }
+      } else if (this.fitMode === "fit" && Math.abs(this.userScale - 1) < 0.005) {
         this.fit();
       } else {
         this.apply();

@@ -65,6 +65,12 @@ export class ImagePresenter {
   /** 前端预解码池状态（warmContext 唯一入口驱动；原 PrefetchPool 折叠入此，deletion test 通过） */
   private poolImgs: HTMLImageElement[] = [];
   private poolLoading = new Set<string>();
+  /** 深放大真像素状态（随 show 重置）：nativeLoaded=已升级或无需升级；
+   *  currentCapped=当前显示位图来自降采样（后端 envelope 标记） */
+  private nativeLoaded = false;
+  private nativePending = false;
+  private nativeFailed = false;
+  private currentCapped = false;
 
   constructor(
     private readonly viewer: Viewer,
@@ -80,10 +86,12 @@ export class ImagePresenter {
       this.ui.setFrameBarVisible(s.animated);
       this.ui.setFramePlaying(s.playing);
     };
-    // 变换联动内聚：按钮同步 + 放大超 100% 立即提全量（原 bindEvents 订阅迁移至此）
+    // 变换联动内聚：按钮同步 + 放大超 100% 立即提全量（RAW 预览）
+    // + 深放大越过后按需拉取原始分辨率（真像素升级，票 07）
     this.viewer.onStateChange = () => {
       this.syncZoom();
       if (this.viewer.currentScale > 1) this.triggerImmediateUpgrade();
+      this.maybeFetchNative();
     };
     this.syncZoom();
     this.ui.setFramePlaying(false);
@@ -119,6 +127,10 @@ export class ImagePresenter {
     this.currentDims = null;
     this.resetContent();
     this.animCandidate = false;
+    this.nativeLoaded = false;
+    this.nativePending = false;
+    this.nativeFailed = false;
+    this.currentCapped = false;
     window.clearTimeout(this.rawTimer);
     this.rawTimer = undefined;
     this.ui.setFrameBarVisible(false);
@@ -183,6 +195,7 @@ export class ImagePresenter {
         return;
       }
       if (gen !== this.gen) return;
+      this.currentCapped = header.capped;
 
       if (header.isPreview) {
         this.scheduleUpgrade(state, gen);
@@ -310,6 +323,7 @@ export class ImagePresenter {
       const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: true });
       if (gen !== this.gen) return;
       const { header, payload } = parseLoadEnvelope(buf);
+      this.currentCapped = header.capped;
       if (header.isPreview) return; // 防御：仍返回预览（异常路径），保持现有显示
       if (gen !== this.gen) return;
       try {
@@ -326,6 +340,55 @@ export class ImagePresenter {
     } finally {
       this.ui.endDecoding();
     }
+  }
+
+  /** 深放大真像素（票 07）：显示倍率越过当前位图 1:1 且位图来自降采样时，
+   *  按需拉取原始分辨率解码（≤8192 长边，不写 LRU）并经 showUpgrade 换图——
+   *  屏幕视图逐像素不变、仅更锐。粘性升级（不回退），切图/失败即重置。 */
+  private maybeFetchNative(): void {
+    if (this.nativeLoaded || this.nativePending || this.nativeFailed) return;
+    const state = this.lastState;
+    const content = this.lastContent;
+    if (!state || !content || content.animated) return;
+    if (!needsIpc(state.path)) return; // asset 通道本就持有原文件，无升级概念
+    if (!this.currentCapped) return; // 显示位图未降采样，无原图可换
+    if (this.viewer.currentScale <= 1) return; // 未越过当前位图 1:1
+    const gen = this.gen;
+    this.nativePending = true;
+    void (async () => {
+      this.ui.beginDecoding();
+      try {
+        const buf = await invoke<ArrayBuffer>("load_image", {
+          path: state.path,
+          full: true,
+          original: true,
+        });
+        if (gen !== this.gen) return;
+        const { header, payload } = parseLoadEnvelope(buf);
+        if (gen !== this.gen) return;
+        if (header.isPreview) return; // 防御：异常路径仍返回预览
+        if (!header.capped) {
+          this.nativeLoaded = true; // 原图本就不超过显示帽，无需升级
+          return;
+        }
+        try {
+          await this.viewer.showUpgrade(header, payload);
+        } catch {
+          return; // 升级失败保留现有画面（Viewer 升级路径不清空旧图）
+        }
+        if (gen !== this.gen) return;
+        this.nativeLoaded = true;
+        // 信息条尺寸更新为原始分辨率
+        const snap: ContentState | null = this.lastContent;
+        this.currentDims = snap ? { w: snap.width, h: snap.height } : null;
+        this.ui.updateInfo(state, this.currentDims);
+      } catch {
+        this.nativeFailed = true; // 静默失败，本图不再重试
+      } finally {
+        this.nativePending = false;
+        this.ui.endDecoding();
+      }
+    })();
   }
 
   /** 获取当前上下文路径并预热（asset 预解码池；RAW 邻居由 Rust 侧自动预取） */
