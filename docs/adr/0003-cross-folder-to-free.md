@@ -27,6 +27,12 @@ ADR 0002 把「跨同级文件夹无缝浏览 + 文件夹跳转」划为专业�
   `open_first_in_dir_gated` → `open_first_in_dir`）；`commands::jump_folder`
   摘除 `require_pro`；`NavResult::pro_required` 移除（前端 `pro-required`
   管道保留作防御深度，当前无生产者）。
+- 前端权益收口（2026-10-26 补齐）：首轮落地只改了后端，前端本地门控不经过
+  `pro-required` 管道而漏网，免费版点跳转仍弹解锁引导。补齐三处：
+  `main.ts` 跳转入口摘除 `require("cross-folder")`；`license.ts` 权益词表
+  移除 `cross-folder`（`Entitlement` 只剩 `prefetch-cache`，再引用即编译报错，
+  类型层面防复发）；`ui.ts setLocked` 锁定列表收敛为 `cache-toggle`，
+  `folder-prev`/`folder-next` 不再置灰。
 - 打开拒绝日志 `browse open gated reject` → `browse open reject`（logging.md 同步）。
 - 需求文档 1/2.2/2.8/8.2、README 功能总览、开发阶段规划同步。
 

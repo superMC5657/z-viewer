@@ -270,9 +270,10 @@ export class UI {
     this.licenseDialog.hideModal();
   }
 
-  /** 免费版锁定态：禁用文件夹跳转与缓存按钮（点击仍触发解锁引导，见 main.ts 拦截） */
+  /** 免费版锁定态：禁用缓存按钮（点击仍触发解锁引导，见 main.ts 拦截）。
+   *  跨文件夹浏览（folder-prev/folder-next）自 ADR 0003 起全版本可用，不再锁定。 */
   setLocked(locked: boolean): void {
-    for (const id of ["folder-prev", "folder-next", "cache-toggle"]) {
+    for (const id of ["cache-toggle"]) {
       const btn = this.toolbarButtons.get(id);
       if (!btn) continue;
       if (locked) {

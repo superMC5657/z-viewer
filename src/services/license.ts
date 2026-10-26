@@ -20,8 +20,9 @@ export interface LicenseCallbacks {
   onDialogVisibility?: (open: boolean) => void;
 }
 
-/** 付费权益词表（普通形状，非 module；调用面只传名） */
-export type Entitlement = "cross-folder" | "prefetch-cache";
+/** 付费权益词表（普通形状，非 module；调用面只传名）。
+ *  跨文件夹浏览自 ADR 0003 起全版本可用，不再是权益；预取缓存为当前唯一付费点。 */
+export type Entitlement = "prefetch-cache";
 
 /** 富权益答案（与后端 LicenseInfo 同源快照；seam 携带此答案而非光秃 boolean） */
 export interface Entitlements {
@@ -32,7 +33,6 @@ export interface Entitlements {
 
 /** 权益 → 所需 JWT 功能位（当前捆绑为一个 pro；拆分时只改此处） */
 const ENTITLEMENT_FEATURES: Record<Entitlement, string> = {
-  "cross-folder": "pro",
   "prefetch-cache": "pro",
 };
 

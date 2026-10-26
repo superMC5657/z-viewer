@@ -78,7 +78,7 @@ const presence: Presence = new Presence(
         void presenter.navigate(() => invoke("next_image"));
         return;
       }
-      if (!licenseService.require("cross-folder")) return;
+      // 跨文件夹浏览自 ADR 0003 起全版本可用，此处不再做权益拦截
       const target = kind === "folder-first" ? "first" : kind === "folder-last" ? "last" : kind === "folder-prev" ? "prev" : "next";
       void presenter.navigate(() => invoke("jump_folder", { target }));
     },
