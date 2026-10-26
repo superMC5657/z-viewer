@@ -48,8 +48,20 @@ jobs:
       - name: Frontend Lint (if configured)
         run: pnpm run --if-present lint
 
-      - name: Frontend Test (if configured)
+      - name: Frontend Test (Windows, plain)
+        if: runner.os != 'Linux'
         run: pnpm run --if-present test
+
+      # ubuntu leg 优先执行 test:coverage（若已配置卡点阈值），否则执行普通 test
+      - name: Frontend Test (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          if node -e "const p = require('./package.json'); process.exit(p.scripts && p.scripts['test:coverage'] ? 0 : 1)"; then
+            pnpm run test:coverage
+          else
+            pnpm run --if-present test
+          fi
 
       # 构建前端生成 dist/ (供 tauri::generate_context! 编译期展开)
       - name: Build frontend
