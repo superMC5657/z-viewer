@@ -79,7 +79,8 @@ export class UI {
     el.className = "tb-btn-icon";
     el.dataset.id = btn.id;
     if (btn.icon) el.innerHTML = ICONS[btn.icon];
-    else if (btn.text) el.innerHTML = `<span class="btn-text">${btn.text}</span>`;
+    // 独立类名 tb-btn-text：对话框 .btn-text 规范（32px 高、内边距、hover 背景）会画出第二层背景
+    else if (btn.text) el.innerHTML = `<span class="tb-btn-text">${btn.text}</span>`;
     el.dataset.tip = btn.tip;
     if (!btn.enabled) el.classList.add("disabled");
     el.addEventListener("click", () => handlers.onAction(btn.id));
