@@ -10,7 +10,6 @@ import { formatSize, truncateMiddle, formatPosition, formatFrame } from "./utils
 
 const TOAST_MS = 1500; // 边界 Toast 持续 1.5s
 const FILENAME_MAX = 26; // 文件名中间截断长度（近似）
-const DECODE_SHOW_DELAY_MS = 300; // 解码指示防抖：短于此时长的解码不显示（防闪烁）
 
 export interface ToolbarHandlers {
   onAction: (id: string) => void;
@@ -28,8 +27,6 @@ export class UI {
   private infoPos: HTMLElement;
   /** 缩放百分比读数（#info-zoom） */
   private infoZoom: HTMLElement;
-  /** RAW/动画解码中指示（#decoding） */
-  private decodingEl: HTMLElement;
   /** 幻灯片位置计数（#ss-progress） */
   private ssProgress: HTMLElement;
   /** 帧条元素（构造时缓存：updateFrameCount 每帧播放回调都访问，不走 DOM 查询） */
@@ -37,9 +34,6 @@ export class UI {
   private frameCountEl: HTMLElement;
 
   private toastTimer: number | undefined;
-  /** 解码指示：进行中的 IPC 加载计数（并发加载各自 begin/end） */
-  private decodingCount = 0;
-  private decodingTimer: number | undefined;
 
   constructor(bars: { toolbar: HTMLElement; slideshowBar: HTMLElement }) {
     // 浮层容器由 Presence 统一查询并注入（本文件零 overlay-bar 查找）
@@ -51,7 +45,6 @@ export class UI {
     this.emptyState = document.getElementById("empty-state")!;
     this.infoPos = document.getElementById("info-pos")!;
     this.infoZoom = document.getElementById("info-zoom")!;
-    this.decodingEl = document.getElementById("decoding")!;
     this.ssProgress = document.getElementById("ss-progress")!;
     this.framePlayBtn = document.getElementById("frame-play")!;
     this.frameCountEl = document.getElementById("frame-count")!;
@@ -214,26 +207,6 @@ export class UI {
   /** 幻灯片启动：直接复用正常模式信息条的当前位置（含加载中 `3/…` 形态） */
   syncSlideshowProgressFromInfo(): void {
     this.ssProgress.textContent = this.infoPos.textContent;
-  }
-
-  // ---------- 解码中指示（RAW/动画 IPC 通道） ----------
-
-  /** IPC 解码开始：计数 +1。首个开始时启动防抖计时（>300ms 才显示，快速解码不闪） */
-  beginDecoding(): void {
-    this.decodingCount++;
-    if (this.decodingCount > 1) return;
-    window.clearTimeout(this.decodingTimer);
-    this.decodingTimer = window.setTimeout(() => {
-      if (this.decodingCount > 0) this.decodingEl.classList.add("show");
-    }, DECODE_SHOW_DELAY_MS);
-  }
-
-  /** IPC 解码结束：计数 -1，归零立即隐藏（取消未触发的防抖计时） */
-  endDecoding(): void {
-    this.decodingCount = Math.max(0, this.decodingCount - 1);
-    if (this.decodingCount > 0) return;
-    window.clearTimeout(this.decodingTimer);
-    this.decodingEl.classList.remove("show");
   }
 
   // ---------- 边界 Toast（草图 3.4） ----------

@@ -172,46 +172,41 @@ export class ImagePresenter {
       return;
     }
 
-    // IPC 通道：RAW/TIFF 由 Rust 解码，信封经 Viewer 统一缝显示
-    this.ui.beginDecoding();
+    // IPC 通道：RAW/TIFF/JXL 由 Rust 解码，信封经 Viewer 统一缝显示
+    let header: LoadEnvelope;
+    let payload: Uint8Array;
     try {
-      let header: LoadEnvelope;
-      let payload: Uint8Array;
-      try {
-        const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
-        ({ header, payload } = parseLoadEnvelope(buf));
-      } catch (err) {
-        if (gen === this.gen) this.ui.showToast(`无法加载图片：${String(err)}`);
-        return;
-      }
-      if (gen !== this.gen) return;
-
-      try {
-        await this.viewer.show({ kind: "envelope", header, payload });
-      } catch (err) {
-        if (gen === this.gen) {
-          this.ui.showToast(`无法显示图片：${String(err)}`);
-        }
-        return;
-      }
-      if (gen !== this.gen) return;
-      this.currentCapped = header.capped;
-
-      if (header.isPreview) {
-        this.scheduleUpgrade(state, gen);
-      }
-
-      const snap: ContentState | null = this.lastContent;
-      this.currentDims = snap ? { w: snap.width, h: snap.height } : null;
-      this.ui.updateInfo(state, this.currentDims);
-      // 帧条显隐与播放图标已由 onContent 推送直驱（不再轮询 isAnimation/isPlaying）
-      // 幻灯片进度计数（播放中实时更新）
-      this.ui.setSlideshowProgress(state.global_index + 1, state.global_total);
-      // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身不再计数）
-      void invoke("record_view", { path: state.path }).catch(() => undefined);
-    } finally {
-      this.ui.endDecoding();
+      const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: false });
+      ({ header, payload } = parseLoadEnvelope(buf));
+    } catch (err) {
+      if (gen === this.gen) this.ui.showToast(`无法加载图片：${String(err)}`);
+      return;
     }
+    if (gen !== this.gen) return;
+
+    try {
+      await this.viewer.show({ kind: "envelope", header, payload });
+    } catch (err) {
+      if (gen === this.gen) {
+        this.ui.showToast(`无法显示图片：${String(err)}`);
+      }
+      return;
+    }
+    if (gen !== this.gen) return;
+    this.currentCapped = header.capped;
+
+    if (header.isPreview) {
+      this.scheduleUpgrade(state, gen);
+    }
+
+    const snap: ContentState | null = this.lastContent;
+    this.currentDims = snap ? { w: snap.width, h: snap.height } : null;
+    this.ui.updateInfo(state, this.currentDims);
+    // 帧条显隐与播放图标已由 onContent 推送直驱（不再轮询 isAnimation/isPlaying）
+    // 幻灯片进度计数（播放中实时更新）
+    this.ui.setSlideshowProgress(state.global_index + 1, state.global_total);
+    // 埋点：IPC 通道显示成功（RAW/动画；load_image 命令本身不再计数）
+    void invoke("record_view", { path: state.path }).catch(() => undefined);
   }
 
   /** IPC 导航：单飞 + latest-wins 排队 + 边界处理。IPC 被拒则吞掉（与旧行为一致）。 */
@@ -318,28 +313,23 @@ export class ImagePresenter {
 
   /** RAW 内嵌预览已显示：后台拉取全量并升级替换（变换保持归 Viewer）；失败时预览由 Viewer 保留 */
   private async upgradeToFull(state: BrowseState, gen: number): Promise<void> {
-    this.ui.beginDecoding();
+    const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: true });
+    if (gen !== this.gen) return;
+    const { header, payload } = parseLoadEnvelope(buf);
+    this.currentCapped = header.capped;
+    if (header.isPreview) return; // 防御：仍返回预览（异常路径），保持现有显示
+    if (gen !== this.gen) return;
     try {
-      const buf = await invoke<ArrayBuffer>("load_image", { path: state.path, full: true });
-      if (gen !== this.gen) return;
-      const { header, payload } = parseLoadEnvelope(buf);
-      this.currentCapped = header.capped;
-      if (header.isPreview) return; // 防御：仍返回预览（异常路径），保持现有显示
-      if (gen !== this.gen) return;
-      try {
-        await this.viewer.showUpgrade(header, payload);
-      } catch {
-        // 全量失败：预览仍在（升级路径下 Viewer 不清空旧画面），静默保留
-        return;
-      }
-      if (gen !== this.gen) return;
-      // 信息条尺寸更新为全量尺寸
-      const snap: ContentState | null = this.lastContent;
-      this.currentDims = snap ? { w: snap.width, h: snap.height } : null;
-      this.ui.updateInfo(state, this.currentDims);
-    } finally {
-      this.ui.endDecoding();
+      await this.viewer.showUpgrade(header, payload);
+    } catch {
+      // 全量失败：预览仍在（升级路径下 Viewer 不清空旧画面），静默保留
+      return;
     }
+    if (gen !== this.gen) return;
+    // 信息条尺寸更新为全量尺寸
+    const snap: ContentState | null = this.lastContent;
+    this.currentDims = snap ? { w: snap.width, h: snap.height } : null;
+    this.ui.updateInfo(state, this.currentDims);
   }
 
   /** 深放大真像素（票 07）：显示倍率越过当前位图 1:1 且位图来自降采样时，
@@ -356,7 +346,6 @@ export class ImagePresenter {
     const gen = this.gen;
     this.nativePending = true;
     void (async () => {
-      this.ui.beginDecoding();
       try {
         const buf = await invoke<ArrayBuffer>("load_image", {
           path: state.path,
@@ -386,7 +375,6 @@ export class ImagePresenter {
         this.nativeFailed = true; // 静默失败，本图不再重试
       } finally {
         this.nativePending = false;
-        this.ui.endDecoding();
       }
     })();
   }
