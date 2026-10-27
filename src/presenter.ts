@@ -16,6 +16,7 @@ import type { ContentState, FitMode, Viewer } from "./viewer";
 import type { UI } from "./ui";
 import { isPotentialAnim, needsIpc, parseLoadEnvelope } from "./types";
 import type { BoundaryKind, BrowseState, LoadEnvelope, NavResult } from "./types";
+import { shouldUpgradeToNative } from "./native-upgrade";
 
 export interface ImagePresenterOptions {
   /** 成功显示一张图片后（导航/直显通用，调用面接 presence.notifyManualNav） */
@@ -334,15 +335,17 @@ export class ImagePresenter {
 
   /** 深放大真像素（票 07）：显示倍率越过当前位图 1:1 且位图来自降采样时，
    *  按需拉取原始分辨率解码（≤8192 长边，不写 LRU）并经 showUpgrade 换图——
-   *  屏幕视图逐像素不变、仅更锐。粘性升级（不回退），切图/失败即重置。 */
+   *  屏幕视图逐像素不变、仅更锐。粘性升级（不回退），切图/失败即重置。
+   *  判定语义（三区间）收口在 shouldUpgradeToNative 纯函数（票 01）。 */
   private maybeFetchNative(): void {
     if (this.nativeLoaded || this.nativePending || this.nativeFailed) return;
     const state = this.lastState;
     const content = this.lastContent;
     if (!state || !content || content.animated) return;
     if (!needsIpc(state.path)) return; // asset 通道本就持有原文件，无升级概念
-    if (!this.currentCapped) return; // 显示位图未降采样，无原图可换
-    if (this.viewer.currentScale <= 1) return; // 未越过当前位图 1:1
+    const scaleAtFetch = this.viewer.currentScale;
+    // 预检（header=null）：currentCapped 且倍率达标才发起取数
+    if (!shouldUpgradeToNative(null, this.currentCapped, scaleAtFetch, content.width)) return;
     const gen = this.gen;
     this.nativePending = true;
     void (async () => {
@@ -356,8 +359,8 @@ export class ImagePresenter {
         const { header, payload } = parseLoadEnvelope(buf);
         if (gen !== this.gen) return;
         if (header.isPreview) return; // 防御：异常路径仍返回预览
-        if (!header.capped) {
-          this.nativeLoaded = true; // 原图本就不超过显示帽，无需升级
+        if (!shouldUpgradeToNative(header, this.currentCapped, scaleAtFetch, content.width)) {
+          this.nativeLoaded = true; // 返回位图无增益：视为已到位，本图不再重试
           return;
         }
         try {
