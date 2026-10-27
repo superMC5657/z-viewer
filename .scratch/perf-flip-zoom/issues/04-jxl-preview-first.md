@@ -39,3 +39,10 @@ p50 1.1–1.4s；真实照片预期数百 ms，仍在感知线附近）。
 ## Comments
 
 - 2026-10-26 建档。
+- 2026-10-27 阻塞解除记录（agent，本次未实施）：前置票 03 已 resolved。
+  交接输入——票 03 分段计时显示 TIFF 冷解构成均匀（engine 仅占 ~20%，
+  read+resize+rgba+pack 合计与引擎相当），**TIFF 通道无「解码慢」问题，
+  方案 C（仅 IO 侧优化甚至不动）基本成立，无需预览先显**；方案 A/B 的
+  靶点收敛到 JXL 引擎解码段，但 JXL bench 段与默认 feature 构建在本机
+  不可用（缺 cmake），`decode stages` 打点已在位，cmake 可用后先跑
+  JXL 24MP 分段数据再定方案。票保持 ready-for-agent。
