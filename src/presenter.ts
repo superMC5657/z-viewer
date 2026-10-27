@@ -359,6 +359,10 @@ export class ImagePresenter {
         const { header, payload } = parseLoadEnvelope(buf);
         if (gen !== this.gen) return;
         if (header.isPreview) return; // 防御：异常路径仍返回预览
+        // 上面的 isPreview 前置检查与 shouldUpgradeToNative 内部的 isPreview 防御
+        // 语义不同，不能合并：这里提前返回不置任何状态，异常响应后仍可在下次
+        // 缩放事件重试；纯函数内的防御只返回 false，会被下方归入"无增益"分支
+        // 置 nativeLoaded=true（本图不再重试）
         if (!shouldUpgradeToNative(header, this.currentCapped, scaleAtFetch, content.width)) {
           this.nativeLoaded = true; // 返回位图无增益：视为已到位，本图不再重试
           return;

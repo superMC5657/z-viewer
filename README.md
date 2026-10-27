@@ -46,6 +46,8 @@
 pnpm install          # 安装前端依赖
 python scripts/gen-test-images.py  # （可选）生成 test-images/ 测试图库（需 Python）
 pnpm tauri dev        # 开发模式（前端热更新 + Rust 自动重编译）
+pnpm test             # 前端单测（vitest）
+cargo test            # Rust 测试（在 src-tauri/ 下运行；默认构建需 cmake，见构建前提）
 ```
 
 **打开图片**：
@@ -104,6 +106,7 @@ src/                  # 前端代码
   main.ts             # 入口、缓存开关、幻灯片播放条接线、事件装配
   viewer.ts           # 渲染与变换（缩放/旋转/翻转，rAF 合并 60fps）
   presenter.ts        # 图片呈现：代次守卫、通道分发、预取池、帧条策略
+  native-upgrade.ts   # 深放大真像素升级判定（纯函数，三区间语义单测锁定）
   presence.ts         # 可见性 + 意图 + 节奏：浮层分组、键盘映射、幻灯片节拍器
   ui.ts               # 信息条 / 工具栏 / Toast / 帧条 / 解码指示（对话框转交 Dialog）
   icons.ts            # 线性 SVG 图标与工具栏定义
@@ -116,7 +119,7 @@ src/                  # 前端代码
   lib/z-log.ts        # 前端统一日志转发
 src-tauri/            # Rust 后端
   src/browse/         # 浏览模型：目录枚举、自然排序、跨文件夹导航（含门控）
-  src/decode/         # 解码服务：RAW（预览快显 + rawler 全量）、TIFF、JXL、动画拆帧、EXIF 方向
+  src/decode/         # 解码服务：RAW（预览快显 + rawler 全量）、TIFF、JXL、动画拆帧、EXIF 方向、分阶段计时
   src/cache/          # LRU 解码缓存 + 文件夹首图队列（专业版）
   src/cache_policy.rs # 缓存策略：写过滤与预取过滤纯规则
   src/navigator.rs    # 深导航：导航 + 预取 + 代次协议唯一实现

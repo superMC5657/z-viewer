@@ -6,22 +6,53 @@
 //! 一次 `log_enabled!` 判断外零开销、不落盘（现状维持）。
 //!
 //! 阶段语义（单张解码的分段构成）：
-//! - `read`：文件打开/读取（TIFF 通道 open_with_orientation 含 EXIF 方向解析）；
-//! - `engine`：像素解码；JXL/RAW 引擎自带文件 IO，读取不可单独分拆归入此段；
+//! - `read`：文件打开与正文读取（TIFF 通道 open_with_orientation + 正文整体读入
+//!   内存，engine 段只剩纯解码；JXL/RAW 引擎自带文件 IO，读取不可单独分拆归入
+//!   engine 段）；
+//! - `engine`：像素解码；
 //! - `orient` / `resize` / `rgba`：finalize_rgba 内方向回正 / cap 降采样 /
-//!   RGBA 输出（cap_dimensions 是全通道降采样收口，JXL 动画逐帧封顶累计计入）；
-//! - `pack`：信封打包在命令层且换线程执行，不进 decode 段行，bench 侧单独计时。
+//!   RGBA 输出（cap_dimensions 是全通道降采样收口；JXL 通道产物封顶亦经此，
+//!   但在 engine 计时段外执行）；
+//! - `pack`：信封打包在命令层且换线程执行，不进 decode 段行——生产由命令层
+//!   `decode pack` 行单独计时（与 stages 行按 basename+时序关联），bench 侧
+//!   计入分段报表。
 //!
-//! 可加性注意：JXL 通道的逐帧 cap 发生在 engine 计时段内（引擎产物收尾），
-//! 该通道分段求和会重复计入 resize；TIFF/RAW 严格可加。`decode stages` 行
-//! 仅 debug 可见，解读分段数据时以此为准（bench 报表另注）。
+//! 可加性：各通道分段严格可加（JXL 逐帧 cap 移出 engine 计时段后无重复计入）。
+//! `decode stages` 行仅 debug 可见，解读分段数据时以此为准（bench 报表另注）。
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+/// 阶段名常量（打点与报表两侧唯一真源）：字面量散落各调用点时，typo 会静默
+/// 分裂统计桶，一律引用常量。bench 报表（crate 根）也读 PACK，故 pub(crate)。
+pub(crate) mod name {
+    pub(crate) const READ: &str = "read";
+    pub(crate) const ENGINE: &str = "engine";
+    pub(crate) const ORIENT: &str = "orient";
+    pub(crate) const RESIZE: &str = "resize";
+    pub(crate) const RGBA: &str = "rgba";
+    // pack 段不进 decode 会话（见模块注释），唯一消费者是 #[cfg(test)] 的
+    // 翻页延迟基准报表——非测试构建下按 dead_code 静默
+    #[allow(dead_code)]
+    pub(crate) const PACK: &str = "pack";
+}
+
 thread_local! {
     static STAGES: RefCell<Vec<(&'static str, Duration)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 同名阶段累计（find-or-insert）：decode 会话线程局部与 bench 聚合（f64 ms）
+/// 共用同一形状，单一实现
+pub(crate) fn accumulate<T: Copy + std::ops::AddAssign>(
+    v: &mut Vec<(&'static str, T)>,
+    name: &'static str,
+    d: T,
+) {
+    match v.iter_mut().find(|(n, _)| *n == name) {
+        Some(e) => e.1 += d,
+        None => v.push((name, d)),
+    }
 }
 
 /// 基准/测试显式开启开关（生产由日志门槛动态判定，见 `begin`）
@@ -46,13 +77,7 @@ pub(super) fn timed<T>(stage: &'static str, f: impl FnOnce() -> T) -> T {
     let t0 = Instant::now();
     let out = f();
     let dt = t0.elapsed();
-    STAGES.with(|s| {
-        let mut v = s.borrow_mut();
-        match v.iter_mut().find(|(n, _)| *n == stage) {
-            Some(e) => e.1 += dt,
-            None => v.push((stage, dt)),
-        }
-    });
+    STAGES.with(|s| accumulate(&mut s.borrow_mut(), stage, dt));
     out
 }
 

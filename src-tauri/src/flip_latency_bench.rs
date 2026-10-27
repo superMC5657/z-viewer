@@ -124,7 +124,8 @@ fn ms_since(t0: Instant) -> f64 {
 
 /// demand 路径：`commands::load_image` 的缓存/解码/写回语义（去 IPC 壳，保留信封成本）。
 /// 返回（耗时, 是否命中, 冷解分段 ms）；分段来自 decode::stage 会话快照（同线程），
-/// pack 在本函数单独计时（信封打包在命令层且换线程，不进 decode 段行）。
+/// pack 在本函数单独计时（信封打包在命令层且换线程，不进 decode 段行——生产对应
+/// 命令层 `decode pack` 行，见 commands::load_image）。
 fn demand_load(
     cache: &DecodeCache,
     path: &str,
@@ -149,7 +150,7 @@ fn demand_load(
         cache.put(path.to_string(), Arc::clone(&result));
         cache.end_prefetch(path);
     }
-    stages.push(("pack", pack_ms));
+    stages.push((stage::name::PACK, pack_ms));
     (ms_since(t0), false, stages)
 }
 
@@ -162,10 +163,7 @@ fn record(run: &mut Run, ms: f64, hit: bool, stages: Vec<(&'static str, f64)>) {
     } else {
         run.cold_ms.push(ms);
         for (name, d) in stages {
-            match run.cold_stages.iter_mut().find(|(n, _)| *n == name) {
-                Some(e) => e.1 += d,
-                None => run.cold_stages.push((name, d)),
-            }
+            stage::accumulate(&mut run.cold_stages, name, d);
         }
     }
 }
@@ -264,7 +262,7 @@ fn report(label: &str, run: &Run) {
         run.nav_max_ms,
     );
     // 冷解分段均值（票 03）：read/engine/orient/resize/rgba 来自 decode::stage
-    // 会话（JXL 通道 resize 与 engine 重叠，见 stage 模块注释）；pack 为 bench 侧单独计时
+    // 会话，各通道分段严格可加；pack 为 bench 侧单独计时
     if !run.cold_stages.is_empty() {
         let cold_n = run.cold_ms.len().max(1) as f64;
         let mut line = String::new();
@@ -291,21 +289,22 @@ fn warm_read(dir: &Path) {
     );
 }
 
+/// 五档扫描套件（未预热/预热两趟各跑一次，消除重复报表块）
+fn run_suite(dir: &Path) {
+    report("level 0 免费(冷)", &run_scan(dir, 0, None));
+    report("level 1 正常节奏", &run_scan(dir, 1, Some(LOOK)));
+    report("level 1 快速连翻", &run_scan(dir, 1, None));
+    report("level 2 正常节奏", &run_scan(dir, 2, Some(LOOK)));
+    report("level 2 快速连翻", &run_scan(dir, 2, None));
+}
+
 fn run_format(label: &str, dir: &Path) {
     println!("== {label} ×{N_FILES}（往返扫描） ==");
     println!("  -- 第 1 趟：未预热（素材生成后首读，含可能的 Defender 实时扫描）--");
-    report("level 0 免费(冷)", &run_scan(dir, 0, None));
-    report("level 1 正常节奏", &run_scan(dir, 1, Some(LOOK)));
-    report("level 1 快速连翻", &run_scan(dir, 1, None));
-    report("level 2 正常节奏", &run_scan(dir, 2, Some(LOOK)));
-    report("level 2 快速连翻", &run_scan(dir, 2, None));
+    run_suite(dir);
     warm_read(dir);
     println!("  -- 第 2 趟：预热读后（扫描已付过 + OS 页缓存命中）--");
-    report("level 0 免费(冷)", &run_scan(dir, 0, None));
-    report("level 1 正常节奏", &run_scan(dir, 1, Some(LOOK)));
-    report("level 1 快速连翻", &run_scan(dir, 1, None));
-    report("level 2 正常节奏", &run_scan(dir, 2, Some(LOOK)));
-    report("level 2 快速连翻", &run_scan(dir, 2, None));
+    run_suite(dir);
 }
 
 #[test]

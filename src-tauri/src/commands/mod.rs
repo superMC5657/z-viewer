@@ -303,8 +303,9 @@ pub async fn load_image(
     let path2 = path.clone();
     let base = basename_of(&path);
     // 票 05 demand 让路：解码期间预取让出 spawn_blocking 池（begin_prefetch 拒绝
-    // 新任务），begin/end 严格配对（await 后先释放再走错误映射，不留悬挂登记）
-    cache.begin_demand();
+    // 新任务）。RAII guard 代替手工 begin/end 配对：async future 被取消（drop）
+    // 时计数必然释放，不会出现泄漏导致预取永久失效
+    let _demand = cache.demand_guard();
     let joined = tauri::async_runtime::spawn_blocking(move || {
         if original {
             crate::decode::load_image_original(&path2)
@@ -314,7 +315,6 @@ pub async fn load_image(
         .map(Arc::new)
     })
     .await;
-    cache.end_demand();
     let result = joined.map_err(|e| {
         let msg = format!("解码任务失败: {e}");
         log::warn!("decode failed {base}: {}", first_line_of(&msg));
@@ -336,9 +336,13 @@ pub async fn load_image(
         // 实时解码完成：清除该路径的预取登记（预取任务 put 前 peek 会跳过）
         cache.end_prefetch(&path);
     }
-    Ok(tauri::ipc::Response::new(crate::decode::pack_envelope(
-        &result,
-    )))
+    // 信封打包单独计时（票 03 传输占比）：打包在命令层且跨线程，不属 decode
+    // 段行；独立 `decode pack` 行与 decode stages 行按 basename+时序关联，
+    // 真实用户的传输占比即由此回收（bench 报表同项对照，见 flip_latency_bench）
+    let pt0 = std::time::Instant::now();
+    let envelope = crate::decode::pack_envelope(&result);
+    log::debug!("decode pack {base} in {}ms", pt0.elapsed().as_millis());
+    Ok(tauri::ipc::Response::new(envelope))
 }
 
 /// 轻量判定文件是否多帧动画（不拆帧）：WebP 扫 RIFF ANMF 块、PNG 扫 acTL 块、

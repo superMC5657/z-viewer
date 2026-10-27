@@ -30,7 +30,8 @@ fn ticks_to_ms(dur: u32, tps_numer: u32, tps_denom: u32) -> u32 {
 /// （128 MiB ≈ 720p×120 帧；动画收尾仍是等量 ImageBitmap，仅压低传输峰值）
 const RAW_ANIM_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 
-/// 引擎无关的解码产物：RGBA8 帧序列（已按 MAX_DIM 封顶，静态恰好 1 帧）
+/// 引擎无关的解码产物：RGBA8 帧序列（**未封顶**——cap 由 decode_jxl 在 engine
+/// 计时段外统一执行，静态恰好 1 帧）
 pub(in crate::decode) struct EngineOutput {
     pub animated: bool,
     pub width: u32,
@@ -59,39 +60,39 @@ pub(super) fn is_jxl_animated(path: &str) -> bool {
 
 /// JXL 通道入口：解码 + 收尾打包；`Ok.1` 为引擎回退说明（None = 未回退），
 /// 交分发点记录（解码通道内部零 log，见 docs/logging.md）。
-/// 引擎自带文件 IO（读取归入 engine）；libjxl 逐帧 cap 亦在此时段内，
-/// resize 段对该通道重复计入（可加性说明见 stage 模块注释）。
+/// 引擎自带文件 IO（读取归入 engine 段不可拆分）；逐帧 cap 统一在 engine
+/// 计时段**外**执行（resize 段独立计时，分段严格可加，见 stage 模块注释）。
 pub(super) fn decode_jxl(path: &str, cap: u32) -> Result<(LoadResult, Option<String>), String> {
-    let (out, fallback) = stage::timed("engine", || decode_with_engine(path, cap))?;
+    let (out, fallback) = stage::timed(stage::name::ENGINE, || decode_with_engine(path))?;
+    let out = cap_engine_output(out, cap);
     Ok((finish(out), fallback))
 }
 
 /// 引擎选择：libjxl 优先，个别文件兼容性失败自动回退 jxl-oxide。
 /// 回退成功时把 libjxl 失败原因交给分发点记 warn；双引擎皆失败时把
-/// libjxl 原因并入错误串上浮，避免只留 oxide 报错丢线索
+/// libjxl 原因并入错误串上浮，避免只留 oxide 报错丢线索。
+/// 两引擎都返回**未封顶**产物（cap 统一收口到 decode_jxl）
 #[cfg(feature = "jxl-libjxl")]
-fn decode_with_engine(path: &str, cap: u32) -> Result<(EngineOutput, Option<String>), String> {
+fn decode_with_engine(path: &str) -> Result<(EngineOutput, Option<String>), String> {
     match libjxl_engine::decode(path) {
-        Ok(out) => Ok((cap_engine_output(out, cap), None)),
+        Ok(out) => Ok((out, None)),
         Err(libjxl_err) => {
-            let out = cap_engine_output(
-                oxide_decode(path, cap).map_err(|oxide_err| {
-                    format!("{oxide_err}（libjxl 主引擎亦失败: {libjxl_err}）")
-                })?,
-                cap,
-            );
+            let out = oxide_decode(path)
+                .map_err(|oxide_err| format!("{oxide_err}（libjxl 主引擎亦失败: {libjxl_err}）"))?;
             Ok((out, Some(libjxl_err)))
         }
     }
 }
 
 #[cfg(not(feature = "jxl-libjxl"))]
-fn decode_with_engine(path: &str, cap: u32) -> Result<(EngineOutput, Option<String>), String> {
-    Ok((oxide_decode(path, cap)?, None))
+fn decode_with_engine(path: &str) -> Result<(EngineOutput, Option<String>), String> {
+    Ok((oxide_decode(path)?, None))
 }
 
-/// libjxl 引擎产物统一按 cap 封顶（jxl-oxide 通道已在 oxide_decode 内逐帧封顶）
-#[cfg(feature = "jxl-libjxl")]
+/// 引擎产物统一按 cap 封顶（两引擎共用收口）：逐帧缩放计 resize 段。
+/// 位置约定：必须在 engine 计时段外调用（分段可加性的前提）。副作用是
+/// jxl-oxide 回退路径的超帽动画在解码期间保持全尺寸帧（原逐帧封顶的内存
+/// 峰值收益不再）——回退本就罕见，finish_animation 的预算门控兜底，接受。
 fn cap_engine_output(mut out: EngineOutput, cap: u32) -> EngineOutput {
     if out.width.max(out.height) <= cap {
         return out;
@@ -272,7 +273,8 @@ fn render_to_rgba(
     Ok(rgba)
 }
 
-fn oxide_decode(path: &str, cap: u32) -> Result<EngineOutput, String> {
+/// jxl-oxide 回退引擎：纯解码，产物不封顶（cap 统一在 decode_jxl 收口）
+fn oxide_decode(path: &str) -> Result<EngineOutput, String> {
     let image = jxl_oxide::JxlImage::builder()
         .open(path)
         .map_err(|e| format!("JXL 打开失败: {e}"))?;
@@ -292,7 +294,6 @@ fn oxide_decode(path: &str, cap: u32) -> Result<EngineOutput, String> {
         let mut frames = Vec::with_capacity(num_keyframes);
         let mut delays_ms = Vec::with_capacity(num_keyframes);
         let mut dims = (0u32, 0u32);
-        let mut capped = false;
 
         for idx in 0..num_keyframes {
             let render = image
@@ -300,8 +301,6 @@ fn oxide_decode(path: &str, cap: u32) -> Result<EngineOutput, String> {
                 .map_err(|e| format!("JXL 帧 {idx} 渲染失败: {e}"))?;
             let rgba = render_to_rgba(&image, &render)?;
             let (w, h) = (render.stream().width(), render.stream().height());
-            let (rgba, w, h, resized) = cap_rgba_frame(w, h, rgba, cap);
-            capped = capped || resized;
             if dims == (0, 0) {
                 dims = (w, h);
             }
@@ -317,7 +316,7 @@ fn oxide_decode(path: &str, cap: u32) -> Result<EngineOutput, String> {
             height: dims.1,
             frames,
             delays_ms,
-            capped,
+            capped: false,
         })
     } else {
         let render = image
@@ -325,20 +324,20 @@ fn oxide_decode(path: &str, cap: u32) -> Result<EngineOutput, String> {
             .map_err(|e| format!("JXL 渲染失败: {e}"))?;
         let (w, h) = (render.stream().width(), render.stream().height());
         let rgba = render_to_rgba(&image, &render)?;
-        let (rgba, w, h, capped) = cap_rgba_frame(w, h, rgba, cap);
         Ok(EngineOutput {
             animated: false,
             width: w,
             height: h,
             frames: vec![rgba],
             delays_ms: vec![0],
-            capped,
+            capped: false,
         })
     }
 }
 
 /// RGBA 帧按 cap 封顶：超出时长边缩至上限并重采像素，
-/// 返回（像素, 新宽, 新高, 是否发生降采样）
+/// 返回（像素, 新宽, 新高, 是否发生降采样）。唯一调用方是 cap_engine_output
+/// （须在 engine 计时段外调用，见其注释）。
 fn cap_rgba_frame(w: u32, h: u32, rgba: Vec<u8>, cap: u32) -> (Vec<u8>, u32, u32, bool) {
     if w.max(h) <= cap || rgba.is_empty() {
         return (rgba, w, h, false);

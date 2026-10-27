@@ -284,10 +284,12 @@ pub(super) fn finalize_rgba(
     mode: &str,
     cap: u32,
 ) -> LoadResult {
-    let oriented = stage::timed("orient", || preview::apply_orientation(img, orientation));
+    let oriented = stage::timed(stage::name::ORIENT, || {
+        preview::apply_orientation(img, orientation)
+    });
     let (img, capped) = cap_dimensions(oriented, cap);
     let (w, h) = (img.width(), img.height());
-    let mut result = stage::timed("rgba", || {
+    let mut result = stage::timed(stage::name::RGBA, || {
         LoadResult::rgba(mode, img.to_rgba8().into_raw(), w, h, false)
     });
     result.capped = capped;
@@ -324,7 +326,7 @@ pub(super) fn cap_dimensions(img: image::DynamicImage, cap: u32) -> (image::Dyna
         ))
         .use_alpha(false); // 与原 image::resize 行为一致（非预乘）
     let mut resizer = fast_image_resize::Resizer::new();
-    stage::timed("resize", || {
+    stage::timed(stage::name::RESIZE, || {
         resizer
             .resize(&src, &mut dst, &options)
             .expect("降采样失败");

@@ -15,6 +15,18 @@ use crate::decode::{load_mode, LoadResult};
 
 use super::LruQueue;
 
+/// demand 让路登记句柄（见 [`DecodeCache::demand_guard`]）：
+/// 持有缓存克隆（全 Arc 字段，克隆廉价），Drop 时释放登记
+pub(crate) struct DemandGuard {
+    cache: DecodeCache,
+}
+
+impl Drop for DemandGuard {
+    fn drop(&mut self) {
+        self.cache.end_demand();
+    }
+}
+
 /// 后台预取最大并发数（实时解码不受限，优先级永远更高）
 const PREFETCH_MAX: usize = 2;
 
@@ -118,8 +130,8 @@ impl DecodeCache {
     }
 
     /// 实时解码开始登记（票 05 demand 让路）：与 [`Self::end_demand`] 严格配对；
-    /// 多路并发 demand 计数叠加，全部结束后预取恢复。命令层 load_image 的
-    /// spawn_blocking 解码前后调用（缓存命中路径不登记——无解码不占池）。
+    /// 多路并发 demand 计数叠加，全部结束后预取恢复。生产路径经 [`Self::demand_guard`]
+    /// （RAII 免手工配对），本方法与 `end_demand` 保留为计数语义的测试观察面。
     pub(crate) fn begin_demand(&self) {
         self.demand_active.fetch_add(1, Ordering::Relaxed);
     }
@@ -127,6 +139,16 @@ impl DecodeCache {
     /// 实时解码结束登记（票 05），与 begin_demand 配对
     pub(crate) fn end_demand(&self) {
         self.demand_active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// demand 让路登记的 RAII 句柄：构造即 begin，Drop 即 end。命令层
+    /// begin→await→end 的手工配对在 async future 被取消（drop）时会泄漏计数、
+    /// 预取永久失效——guard 使任何退出路径（取消/panic）都必然释放。
+    pub(crate) fn demand_guard(&self) -> DemandGuard {
+        self.begin_demand();
+        DemandGuard {
+            cache: self.clone(),
+        }
     }
 
     /// 预取去重 + 并发门控：无实时解码进行中、路径不在解码中且并发未达上限
@@ -168,7 +190,9 @@ impl DecodeCache {
         }
     }
 
-    /// 路径是否处于预取/解码登记中（#[cfg(test)]：demand 让路测试的确定性观察面）
+    /// 路径是否处于预取/解码登记中（#[cfg(test)]：demand 让路测试的确定性观察面）。
+    /// 与 [`Self::peek`] 语义不同、勿合并（评审曾误判为重复实现）：peek 查
+    /// 「已在缓存」（LRU/动画槽，可直显），本方法查「正在解码」（in_flight 登记）。
     #[cfg(test)]
     pub(crate) fn prefetching(&self, path: &str) -> bool {
         self.in_flight

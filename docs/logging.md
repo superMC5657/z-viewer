@@ -122,6 +122,12 @@ void initZLog().catch(() => undefined);
   预取后台调用走 `cache prefetch failed` 的 debug，见下）
 - `debug` decode done {basename} in {ms}ms（通道耗时打点：raw/tiff/jxl/anim 通道成功后记一次，
   asset 通道零解码不记；release 不可见，翻页延迟分析用，见 `flip_latency_bench`）
+- `debug` decode stages {basename} read=.. engine=.. [orient=.. resize=.. rgba=..] total={ms}ms
+  （分阶段计时明细，票 03：`decode::stage` 会话在 `decode/mod.rs::load_image_inner` emit，
+  与 `decode done` 同请求成对；阶段语义见 `decode/stage.rs` 模块注释——分段严格可加，
+  JXL/RAW 引擎自带文件 IO 归 engine 段不可拆分；release 不可见，真实用户分段回收用）
+- `debug` decode pack {basename} in {ms}ms（信封打包耗时：`commands::load_image` 命令层
+  pack_envelope；跨线程不属 decode 段行，与 stages 行按 basename+时序关联出传输占比）
 - 解码器内部（`raw.rs`/`tiff.rs`/`jxl.rs`/`animation.rs`）零 log：底层错误（io/ImageError/rawler `Display`）
   均不含路径，只在分发点 + 命令层各记一次（后缀区分）。
 
@@ -182,9 +188,13 @@ void initZLog().catch(() => undefined);
 - `src-tauri/src/main.rs`（`startup_image_path` 启动参数跳过 debug；`setup` 内 startup/open 打点与授权状态变迁；启动修剪复用水位常量）
 - `src-tauri/src/util.rs`（日志摘要辅助单一实现：`basename_of`/`first_line_of`/`now`；
   原各调用点本地副本已删，调用方 `use` 转发）
-- `src-tauri/src/commands/mod.rs`（`navigate` 边界/跨越/单图切换、`open_path` 打开成败、`jump_folder` 未知跳转目标、`load_image` 解码失败）
+- `src-tauri/src/commands/mod.rs`（`navigate` 边界/跨越/单图切换、`open_path` 打开成败、
+  `jump_folder` 未知跳转目标、`load_image` 解码失败 + 信封打包 `decode pack` debug）
 - `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[jxl]`/`[anim]` 后缀 + `[jxl]` 引擎回退，
-  `decode done` 通道耗时 debug，摘要辅助转发自 `util`，与命令层后缀去重）
+  `decode done` 通道耗时 + `decode stages` 分段明细 debug（emit 经 `decode::stage` 会话），
+  摘要辅助转发自 `util`，与命令层后缀去重）
+- `src-tauri/src/decode/stage.rs`（分阶段计时会话单一实现：`begin`/`timed`/`emit`、
+  阶段名常量 `name::*`、同名累计 `accumulate`；测试观察面 `force`/`snapshot` 随构建剔除）
 - `src-tauri/src/browse/scan.rs`（打开拒绝原因码 info + 后台扫描计数 debug）
 - `src-tauri/src/cache/*.rs`（`DecodeCache::get_entry` hit/miss debug + `LruQueue` 淘汰计数 debug）
 - `src-tauri/src/navigator.rs`（预取派生与代次协议：`cache prefetch failed (ctx)`/`(first)` debug、
