@@ -456,3 +456,36 @@ fn original_decode_bypasses_display_cap() {
     assert!(!o.capped, "original 解码未降采样");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ============================================================
+// 分阶段计时机制（票 03）：force 开关 / 同名累计 / 会话清空
+// ============================================================
+
+#[test]
+fn stage_timed_accumulates_and_begin_clears() {
+    // 计时段用 sleep 下界断言（busy loop 会被常量折叠，可能测出 0ms）
+    super::stage::force(true);
+    assert!(super::stage::begin(), "force 开启时应激活");
+    super::stage::timed("read", || {
+        std::thread::sleep(std::time::Duration::from_millis(2))
+    });
+    super::stage::timed("read", || {
+        std::thread::sleep(std::time::Duration::from_millis(2))
+    }); // 同名累计
+    super::stage::timed("engine", || {
+        std::thread::sleep(std::time::Duration::from_millis(1))
+    });
+    let snap = super::stage::snapshot();
+    assert_eq!(snap.iter().filter(|(n, _)| *n == "read").count(), 1);
+    assert_eq!(snap.iter().filter(|(n, _)| *n == "engine").count(), 1);
+    let read = snap.iter().find(|(n, _)| *n == "read").unwrap().1;
+    assert!(read >= 4.0, "同名阶段应累计（实际 {read}ms）");
+    let engine = snap.iter().find(|(n, _)| *n == "engine").unwrap().1;
+    assert!(engine >= 1.0, "engine 段应有独立累计（实际 {engine}ms）");
+
+    assert!(super::stage::begin(), "会话开始应再次激活");
+    assert!(super::stage::snapshot().is_empty(), "会话开始应清空累计");
+
+    super::stage::force(false);
+    assert!(!super::stage::begin(), "关闭后不激活");
+}

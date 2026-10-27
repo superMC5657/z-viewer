@@ -12,7 +12,7 @@ use std::io::Cursor;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
 
-use super::{cap_dimensions, LoadResult};
+use super::{cap_dimensions, stage, LoadResult};
 
 /// JXL 动画帧未指定延迟或异常时的默认帧间隔（100ms = 10fps）
 pub(super) const DEFAULT_ANIM_FRAME_DELAY_MS: u32 = 100;
@@ -58,9 +58,11 @@ pub(super) fn is_jxl_animated(path: &str) -> bool {
 }
 
 /// JXL 通道入口：解码 + 收尾打包；`Ok.1` 为引擎回退说明（None = 未回退），
-/// 交分发点记录（解码通道内部零 log，见 docs/logging.md）
+/// 交分发点记录（解码通道内部零 log，见 docs/logging.md）。
+/// 引擎自带文件 IO（读取归入 engine）；libjxl 逐帧 cap 亦在此时段内，
+/// resize 段对该通道重复计入（可加性说明见 stage 模块注释）。
 pub(super) fn decode_jxl(path: &str, cap: u32) -> Result<(LoadResult, Option<String>), String> {
-    let (out, fallback) = decode_with_engine(path, cap)?;
+    let (out, fallback) = stage::timed("engine", || decode_with_engine(path, cap))?;
     Ok((finish(out), fallback))
 }
 

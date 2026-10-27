@@ -25,6 +25,7 @@ pub mod format;
 mod jxl;
 mod preview;
 mod raw;
+pub(crate) mod stage;
 #[cfg(test)]
 mod tests;
 mod tiff;
@@ -173,15 +174,17 @@ pub fn load_image_original(path: &str) -> Result<LoadResult, String> {
 
 fn load_image_inner(path: &str, full: bool, cap: u32) -> Result<LoadResult, String> {
     let started = std::time::Instant::now();
+    // 分段计时会话（票 03）：debug/bench 激活，release 零开销
+    let staged = stage::begin();
     let result = load_image_dispatch(path, full, cap);
     if let Ok(r) = &result {
         if r.mode != load_mode::ASSET {
             // 通道耗时打点（debug：dev 可见 release 不落盘；asset 通道零解码，不记）
-            log::debug!(
-                "decode done {} in {}ms",
-                basename_of(path),
-                started.elapsed().as_millis()
-            );
+            let total_ms = started.elapsed().as_millis();
+            log::debug!("decode done {} in {}ms", basename_of(path), total_ms);
+            if staged {
+                stage::emit(&basename_of(path), total_ms);
+            }
         }
     }
     result
@@ -281,9 +284,12 @@ pub(super) fn finalize_rgba(
     mode: &str,
     cap: u32,
 ) -> LoadResult {
-    let (img, capped) = cap_dimensions(preview::apply_orientation(img, orientation), cap);
+    let oriented = stage::timed("orient", || preview::apply_orientation(img, orientation));
+    let (img, capped) = cap_dimensions(oriented, cap);
     let (w, h) = (img.width(), img.height());
-    let mut result = LoadResult::rgba(mode, img.to_rgba8().into_raw(), w, h, false);
+    let mut result = stage::timed("rgba", || {
+        LoadResult::rgba(mode, img.to_rgba8().into_raw(), w, h, false)
+    });
     result.capped = capped;
     result
 }
@@ -315,9 +321,11 @@ pub(super) fn cap_dimensions(img: image::DynamicImage, cap: u32) -> (image::Dyna
         ))
         .use_alpha(false); // 与原 image::resize 行为一致（非预乘）
     let mut resizer = fast_image_resize::Resizer::new();
-    resizer
-        .resize(&src, &mut dst, &options)
-        .expect("降采样失败");
+    stage::timed("resize", || {
+        resizer
+            .resize(&src, &mut dst, &options)
+            .expect("降采样失败");
+    });
     let out = image::DynamicImage::ImageRgba8(
         image::RgbaImage::from_raw(dw, dh, dst.into_vec()).expect("降采样目标缓冲"),
     );

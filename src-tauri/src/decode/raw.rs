@@ -5,7 +5,7 @@
 
 use rawler::Orientation;
 
-use super::{finalize_rgba, load_mode, LoadResult};
+use super::{finalize_rgba, load_mode, stage, LoadResult};
 
 pub(super) fn decode_raw(path: &str, full: bool, cap: u32) -> Result<LoadResult, String> {
     // 非全量拍：优先返回内嵌 JPEG 预览；提取失败回退全量 develop
@@ -21,15 +21,20 @@ pub(super) fn decode_raw(path: &str, full: bool, cap: u32) -> Result<LoadResult,
         }
     }
 
-    let rawimage = rawler::decode_file(path).map_err(|e| format!("RAW 解码失败: {e}"))?;
-    let orientation = orient_to_u8(rawimage.orientation);
-    let develop = rawler::imgop::develop::RawDevelop::default();
-    let intermediate = develop
-        .develop_intermediate(&rawimage)
-        .map_err(|e| format!("RAW 处理失败: {e}"))?;
-    let img = intermediate
-        .to_dynamic_image()
-        .ok_or_else(|| "RAW 图像转换失败".to_string())?;
+    // rawler 引擎自带文件 IO（读取不可单独分拆，归入 engine；票 03 分段计时）
+    let (orientation, img) =
+        stage::timed("engine", || -> Result<(u8, image::DynamicImage), String> {
+            let rawimage = rawler::decode_file(path).map_err(|e| format!("RAW 解码失败: {e}"))?;
+            let orientation = orient_to_u8(rawimage.orientation);
+            let develop = rawler::imgop::develop::RawDevelop::default();
+            let intermediate = develop
+                .develop_intermediate(&rawimage)
+                .map_err(|e| format!("RAW 处理失败: {e}"))?;
+            let img = intermediate
+                .to_dynamic_image()
+                .ok_or_else(|| "RAW 图像转换失败".to_string())?;
+            Ok((orientation, img))
+        })?;
 
     Ok(finalize_rgba(img, orientation, load_mode::RAW, cap))
 }
