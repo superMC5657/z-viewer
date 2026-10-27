@@ -326,6 +326,7 @@ fn jxl_engine_bench() {
 // 数字解读与优化决策见 .scratch/pm-followup-20261024/issues/06。
 // ============================================================
 
+#[cfg(feature = "jxl-libjxl")]
 #[test]
 #[ignore = "手动剖析：cargo test --release --ignored decode_component_profile -- --nocapture"]
 fn decode_component_profile() {

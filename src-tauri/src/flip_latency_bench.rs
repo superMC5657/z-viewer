@@ -56,6 +56,7 @@ impl Drop for TempDir {
     }
 }
 
+#[cfg(feature = "jxl-libjxl")]
 fn gen_jxl(dir: &Path) {
     use crate::decode::bench_util::encode_jxl_fixture;
     for i in 0..N_FILES {

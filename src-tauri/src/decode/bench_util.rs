@@ -1,6 +1,7 @@
 //! 基准素材生成（#[cfg(test)]）：vendored libjxl 编码器现场产出 JXL 码流。
 //! 测试与基准共用同一实现，避免编码样板复制。
 
+#[cfg(feature = "jxl-libjxl")]
 use super::jxl::libjxl_ffi as ffi;
 
 /// RGBA8 → JXL 码流（effort 3 + distance 1.0：基准只关心解码速度，编码够快即可）。
