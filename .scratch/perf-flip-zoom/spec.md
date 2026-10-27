@@ -67,7 +67,7 @@ TIFF 解码理论上近乎免费，此数字反常。假设：Windows Defender �
 | # | 内容 | 优先级 | 状态 |
 | --- | --- | --- | --- |
 | 01 | 修复深放大真像素升级丢弃（BUG-A + BUG-B，含 TS 测试基建与回归测试） | P0 | resolved |
-| 02 | 显示帽降采样 Bilinear → CatmullRom | P1 | ready-for-agent |
+| 02 | 显示帽降采样 Bilinear → CatmullRom | P1 | resolved |
 | 03 | 解码分阶段计时（解码/回正/降采样/打包/IO 拆分）+ Defender 假设验证 | P1 | resolved |
 | 04 | JXL/静态通道「预览先显」spike（libjxl 渐进 flush / 两段式交付评估） | P1 | ready-for-agent |
 | 05 | 预取与实时解码资源让路（demand in-flight 时预取降并发/暂停） | P2 | ready-for-agent |
