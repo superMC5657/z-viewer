@@ -428,6 +428,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Condvar, Mutex};
 
     static SEQ: AtomicU32 = AtomicU32::new(0);
 
@@ -814,6 +815,52 @@ mod tests {
         // 缓存关闭时空操作。
         nav.did_open(&model, &closed_policy());
         assert_eq!(nav.current_generation(), 1);
+        cleanup(&base);
+    }
+
+    /// (f) demand 让路接线（票 05）：实时解码进行中 navigate 的双队列派生在
+    /// begin_prefetch 处被拒——不登记、不 spawn。门控解码器使「若回归则会
+    /// 派生任务」的场景登记状态稳定可断言（任务阻塞在解码内，登记必持有）。
+    static DECODE_GATE: Mutex<bool> = Mutex::new(false);
+    static DECODE_GATE_CV: Condvar = Condvar::new();
+
+    fn gated_decoder(path: &str, full: bool) -> Result<LoadResult, String> {
+        let guard = DECODE_GATE.lock().unwrap_or_else(|e| e.into_inner());
+        if *guard {
+            // 等测试放行：模拟解码进行中，保证登记状态在断言时稳定
+            let _released = DECODE_GATE_CV.wait(guard);
+        }
+        fake_decoder(path, full)
+    }
+
+    #[test]
+    fn navigate_yields_prefetch_while_demand_in_flight() {
+        let base = temp_base();
+        // 非 asset 扩展名：should_prefetch 放行，才能走到 begin_prefetch 门控
+        touch(&base.join("A/a1.raw"));
+        touch(&base.join("A/a2.raw"));
+        let model = open_sync(&base.join("A/a1.raw"));
+        let cache = DecodeCache::new(8);
+        let nav = test_nav(cache.clone(), FolderFirstCache::new(4), gated_decoder);
+        let policy = enabled_policy();
+
+        *DECODE_GATE.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cache.begin_demand();
+        let r = nav.navigate(&model, NavStep::Next, &policy);
+        assert!(r.boundary.is_none());
+        let a2 = base.join("A").join("a2.raw").to_string_lossy().to_string();
+        assert!(
+            !cache.prefetching(&a2),
+            "demand 进行中 navigate 不得登记/派生预取（让路生效）"
+        );
+        // 对照：demand 结束后同路径登记面正常（派生走的是同一门控，未被绕过）
+        *DECODE_GATE.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        DECODE_GATE_CV.notify_all();
+        cache.end_demand();
+        assert!(cache.begin_prefetch(&a2), "demand 结束后登记恢复");
+        cache.end_prefetch(&a2);
+        // 若发生回归（demand 期间派生了任务），放行后等其自然结束再清理
+        std::thread::sleep(std::time::Duration::from_millis(50));
         cleanup(&base);
     }
 }

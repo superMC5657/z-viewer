@@ -302,7 +302,10 @@ pub async fn load_image(
     // 但绝不让实时路径被预取拖住或排队死锁）。
     let path2 = path.clone();
     let base = basename_of(&path);
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    // 票 05 demand 让路：解码期间预取让出 spawn_blocking 池（begin_prefetch 拒绝
+    // 新任务），begin/end 严格配对（await 后先释放再走错误映射，不留悬挂登记）
+    cache.begin_demand();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
         if original {
             crate::decode::load_image_original(&path2)
         } else {
@@ -310,8 +313,9 @@ pub async fn load_image(
         }
         .map(Arc::new)
     })
-    .await
-    .map_err(|e| {
+    .await;
+    cache.end_demand();
+    let result = joined.map_err(|e| {
         let msg = format!("解码任务失败: {e}");
         log::warn!("decode failed {base}: {}", first_line_of(&msg));
         msg

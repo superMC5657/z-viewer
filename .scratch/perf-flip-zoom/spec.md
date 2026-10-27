@@ -70,7 +70,7 @@ TIFF 解码理论上近乎免费，此数字反常。假设：Windows Defender �
 | 02 | 显示帽降采样 Bilinear → CatmullRom | P1 | resolved |
 | 03 | 解码分阶段计时（解码/回正/降采样/打包/IO 拆分）+ Defender 假设验证 | P1 | resolved |
 | 04 | JXL/静态通道「预览先显」spike（libjxl 渐进 flush / 两段式交付评估） | P1 | ready-for-agent |
-| 05 | 预取与实时解码资源让路（demand in-flight 时预取降并发/暂停） | P2 | ready-for-agent |
+| 05 | 预取与实时解码资源让路（demand in-flight 时预取降并发/暂停） | P2 | resolved |
 | 06 | RGBA 信封传输降载评估（决策票：RGBA vs JPEG 交付 vs 半尺寸） | P2 | ready-for-human |
 | 07 | 大文件夹导航 Condvar 等待优化（先量化再改） | P2 | needs-info |
 

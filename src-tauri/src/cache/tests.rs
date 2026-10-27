@@ -74,6 +74,39 @@ fn prefetch_dedup() {
 }
 
 #[test]
+fn demand_in_flight_blocks_new_prefetch() {
+    // 票 05 demand 让路：实时解码进行中拒绝新预取登记，全部结束后恢复
+    let cache = DecodeCache::new(4);
+    cache.begin_demand();
+    assert!(!cache.begin_prefetch("a"), "demand 进行中应拒绝新预取");
+    // 并发 demand 计数叠加：仅部分结束时仍让路
+    cache.begin_demand();
+    cache.end_demand();
+    assert!(!cache.begin_prefetch("b"), "仍有 demand 在跑时保持让路");
+    cache.end_demand();
+    assert!(cache.begin_prefetch("a"), "demand 全部结束后恢复登记");
+    assert!(cache.begin_prefetch("b"));
+    cache.end_prefetch("a");
+    cache.end_prefetch("b");
+}
+
+#[test]
+fn demand_yields_only_new_prefetch() {
+    // 让路只挡新预取登记：命中/写入/在跑预取的释放路径不受影响
+    let cache = DecodeCache::new(4);
+    cache.put("a".into(), sample("a"));
+    assert!(cache.begin_prefetch("b"));
+    cache.begin_demand();
+    assert!(cache.get("a").is_some(), "demand 期间命中不受影响");
+    cache.put("c".into(), sample("c"));
+    assert!(cache.get("c").is_some(), "demand 期间写入不受影响");
+    cache.end_prefetch("b");
+    cache.end_demand();
+    assert!(cache.begin_prefetch("b"), "释放与计数不受 demand 影响");
+    cache.end_prefetch("b");
+}
+
+#[test]
 fn peek_does_not_move() {
     let cache = DecodeCache::new(3);
     cache.put("a".into(), sample("a"));

@@ -1,6 +1,6 @@
 # 05. 预取与实时解码资源让路
 
-Status: ready-for-agent
+Status: resolved
 Type: task
 Priority: P2
 Source: spec `.scratch/perf-flip-zoom/spec.md` 症状① R3
@@ -32,3 +32,31 @@ fast_image_resize rayon 全局池）与用户触发的实时冷解码同在
 ## Comments
 
 - 2026-10-26 建档。
+
+## Answer
+
+**改动**（最小实现 = 方案 1）：
+- `decode_cache.rs`：新增 `demand_active: AtomicUsize` 计数 + `begin_demand`/
+  `end_demand`（配对调用，多路并发叠加）；`begin_prefetch` 前置 demand 判断
+  （原子读先行，最便宜也最具决定性）——demand 进行中直接拒绝新预取登记，
+  不去重不占锁。已在跑的预取无法廉价中断，按票接受（下一张起生效）。
+- `commands/mod.rs load_image`：spawn_blocking 解码前后 begin/end 配对
+  （缓存命中路径不登记——无解码不占池；await 后先释放再走错误映射，
+  不留悬挂登记）。
+- 方案 2（窗口自适应）未做：票 03 计时显示本机解码段不构成主导瓶颈，
+  触发条件不成立。方案 3 核对：`libjxl_engine.rs` MAX_THREADS 已是
+  `min(available_parallelism, 8)` 现状，未改动。
+
+**测试**：cache 层 `demand_in_flight_blocks_new_prefetch`（含并发叠加：部分
+end 后仍让路）与 `demand_yields_only_new_prefetch`（命中/写入/在跑预取释放
+不受影响）；navigator 层 `navigate_yields_prefetch_while_demand_in_flight`
+（门控解码器阻塞 + `#[cfg(test)] prefetching()` 观察面，确定性断言 demand
+期间 navigate 派生不登记不 spawn，demand 结束后同门控恢复）。
+
+**bench 复核**（TIFF 12MP，票 03 两趟法，与票 02 run 对照）：
+level 2 快速连翻命中 73%→73%（无回退），冷p50 122.1/125.1→123.3/118.1ms；
+level 1 快连 139.6→124.3ms；level 0 免费冷 75.9→70.3ms——均在噪声内同或更好。
+说明：本机 TIFF 冷解仅 ~75ms、争核效应小，让路收益要在重格式（JXL 24MP
+引擎解码数百 ms）上才显著；该档 bench 需默认 feature 构建（cmake），留
+`decode stages` 打点在真实环境回收。`cargo test --no-default-features`
+99 passed + clippy -D warnings 干净（默认构建待 cmake）。

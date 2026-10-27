@@ -3,6 +3,9 @@
 //! 预取并发门控：后台预取（Rust 队列 A/B）与实时解码共用 spawn_blocking 线程池，
 //! 无限制并发会与用户正在看的实时解码争 CPU —— 限 PREFETCH_MAX 个并发预取，
 //! 超出跳过（预取是低优先级优化，下一轮导航会再触发）。
+//! demand 让路（票 05）：实时解码进行中 begin_prefetch 直接拒绝新任务——冷翻
+//! 恰多发于快速连翻，正是预取刚派生的时刻，让出线程池保实时解码满核；
+//! 已在跑的预取无法廉价中断，接受（下一张起生效）。
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,6 +54,9 @@ pub struct DecodeCache {
     in_flight: Arc<Mutex<HashSet<String>>>,
     /// 当前进行中的预取任务数（配合 in_flight 锁做并发门控，见 begin_prefetch）
     prefetch_active: Arc<AtomicUsize>,
+    /// 实时（demand）解码在跑计数（票 05）：>0 时 begin_prefetch 拒绝新任务，
+    /// 预取让出 spawn_blocking 池；多路并发 demand 计数叠加，全部结束后恢复
+    demand_active: Arc<AtomicUsize>,
     /// 导航代次格：时钟语义（推进/读取/失活判定）与阈值归 [`crate::navigator::Navigator`]
     /// 所有，本处仅承载共享句柄 —— 命令层每次现造 Navigator，同一被管缓存克隆出的
     /// Navigator 经此格共享同一时钟（跨导航失活协议不断）。本模块不提供时钟 API。
@@ -64,6 +70,7 @@ impl DecodeCache {
             animated: Arc::new(Mutex::new(None)),
             in_flight: Arc::new(Mutex::new(HashSet::new())),
             prefetch_active: Arc::new(AtomicUsize::new(0)),
+            demand_active: Arc::new(AtomicUsize::new(0)),
             generation: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -110,10 +117,27 @@ impl DecodeCache {
             .unwrap_or(false)
     }
 
-    /// 预取去重 + 并发门控：路径不在解码中且并发未达上限则登记并返回 true；
-    /// 已在解码中 / 并发已满返回 false（跳过本次预取）。
+    /// 实时解码开始登记（票 05 demand 让路）：与 [`Self::end_demand`] 严格配对；
+    /// 多路并发 demand 计数叠加，全部结束后预取恢复。命令层 load_image 的
+    /// spawn_blocking 解码前后调用（缓存命中路径不登记——无解码不占池）。
+    pub(crate) fn begin_demand(&self) {
+        self.demand_active.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 实时解码结束登记（票 05），与 begin_demand 配对
+    pub(crate) fn end_demand(&self) {
+        self.demand_active.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// 预取去重 + 并发门控：无实时解码进行中、路径不在解码中且并发未达上限
+    /// 则登记并返回 true；demand 进行中 / 已在解码中 / 并发已满返回 false
+    /// （跳过本次预取）。
     /// 检查与登记在同一把 in_flight 锁内完成：并发调用串行化，计数不超限。
     pub fn begin_prefetch(&self, path: &str) -> bool {
+        // 实时解码进行中：预取让路（票 05）。原子读先行——最便宜也最具决定性。
+        if self.demand_active.load(Ordering::Relaxed) > 0 {
+            return false;
+        }
         if self.peek(path) {
             return false;
         }
@@ -142,6 +166,15 @@ impl DecodeCache {
         if removed {
             self.prefetch_active.fetch_sub(1, Ordering::Relaxed);
         }
+    }
+
+    /// 路径是否处于预取/解码登记中（#[cfg(test)]：demand 让路测试的确定性观察面）
+    #[cfg(test)]
+    pub(crate) fn prefetching(&self, path: &str) -> bool {
+        self.in_flight
+            .lock()
+            .map(|g| g.contains(path))
+            .unwrap_or(false)
     }
 
     /// 写入缓存；动画结果进独立单槽（互相替换），其余进 LRU（已存在则更新并
