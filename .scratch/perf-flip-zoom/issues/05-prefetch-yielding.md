@@ -32,6 +32,10 @@ fast_image_resize rayon 全局池）与用户触发的实时冷解码同在
 ## Comments
 
 - 2026-10-26 建档。
+- 2026-10-28 评审修复（agent）：命令层 begin/end_demand 手工配对改 RAII
+  （`DecodeCache::demand_guard`，Drop 即释放）——async future 被取消（drop）时
+  手工配对会泄漏计数致预取永久失效，guard 使任何退出路径必然释放；
+  begin/end_demand 保留为计数语义的测试观察面。
 
 ## Answer
 

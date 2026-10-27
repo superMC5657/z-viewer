@@ -36,6 +36,16 @@ Source: spec `.scratch/perf-flip-zoom/spec.md` 症状① R2 + 方法学存疑
 - 2026-10-26 建档。本票是 issue 04 的前置输入：先知道时间花在哪，
   再决定「预览先显」怎么切。
 - 2026-10-27 实施完成（agent）。
+- 2026-10-28 评审修复（agent）：① TIFF read/engine 归因修正——正文整体读入移入
+  read 段（原 BufReader 流式读取与解码交错，36MB 级正文 IO 全落 engine 段，故上表
+  `engine=15ms` 实含正文读取、纯解码占比更低；新数字与上表不可直接对比）；
+  ② 生产补 `decode pack {basename} in {ms}ms` 行（命令层 pack_envelope，跨线程不属
+  decode 段行，传输占比按 basename+时序与 stages 行关联回收——真实用户侧此前的
+  缺口，票 06 复核输入）；③ 阶段名收口 `stage::name` 常量 + 同名累计单一实现；
+  ④ JXL 分段严格可加化——逐帧 cap 移出 engine 计时段（`decode_jxl` 内统一收口，
+  计入 resize 段），本文 Answer 与 stage 模块注释中「JXL resize 重复计入」的
+  可加性注意自此作废；jxl-oxide 回退路径超帽动画的解码期内存峰值相应上升
+  （原逐帧封顶收益不再），回退罕见 + 预算门控兜底，已在 cap_engine_output 注释留档。
 
 ## Answer
 
