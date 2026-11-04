@@ -3,9 +3,8 @@
 //! - dev：Debug + Stdout + LogDir + Webview（终端与前端控制台可见）
 //! - release：Info + 仅 LogDir（零 Stdout/Webview 回显），统一写入以应用名称命名的日志文件（如 ZViewer.log）
 //! - 日志只进 LogDir 文件，不碰业务 DB（无 sqlite）
-//! - 本地运行为主，不自动上报，只提供导出诊断包命令供按钮接线
+//! - 本地运行为主，不自动上报
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use log::LevelFilter;
@@ -457,7 +456,7 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// crash 报告的 `last_viewed` 字段：只留 basename。诊断包会原样带出 crash 文件，
+/// crash 报告的 `last_viewed` 字段：只留 basename。
 /// 全路径等于泄漏「用户崩溃时在看什么」（redact 只折叠家目录，非家目录路径拦不住）。
 fn crash_last_viewed(raw: Option<String>) -> String {
     raw.map(|p| basename_of(Path::new(&p)))
@@ -507,74 +506,6 @@ fn write_crash_report(info: &std::panic::PanicHookInfo) {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("crash-{ts}.txt"));
     let _ = std::fs::write(&path, body.as_bytes());
-}
-
-/// 取日志目录（供前端“打开日志目录 / 导出诊断包”按钮接线）。
-#[tauri::command]
-pub fn zlog_get_dir(app: tauri::AppHandle) -> Result<String, String> {
-    use tauri::Manager as _;
-    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
-    let _ = std::fs::create_dir_all(&dir);
-    prune(&dir, PRUNE_KEEP_DAYS, PRUNE_MAX_BYTES);
-    Ok(dir.to_string_lossy().to_string())
-}
-
-/// 导出诊断包：zip（logs 中 *.log + crash-*.txt + version.txt），打包时二次脱敏。
-#[tauri::command]
-pub async fn zlog_export_bundle(app: tauri::AppHandle) -> Result<String, String> {
-    use tauri::Manager as _;
-    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
-    let _ = std::fs::create_dir_all(&dir);
-    prune(&dir, PRUNE_KEEP_DAYS, PRUNE_MAX_BYTES);
-
-    let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let app_name = app_name_from_config();
-    let out_path = dir.join(format!("{}-logs-{ts}.zip", app_name.to_lowercase()));
-    export_bundle_inner(&dir, &out_path)?;
-    Ok(out_path.to_string_lossy().to_string())
-}
-
-fn export_bundle_inner(dir: &Path, out_path: &Path) -> Result<(), String> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map_err(|e| e.to_string())?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && is_log_or_crash_file(p))
-        .collect();
-    files.sort();
-
-    let f = std::fs::File::create(out_path).map_err(|e| e.to_string())?;
-    let mut zip = zip::ZipWriter::new(f);
-    let opts = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-
-    for src in &files {
-        let name = src
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown.log".to_string());
-        let raw = std::fs::read(src).map_err(|e| e.to_string())?;
-        // 二次脱敏：按 UTF-8 lossy 转文本再 redact 后写入
-        let text = String::from_utf8_lossy(&raw);
-        let clean = redact(&text);
-        zip.start_file(name, opts).map_err(|e| e.to_string())?;
-        zip.write_all(clean.as_bytes()).map_err(|e| e.to_string())?;
-    }
-    let app_name = app_name_from_config();
-    let identifier = app_identifier_from_config();
-    let version_txt = format!(
-        "product: {}\nversion: {}\nidentifier: {}\nexported_at: {}\n",
-        app_name,
-        env!("CARGO_PKG_VERSION"),
-        identifier,
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z")
-    );
-    zip.start_file("version.txt", opts)
-        .map_err(|e| e.to_string())?;
-    zip.write_all(version_txt.as_bytes())
-        .map_err(|e| e.to_string())?;
-    zip.finish().map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -758,55 +689,4 @@ mod tests {
         assert_eq!(id, "com.zviewer.app");
     }
 
-    #[test]
-    fn test_export_bundle_inner() {
-        let dir = temp_dir();
-        let app_name = app_name_from_config();
-        let log_file_name = format!("{app_name}.log");
-        let log_file = dir.join(&log_file_name);
-        let crash_file = dir.join("crash-20260916.txt");
-        let other_file = dir.join("ignore.json");
-
-        std::fs::write(&log_file, "Hello Bearer secret123").unwrap();
-        std::fs::write(&crash_file, "Panic at test@example.com").unwrap();
-        std::fs::write(&other_file, "Ignored").unwrap();
-
-        let zip_path = dir.join("bundle.zip");
-        export_bundle_inner(&dir, &zip_path).expect("export should succeed");
-
-        assert!(zip_path.exists());
-
-        // 校验 zip 内容
-        let file = std::fs::File::open(&zip_path).unwrap();
-        let mut archive = zip::ZipArchive::new(file).unwrap();
-
-        let mut names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
-            .collect();
-        names.sort();
-
-        let mut expected = vec![log_file_name.as_str(), "crash-20260916.txt", "version.txt"];
-        expected.sort();
-        assert_eq!(names, expected);
-
-        // 验证 zip 内二次脱敏生效
-        use std::io::Read as _;
-        let mut app_content = String::new();
-        archive
-            .by_name(&log_file_name)
-            .unwrap()
-            .read_to_string(&mut app_content)
-            .unwrap();
-        assert_eq!(app_content, "Hello Bearer [redacted]");
-
-        let mut crash_content = String::new();
-        archive
-            .by_name("crash-20260916.txt")
-            .unwrap()
-            .read_to_string(&mut crash_content)
-            .unwrap();
-        assert_eq!(crash_content, "Panic at [redacted-email]");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 }

@@ -302,7 +302,7 @@ pub async fn load_image(
     // 但绝不让实时路径被预取拖住或排队死锁）。
     let path2 = path.clone();
     let base = basename_of(&path);
-    // 票 05 demand 让路：解码期间预取让出 spawn_blocking 池（begin_prefetch 拒绝
+    // demand 让路：解码期间预取让出 spawn_blocking 池（begin_prefetch 拒绝
     // 新任务）。RAII guard 代替手工 begin/end 配对：async future 被取消（drop）
     // 时计数必然释放，不会出现泄漏导致预取永久失效
     let _demand = cache.demand_guard();
@@ -336,7 +336,7 @@ pub async fn load_image(
         // 实时解码完成：清除该路径的预取登记（预取任务 put 前 peek 会跳过）
         cache.end_prefetch(&path);
     }
-    // 信封打包单独计时（票 03 传输占比）：打包在命令层且跨线程，不属 decode
+    // 信封打包单独计时（传输占比归因）：打包在命令层且跨线程，不属 decode
     // 段行；独立 `decode pack` 行与 decode stages 行按 basename+时序关联，
     // 真实用户的传输占比即由此回收（bench 报表同项对照，见 flip_latency_bench）
     let pt0 = std::time::Instant::now();

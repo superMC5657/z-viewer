@@ -375,11 +375,6 @@ body.immersive #info-bar {
   -webkit-backdrop-filter: none;
 }
 
-.tb-group {
-  display: flex;
-  align-items: center;
-  gap: var(--btn-gap);
-}
 .tb-sep {
   width: 1px;
   height: 22px;
@@ -824,15 +819,13 @@ body.immersive #info-bar {
 .btn-text:hover {
   background: var(--btn-hover);
 }
-.btn-text.btn-plain,
-.btn-text-plain {
+.btn-text.btn-plain {
   color: var(--text-secondary);
   padding: 0 10px;
   width: auto;
   font-size: 13px;
 }
-.btn-text.btn-plain:hover,
-.btn-text-plain:hover {
+.btn-text.btn-plain:hover {
   background: var(--btn-hover);
   color: var(--text-primary);
 }
@@ -848,7 +841,6 @@ body.immersive #info-bar {
 .btn-text-accent:hover {
   background: var(--btn-hover);
 }
-.btn-text.btn-danger,
 .btn-text-danger {
   color: var(--color-danger);
   padding: 0 12px;
@@ -856,7 +848,6 @@ body.immersive #info-bar {
   font-size: 13px;
   font-weight: 600;
 }
-.btn-text.btn-danger:hover,
 .btn-text-danger:hover {
   background: var(--color-danger-bg);
 }

@@ -88,7 +88,7 @@ export class ImagePresenter {
       this.ui.setFramePlaying(s.playing);
     };
     // 变换联动内聚：按钮同步 + 放大超 100% 立即提全量（RAW 预览）
-    // + 深放大越过后按需拉取原始分辨率（真像素升级，票 07）
+    // + 深放大越过后按需拉取原始分辨率（真像素升级）
     this.viewer.onStateChange = () => {
       this.syncZoom();
       if (this.viewer.currentScale > 1) this.triggerImmediateUpgrade();
@@ -333,10 +333,10 @@ export class ImagePresenter {
     this.ui.updateInfo(state, this.currentDims);
   }
 
-  /** 深放大真像素（票 07）：显示倍率越过当前位图 1:1 且位图来自降采样时，
+  /** 深放大真像素：显示倍率越过当前位图 1:1 且位图来自降采样时，
    *  按需拉取原始分辨率解码（≤8192 长边，不写 LRU）并经 showUpgrade 换图——
    *  屏幕视图逐像素不变、仅更锐。粘性升级（不回退），切图/失败即重置。
-   *  判定语义（三区间）收口在 shouldUpgradeToNative 纯函数（票 01）。 */
+   *  判定语义（三区间）收口在 shouldUpgradeToNative 纯函数。 */
   private maybeFetchNative(): void {
     if (this.nativeLoaded || this.nativePending || this.nativeFailed) return;
     const state = this.lastState;

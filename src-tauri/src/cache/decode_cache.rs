@@ -3,7 +3,7 @@
 //! 预取并发门控：后台预取（Rust 队列 A/B）与实时解码共用 spawn_blocking 线程池，
 //! 无限制并发会与用户正在看的实时解码争 CPU —— 限 PREFETCH_MAX 个并发预取，
 //! 超出跳过（预取是低优先级优化，下一轮导航会再触发）。
-//! demand 让路（票 05）：实时解码进行中 begin_prefetch 直接拒绝新任务——冷翻
+//! demand 让路：实时解码进行中 begin_prefetch 直接拒绝新任务——冷翻
 //! 恰多发于快速连翻，正是预取刚派生的时刻，让出线程池保实时解码满核；
 //! 已在跑的预取无法廉价中断，接受（下一张起生效）。
 
@@ -66,7 +66,7 @@ pub struct DecodeCache {
     in_flight: Arc<Mutex<HashSet<String>>>,
     /// 当前进行中的预取任务数（配合 in_flight 锁做并发门控，见 begin_prefetch）
     prefetch_active: Arc<AtomicUsize>,
-    /// 实时（demand）解码在跑计数（票 05）：>0 时 begin_prefetch 拒绝新任务，
+    /// 实时（demand）解码在跑计数：>0 时 begin_prefetch 拒绝新任务，
     /// 预取让出 spawn_blocking 池；多路并发 demand 计数叠加，全部结束后恢复
     demand_active: Arc<AtomicUsize>,
     /// 导航代次格：时钟语义（推进/读取/失活判定）与阈值归 [`crate::navigator::Navigator`]
@@ -129,14 +129,14 @@ impl DecodeCache {
             .unwrap_or(false)
     }
 
-    /// 实时解码开始登记（票 05 demand 让路）：与 [`Self::end_demand`] 严格配对；
+    /// 实时解码开始登记（demand 让路）：与 [`Self::end_demand`] 严格配对；
     /// 多路并发 demand 计数叠加，全部结束后预取恢复。生产路径经 [`Self::demand_guard`]
     /// （RAII 免手工配对），本方法与 `end_demand` 保留为计数语义的测试观察面。
     pub(crate) fn begin_demand(&self) {
         self.demand_active.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// 实时解码结束登记（票 05），与 begin_demand 配对
+    /// 实时解码结束登记，与 begin_demand 配对
     pub(crate) fn end_demand(&self) {
         self.demand_active.fetch_sub(1, Ordering::Relaxed);
     }
@@ -156,7 +156,7 @@ impl DecodeCache {
     /// （跳过本次预取）。
     /// 检查与登记在同一把 in_flight 锁内完成：并发调用串行化，计数不超限。
     pub fn begin_prefetch(&self, path: &str) -> bool {
-        // 实时解码进行中：预取让路（票 05）。原子读先行——最便宜也最具决定性。
+        // 实时解码进行中：预取让路。原子读先行——最便宜也最具决定性。
         if self.demand_active.load(Ordering::Relaxed) > 0 {
             return false;
         }
@@ -191,7 +191,7 @@ impl DecodeCache {
     }
 
     /// 路径是否处于预取/解码登记中（#[cfg(test)]：demand 让路测试的确定性观察面）。
-    /// 与 [`Self::peek`] 语义不同、勿合并（评审曾误判为重复实现）：peek 查
+    /// 与 [`Self::peek`] 语义不同、勿合并：peek 查
     /// 「已在缓存」（LRU/动画槽，可直显），本方法查「正在解码」（in_flight 登记）。
     #[cfg(test)]
     pub(crate) fn prefetching(&self, path: &str) -> bool {

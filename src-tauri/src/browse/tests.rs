@@ -167,7 +167,7 @@ fn open_case_insensitive() {
 fn open_wrong_case_folder_name() {
     let base = build_tree();
     // 文件夹名大小写与磁盘不一致（磁盘上是 A）也应能打开。
-    // 回归：曾用大小写敏感 OsStr == 比较文件夹名，导致 open 返回 None（误报"不是支持的图片格式"）
+    // 回归：文件夹名比较必须大小写不敏感——敏感比较会让 open 返回 None（误报"不是支持的图片格式"）
     let typed = base.join("a").join("a1.png");
     assert!(typed.exists(), "Windows 大小写不敏感，路径应存在");
     let m = BrowseModel::open(&typed, None).expect("文件夹名大小写不一致也应能打开");

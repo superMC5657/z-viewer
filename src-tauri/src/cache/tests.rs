@@ -75,7 +75,7 @@ fn prefetch_dedup() {
 
 #[test]
 fn demand_in_flight_blocks_new_prefetch() {
-    // 票 05 demand 让路：实时解码进行中拒绝新预取登记，全部结束后恢复
+    // demand 让路：实时解码进行中拒绝新预取登记，全部结束后恢复
     let cache = DecodeCache::new(4);
     cache.begin_demand();
     assert!(!cache.begin_prefetch("a"), "demand 进行中应拒绝新预取");

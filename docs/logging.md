@@ -1,11 +1,11 @@
 # 统一日志（logging）
 
 > 复用 `tauri-plugin-log` v2，不自动上报。日志只进 LogDir 文件，**禁止写入业务 SQLite**。
-> 实现：`src-tauri/src/z_log.rs`（插件/脱敏/prune/panic/导出命令）、`src/lib/z-log.ts`（前端转发）。
+> 实现：`src-tauri/src/z_log.rs`（插件/脱敏/prune/panic）、`src/lib/z-log.ts`（前端转发）。
 
 ## 日志目录（各 OS，`identifier = com.zviewer.app`）
 
-目录由 `app.path().app_log_dir()` 解析（`zlog_get_dir` 会先 `create_dir_all` + `prune`）：
+目录由 `app.path().app_log_dir()` 解析（启动时 `main.rs` 先 `create_dir_all` + `prune`）：
 
 | OS | 路径 |
 | --- | --- |
@@ -22,7 +22,6 @@ panic hook 拿不到 `AppHandle`，用 `resolve_log_dir_fallback()` 按同样规
 | --- | --- | --- |
 | `<productName>.log`（如 `ZViewer.log`，+轮转兄弟 `ZViewer_*.log`） | Rust 侧 + 前端经 `plugin:log|log` | 统一日志（文件名从配置文件 `tauri.conf.json` 的 `productName` 动态获取；统一因果时间轴） |
 | `crash-<ts>.txt` | panic hook | 版本/identifier/时间/线程/位置/last_viewed（仅 basename）/payload（首行截断）/Backtrace（仅 dev 构建，见已知限制），写盘前已脱敏 |
-| `<productName>-logs-<ts>.zip` | `zlog_export_bundle` | 诊断包（见下），下次导出时不被重复打包（只收 `*.log` + `crash-*.txt`） |
 
 单文件 5MB 轮转（`max_file_size`），策略 `KeepSome(5)`（插件层只留 5 个轮转兄弟）；
 `prune`：删 14 天前文件，总量超 25MB 时按 mtime 从旧到新删到预算内，
@@ -62,12 +61,9 @@ void initZLog().catch(() => undefined);
 - `initZLog()`（幂等）：劫持 `console[log/info/warn/error]` 转发为 `[FE] …`
   （`orig` 先输出，原生 console 行为不变；转发失败静默丢弃）；
   注册 `window.onerror` + `unhandledrejection`；仅 `import.meta.env.DEV` 时回显后端日志。
-- `detachZLog()`：取消回显（测试清理用）。
 - 后端直接用 `log::*`，无私有宏封装，调用点即日志点（文件行号准确）。
 - 摘要辅助（`util.rs`，纯函数无日志）：`basename_of`（`Path::file_name`，
-  无文件名时回退 `unknown`）、`first_line_of`（首行 + 200 字符截断，`chars()` 字符边界安全）；
-  原各调用点本地副本（`commands/mod.rs`、`browse/scan.rs`、`cache/decode_cache.rs`、
-  `decode/mod.rs`）已删除，调用方一律 `use` 转发。
+  无文件名时回退 `unknown`）、`first_line_of`（首行 + 200 字符截断，`chars()` 字符边界安全）。
 
 ## 级别语义
 
@@ -123,7 +119,7 @@ void initZLog().catch(() => undefined);
 - `debug` decode done {basename} in {ms}ms（通道耗时打点：raw/tiff/jxl/anim 通道成功后记一次，
   asset 通道零解码不记；release 不可见，翻页延迟分析用，见 `flip_latency_bench`）
 - `debug` decode stages {basename} read=.. engine=.. [orient=.. resize=.. rgba=..] total={ms}ms
-  （分阶段计时明细，票 03：`decode::stage` 会话在 `decode/mod.rs::load_image_inner` emit，
+  （分阶段计时明细：`decode::stage` 会话在 `decode/mod.rs::load_image_inner` emit，
   与 `decode done` 同请求成对；阶段语义见 `decode/stage.rs` 模块注释——分段严格可加，
   JXL/RAW 引擎自带文件 IO 归 engine 段不可拆分；release 不可见，真实用户分段回收用）
 - `debug` decode pack {basename} in {ms}ms（信封打包耗时：`commands::load_image` 命令层
@@ -165,14 +161,6 @@ void initZLog().catch(() => undefined);
   按分支后缀区分，静态文案，不记负载内容；未配置 apiBase/analyticsPath 时静默不上报，不记）
 - `record_view` 高频计数点零 log；上报负载只含聚合统计（见 `analytics.rs` 隐私边界）。
 
-## 导出诊断包（供 UI 按钮接线）
-
-- 后端命令（已在 `main.rs` 注册）：`zlog_get_dir`（返回日志目录，先 prune）、
-  `zlog_export_bundle`（返回 zip 路径；zip 内 `*.log` + `crash-*.txt` + `version.txt`，文本二次脱敏）。
-- 前端封装（`src/lib/z-log.ts`）：`getZLogDir(): Promise<string>` /
-  `exportZLogBundle(): Promise<string>`。
-- 所需 capability：`log:default`（`src-tauri/capabilities/default.json` 已配）。
-
 ## 已知限制
 
 - `Cargo.toml [profile.release] panic = "abort"`：release 下 panic 直接 abort，
@@ -183,11 +171,10 @@ void initZLog().catch(() => undefined);
 
 行号天生易腐，本节按符号定位（grep 符号名即达）；新增打点时在此补符号而非行号。
 
-- `src-tauri/src/z_log.rs`（插件构建、门槛覆盖 `resolve_level`、`prune`（basename 打点）、`redact`、panic hook `write_crash_report`、导出命令 `zlog_get_dir`/`zlog_export_bundle`；
+- `src-tauri/src/z_log.rs`（插件构建、门槛覆盖 `resolve_level`、`prune`（basename 打点）、`redact`、panic hook `write_crash_report`；
   回归：`test_converged_waterline` 锁水位、`test_format_path_masks` 锁脱敏、`test_crash_last_viewed_basename_only`/`test_crash_payload_first_line` 锁 crash 字段、`test_resolve_level_dual_branch` 锁双分支）
 - `src-tauri/src/main.rs`（`startup_image_path` 启动参数跳过 debug；`setup` 内 startup/open 打点与授权状态变迁；启动修剪复用水位常量）
-- `src-tauri/src/util.rs`（日志摘要辅助单一实现：`basename_of`/`first_line_of`/`now`；
-  原各调用点本地副本已删，调用方 `use` 转发）
+- `src-tauri/src/util.rs`（日志摘要辅助单一实现：`basename_of`/`first_line_of`/`now`）
 - `src-tauri/src/commands/mod.rs`（`navigate` 边界/跨越/单图切换、`open_path` 打开成败、
   `jump_folder` 未知跳转目标、`load_image` 解码失败 + 信封打包 `decode pack` debug）
 - `src-tauri/src/decode/mod.rs`（通道分发 warn：`[raw]`/`[tiff]`/`[jxl]`/`[anim]` 后缀 + `[jxl]` 引擎回退，

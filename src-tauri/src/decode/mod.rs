@@ -174,7 +174,7 @@ pub fn load_image_original(path: &str) -> Result<LoadResult, String> {
 
 fn load_image_inner(path: &str, full: bool, cap: u32) -> Result<LoadResult, String> {
     let started = std::time::Instant::now();
-    // 分段计时会话（票 03）：debug/bench 激活，release 零开销
+    // 分段计时会话：debug/bench 激活，release 零开销
     let staged = stage::begin();
     let result = load_image_dispatch(path, full, cap);
     if let Ok(r) = &result {
@@ -298,10 +298,9 @@ pub(super) fn finalize_rgba(
 
 /// 超限降采样：长边 > cap 时按比例缩到上限（CatmullRom 卷积）。
 /// 走 fast_image_resize（SIMD + rayon 并行）——image crate 的单线程 resize
-/// 在 12–24MP 上要 1.2–1.4s（票 06 剖析），是冷翻延迟的大头。
-/// 滤波历史：原 image::resize Triangle（tent 核）→ 迁移时等价换 Bilinear（票 06）→
-/// CatmullRom（票 02，有意变更）：tent 核降采样明显偏软（对 JpegView 的
-/// Fant/Lanczos 类高质量重采样观感劣势），CatmullRom 是锐度/振铃折中。
+/// 在 12–24MP 上要 1.2–1.4s，是冷翻延迟的大头。
+/// 滤波选 CatmullRom：tent 核降采样明显偏软（对 JpegView 的 Fant/Lanczos 类
+/// 高质量重采样观感劣势），CatmullRom 是锐度/振铃折中。
 /// 返回 (图, 是否发生降采样)。
 pub(super) fn cap_dimensions(img: image::DynamicImage, cap: u32) -> (image::DynamicImage, bool) {
     let (w, h) = (img.width(), img.height());
@@ -321,10 +320,9 @@ pub(super) fn cap_dimensions(img: image::DynamicImage, cap: u32) -> (image::Dyna
     let mut dst = fast_image_resize::images::Image::new(dw, dh, fast_image_resize::PixelType::U8x4);
     let options = fast_image_resize::ResizeOptions::new()
         .resize_alg(fast_image_resize::ResizeAlg::Convolution(
-            // CatmullRom（cubic，票 02）：与历史 Triangle/Bilinear 的等价关系有意终止
             fast_image_resize::FilterType::CatmullRom,
         ))
-        .use_alpha(false); // 与原 image::resize 行为一致（非预乘）
+        .use_alpha(false); // 非预乘 alpha
     let mut resizer = fast_image_resize::Resizer::new();
     stage::timed(stage::name::RESIZE, || {
         resizer

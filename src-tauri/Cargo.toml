@@ -33,7 +33,6 @@ image = { version = "0.25", default-features = false, features = ["gif", "png", 
 jxl-oxide = { version = "0.12", features = ["image"] }
 kamadak-exif = "0.6"
 base64 = "0.22"
-zip = "2"
 chrono = "0.4"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

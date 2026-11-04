@@ -1,4 +1,4 @@
-//! 翻页延迟基准（票 02）：免费版（缓存关）vs 专业版（等级 1/2）的 Rust 侧翻页耗时对比。
+//! 翻页延迟基准：免费版（缓存关）vs 专业版（等级 1/2）的 Rust 侧翻页耗时对比。
 //!
 //! 运行（release 构建下数字才有效；libjxl 恒为 Release 构建，jxl-oxide dev 下已 O3）：
 //! `cargo test --release --ignored flip_latency -- --nocapture`
@@ -7,8 +7,8 @@
 //! tauri 全局 runtime 后台解码）→ demand 路径（缓存命中取信封 / `decode::load_image`
 //! 冷解码 + 写缓存）。测量含信封打包与 IPC 拷贝，不含前端渲染与传输。
 //! 素材现场生成于系统临时目录（JXL 经 vendored libjxl 编码器 effort 3、TIFF 经
-//! image crate 无压缩 RGB）；RAW 需真实机内文件无法合成，见票 02 的 Answer。
-//! 每档素材跑两趟（票 03）：未预热（首读，含可能的 Defender 实时扫描）与预热读后
+//! image crate 无压缩 RGB）；RAW 需真实机内文件，合成素材无法覆盖。
+//! 每档素材跑两趟：未预热（首读，含可能的 Defender 实时扫描）与预热读后
 //! 对照，冷翻差值即扫描+OS 缓存开销估计；冷解分段均值来自 decode::stage 会话。
 //! 数字解读与决策用途见 `.scratch/pm-followup-20261024/issues/02`、
 //! `.scratch/perf-flip-zoom/issues/03`。
@@ -105,7 +105,7 @@ struct Run {
     cold_ms: Vec<f64>,
     all_ms: Vec<f64>,
     nav_max_ms: f64,
-    /// 冷解码分段累计（票 03 分阶段计时；demand 冷路径每张读一次快照）
+    /// 冷解码分段累计（decode::stage 分阶段计时；demand 冷路径每张读一次快照）
     cold_stages: Vec<(&'static str, f64)>,
 }
 
@@ -261,7 +261,7 @@ fn report(label: &str, run: &Run) {
         percentile(run.all_ms.clone(), 100.0),
         run.nav_max_ms,
     );
-    // 冷解分段均值（票 03）：read/engine/orient/resize/rgba 来自 decode::stage
+    // 冷解分段均值：read/engine/orient/resize/rgba 来自 decode::stage
     // 会话，各通道分段严格可加；pack 为 bench 侧单独计时
     if !run.cold_stages.is_empty() {
         let cold_n = run.cold_ms.len().max(1) as f64;
@@ -273,7 +273,7 @@ fn report(label: &str, run: &Run) {
     }
 }
 
-/// 预热读（票 03）：逐文件全量读取丢弃。Windows Defender 对临时目录新写入文件的
+/// 预热读：逐文件全量读取丢弃。Windows Defender 对临时目录新写入文件的
 /// 首读实时扫描假设验证——未预热与预热后两趟对照，冷翻差值即扫描+OS 缓存开销估计。
 fn warm_read(dir: &Path) {
     let t0 = Instant::now();
@@ -310,7 +310,7 @@ fn run_format(label: &str, dir: &Path) {
 #[test]
 #[ignore = "手动基准：cargo test --release --ignored flip_latency -- --nocapture"]
 fn flip_latency_bench() {
-    // 分段计时（票 03）：测试环境无日志后端，显式开启收集后 demand 冷解可读分段
+    // 分段计时：测试环境无日志后端，显式开启收集后 demand 冷解可读分段
     stage::force(true);
     println!(
         "翻页延迟基准：免费 level0 vs 专业 level1/2；LOOK={LOOK:?}；每档 {N_FILES} 张往返扫描（未预热/预热读后各一趟）"

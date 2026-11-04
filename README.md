@@ -9,7 +9,7 @@
 - **应用框架**：Tauri 2.x（Rust 后端 + WebView2 前端）
 - **前端**：Vanilla TypeScript + Vite（无框架运行时开销）
 - **包管理**：pnpm
-- **图片解码**：rawler（RAW：CR2/CR3/NEF/ARW/DNG 等）+ image crate（GIF/APNG/WebP 动画拆帧）+ jxl-oxide（JPEG XL）
+- **图片解码**：rawler（RAW：CR2/CR3/NEF/ARW/DNG 等）+ image crate（GIF/APNG/WebP 动画拆帧）+ vendored libjxl（JPEG XL 主引擎，回退 jxl-oxide）
 
 ## 功能
 
@@ -22,7 +22,7 @@
 - 动画格式：GIF / APNG / 动态 WebP 默认浏览器原生播放（首帧即时、零内存），
   帧控制（播放/暂停/上一帧/下一帧）按需拆帧
 - 沉浸模式（F）、窗口置顶（T）、缩放/旋转/翻转、1:1/适应窗口
-- 幻灯片播放（空格/▶，间隔 2s/5s/10s，自动跨文件夹，播放完自动停止）
+- 幻灯片播放（空格/▶，间隔 1s/2s/5s/10s 与自定义 1–3600s，自动跨文件夹，播放完自动停止）
 - 预加载缓存：相邻图片后台预取，RAW 解码 LRU 缓存（切换 ≤50ms）— **专业版**
 - 异步浏览：打开图片立即显示（只枚举当前文件夹），同级文件夹后台枚举，
   完成后自动刷新位置计数（加载中显示 "3/…"）
@@ -125,7 +125,7 @@ src-tauri/            # Rust 后端
   src/navigator.rs    # 深导航：导航 + 预取 + 代次协议唯一实现
   src/commands/       # Tauri IPC commands（含付费门控）
   src/util.rs         # 日志/时间小工具单一实现（basename_of / first_line_of / now）
-  src/z_log.rs        # 统一日志：级别门槛、轮转修剪、脱敏、panic hook、导出诊断包
+  src/z_log.rs        # 统一日志：级别门槛、轮转修剪、脱敏、panic hook
   src/analytics.rs    # 会话统计埋点：正常退出时上报聚合负载（不含路径）
   src/license.rs      # 专业版授权：设备指纹、验签、在线验证、激活
   src/main.rs         # 入口、启动参数、授权初始化

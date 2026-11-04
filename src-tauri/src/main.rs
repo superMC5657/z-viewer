@@ -173,8 +173,6 @@ fn main() {
             license::deactivate_license,
             license::get_license_status,
             license::get_store_info,
-            z_log::zlog_get_dir,
-            z_log::zlog_export_bundle,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")

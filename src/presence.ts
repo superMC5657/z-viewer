@@ -1,6 +1,6 @@
 /**
  * 可见性 + 意图 + 节奏的唯一深模块（前端 C3）。
- * 收敛三处旧主人：overlay-manager（闲置/分组/悬停）、window-state（沉浸/置顶）、slideshow（v4 节拍器）。
+ * 收敛三处职责：overlay-manager（闲置/分组/悬停）、window-state（沉浸/置顶）、slideshow（节拍器）。
  * 方向向内：main → Presence → host 回调 → presenter/viewer/Tauri。
  * 本模块不导入 ui/license/updater/viewer/window-state；窗口经 host.window，权益问题经按次 canUse 闭包。
  * 内容节点零拥有：浮层容器只查询一次，文本/图标写入归 UI/presenter。
@@ -71,7 +71,7 @@ const SS_INTERVAL_KEY = "ss-interval";
 /** 幻灯片默认间隔（ms；与旧行为一致） */
 const DEFAULT_INTERVAL_MS = 5000;
 
-/** 读取持久化的幻灯片间隔（ms），无/非法回默认 5s（自 main.ts 迁移，校验逐字保留） */
+/** 读取持久化的幻灯片间隔（ms），无/非法回默认 5s */
 export function loadSlideshowInterval(): number {
   try {
     const v = Number(localStorage.getItem(SS_INTERVAL_KEY));
@@ -82,7 +82,7 @@ export function loadSlideshowInterval(): number {
 }
 
 /** Promise 竞速 + 兜底定时器清理：主 Promise 先完成时 clearTimeout
- *  （否则兜底定时器每拍空转到点才释放，幻灯片播放中持续累积；自 main.ts 逐字迁移） */
+ *  （否则兜底定时器每拍空转到点才释放，幻灯片播放中持续累积） */
 export function raceWithTimeout<T>(p: Promise<T>, ms: number): Promise<T | null> {
   let timer: number | undefined;
   const timeout = new Promise<null>((res) => {
@@ -167,7 +167,7 @@ export class Presence {
   private lastWakeAt = 0;
   private hoveringOverlay = false;
 
-  // v4 节拍器（自 slideshow.ts 逐字迁移）：拍点固定推进 + 欠拍补跳
+  // 节拍器：拍点固定推进 + 欠拍补跳
   private timerId: number | null = null;
   private intervalMs = 5000;
   private advancing = false;
@@ -342,7 +342,7 @@ export class Presence {
     return detach;
   }
 
-  // ---------- 节奏（v4 节拍器唯一主人：start/stop/tick/advance/reset/恢复/退出清理） ----------
+  // ---------- 节奏（节拍器唯一主人：start/stop/tick/advance/reset/恢复/退出清理） ----------
 
   /** 开始播放（暂停后继续沿用；首次进入且专业版时记录等级并提级缓存） */
   startSlideshow(): void {

@@ -9,8 +9,7 @@
 //! - decode_cache.rs：队列 B（解码缓存，含预取去重）
 //! - tests.rs：测试（#[cfg(test)] 独立文件，不混入产品代码）
 //!
-//! 队列 A 说明：原 folder_first.rs 只是 LruQueue 的 45 行 passthrough，
-//! 已并入此处一个别名；首图条目路径随值保存（promote 免重枚举）。
+//! 队列 A：即 LruQueue 的类型别名；首图条目路径随值保存（promote 免重枚举）。
 
 mod decode_cache;
 #[cfg(test)]

@@ -78,7 +78,7 @@ impl BrowseModel {
         let file_name_os = path.file_name()?;
         // 定位当前图片：快路径 OsStr 直接相等（零分配——Windows 下 read_dir 返回的
         // 名字与双击/命令行传入路径通常字节一致）；不中再大小写不敏感兜底
-        // （to_string_lossy 对 UTF-8 名返回借用零分配，语义与原实现一致）。
+        // （to_string_lossy 对 UTF-8 名返回借用零分配）。
         let file_name_lossy = file_name_os.to_string_lossy();
         let image_index = current_images.iter().position(|img| match img.file_name() {
             Some(n) if n == file_name_os => true,

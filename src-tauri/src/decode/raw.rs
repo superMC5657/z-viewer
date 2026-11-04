@@ -21,7 +21,7 @@ pub(super) fn decode_raw(path: &str, full: bool, cap: u32) -> Result<LoadResult,
         }
     }
 
-    // rawler 引擎自带文件 IO（读取不可单独分拆，归入 engine；票 03 分段计时）
+    // rawler 引擎自带文件 IO（读取不可单独分拆，归入 engine，分段计时见 decode::stage）
     let (orientation, img) =
         stage::timed("engine", || -> Result<(u8, image::DynamicImage), String> {
             let rawimage = rawler::decode_file(path).map_err(|e| format!("RAW 解码失败: {e}"))?;

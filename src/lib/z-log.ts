@@ -4,14 +4,12 @@
  * - dev：attachLogger 把 Rust 日志回显到 devtools（echoGuard 防回声）；console 照常输出
  * - release：只写 LogDir（<productName>.log），零 Stdout/Webview 回显由后端保证
  * - viewer 量小：直接转发 console[log/info/warn/error] + window.onerror/unhandledrejection
- * - 本地运行为主，不自动上报；诊断包导出走后端 zlog_export_bundle 命令
+ * - 本地运行为主，不自动上报
  */
 
 import { attachLogger, debug, error, info, LogLevel, warn } from "@tauri-apps/plugin-log";
-import { invoke } from "@tauri-apps/api/core";
 
 const GLOBAL_INIT_KEY = "__zlog_inited__";
-let detachConsole: (() => void) | null = null;
 /** 回声抑制：attachConsole 触发的 console 调用不再二次转发，避免 前端->后端->前端 循环 */
 let echoGuard = false;
 
@@ -102,35 +100,9 @@ export async function initZLog(): Promise<void> {
         }
       });
       void off;
-      detachConsole = (): void => {
-        echoGuard = true;
-        try {
-          off();
-        } finally {
-          echoGuard = false;
-        }
-      };
     } catch {
       /* 后端日志插件不可用时静默降级 */
     }
   }
 }
 
-/** 可选：不再需要 Rust 日志回显时调用（如测试清理）。 */
-export function detachZLog(): void {
-  try {
-    detachConsole?.();
-  } finally {
-    detachConsole = null;
-  }
-}
-
-/** 取后端日志目录（会触发 prune），供“打开日志目录”按钮接线。 */
-export function getZLogDir(): Promise<string> {
-  return invoke<string>("zlog_get_dir");
-}
-
-/** 导出诊断包 zip（*.log + crash-*.txt + version.txt，二次脱敏），返回 zip 路径。 */
-export function exportZLogBundle(): Promise<string> {
-  return invoke<string>("zlog_export_bundle");
-}

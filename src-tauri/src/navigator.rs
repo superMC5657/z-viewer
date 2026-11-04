@@ -337,7 +337,7 @@ impl Navigator {
     /// 单路径预取核心（同步）：spawn 闭包与测试共用同一实现。
     /// 前提：调用方已 `begin_prefetch` 登记；本函数保证每条退出路径
     /// 配对 `end_prefetch`（失活丢弃/解码失败/规则跳过）。
-    /// 学到的经验：peek 复查紧邻 put（实时加载可能已填充，跳过覆盖）。
+    /// 要点：peek 复查紧邻 put（实时加载可能已填充，跳过覆盖）。
     /// 私有：测试经 `super::*` 可见；外部调用方一律走派生循环（协议不可绕过）。
     fn prefetch_one(&self, path: &str, gen: usize) {
         // 用户快速切图已远离当前上下文：直接放弃，不占 CPU。
@@ -818,7 +818,7 @@ mod tests {
         cleanup(&base);
     }
 
-    /// (f) demand 让路接线（票 05）：实时解码进行中 navigate 的双队列派生在
+    /// (f) demand 让路接线：实时解码进行中 navigate 的双队列派生在
     /// begin_prefetch 处被拒——不登记、不 spawn。门控解码器使「若回归则会
     /// 派生任务」的场景登记状态稳定可断言（任务阻塞在解码内，登记必持有）。
     static DECODE_GATE: Mutex<bool> = Mutex::new(false);

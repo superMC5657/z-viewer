@@ -399,7 +399,7 @@ function buildSlideshowBar(): void {
 
 // ---------- 事件装配 ----------
 
-/** 滚轮缩放与触控板手势（自 input.ts 迁移：连续手势保留 viewer 直连） */
+/** 滚轮缩放与触控板手势（连续手势保留 viewer 直连） */
 function onWheel(e: WheelEvent): void {
   // 1. 位于表单、下拉菜单或弹窗内时不拦截滚轮，允许原生滚动
   const target = e.target as HTMLElement | null;

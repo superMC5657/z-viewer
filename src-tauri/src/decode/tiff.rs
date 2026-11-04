@@ -8,8 +8,8 @@ use super::{finalize_rgba, load_mode, stage, LoadResult};
 
 pub(super) fn decode_static(path: &str, cap: u32) -> Result<LoadResult, String> {
     // EXIF 头在文件前部：open_with_orientation 读方向后已 seek 回开头（省一次 open）。
-    // 正文整体读入内存归入 read 段（票 04 归因修正）：原 BufReader 流式读取与解码
-    // 交错，36MB 级正文 IO 全落进 engine 段，分段数据把解码占比压到失真。代价是
+    // 正文整体读入内存归入 read 段：解码与读盘分段各自独立，流式交错会让
+    // 36MB 级正文 IO 全落进 engine 段，分段数据把解码占比压到失真。代价是
     // 峰值内存多出一份文件字节（无压缩 TIFF 字节量 ≈ 像素数据量，可接受），
     // 且 engine 从内存解码免去逐块 syscall。
     let (mut file, orientation) = stage::timed(name::READ, || {

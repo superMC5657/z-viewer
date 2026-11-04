@@ -1075,8 +1075,7 @@ mod tests {
     }
 
     /// status() 同源派生表：features 永不脱离 status（free ⇒ 空）。
-    /// dev 与 release 行为一致，无条件严格断言。旧实现（未验签 claims 直出 features）在
-    /// 过期用例挂 free+非空，此表即抓该回归。
+    /// dev 与 release 行为一致，无条件严格断言；过期用例若出现 free+非空即回归。
     #[test]
     fn status_features_co_derived() {
         let (pubkey, signing) = test_keypair();
