@@ -394,9 +394,7 @@ export class Viewer {
           if (targetTotal !== null) {
             // 升级换位图：重算基准倍率并按目标总倍率回正 userScale
             if (this.fitMode === "fit") {
-              this.userScale = 1;
-              this.fit();
-              this.userScale = clamp(targetTotal / this.baseScale, MIN_SCALE, MAX_SCALE);
+              this.rebaseAfterUpgrade(targetTotal);
             } else {
               this.userScale = clamp(targetTotal, MIN_SCALE, MAX_SCALE);
               this.apply();
@@ -492,9 +490,7 @@ export class Viewer {
       if (targetTotal !== null) {
         // 升级换位图：重算基准倍率并按目标总倍率回正 userScale
         if (this.fitMode === "fit") {
-          this.userScale = 1;
-          this.fit();
-          this.userScale = clamp(targetTotal / this.baseScale, MIN_SCALE, MAX_SCALE);
+          this.rebaseAfterUpgrade(targetTotal);
         } else {
           this.userScale = clamp(targetTotal, MIN_SCALE, MAX_SCALE);
           this.apply();
@@ -883,6 +879,21 @@ export class Viewer {
     this.baseScale = Math.min(availW / ew, availH / eh);
     this.cx = availW / 2;
     this.cy = (this.immersive ? 0 : TITLEBAR_H) + availH / 2;
+    this.apply();
+  }
+
+  /** 升级换位图（fit 模式）的缩放回正：baseScale 随新位图尺寸重算，userScale 反比
+   *  补偿，总倍率与平移中心保持不变——升级前后屏幕视图逐像素不变（仅更锐）。
+   *  fit() 会把中心重置为窗口中心并以 fit 倍率渲染，故先存中心、再恢复并重新渲染；
+   *  漏掉 apply 会让屏幕停留在 fit 倍率而状态已是放大值，下次缩放时视图突跳。 */
+  private rebaseAfterUpgrade(targetTotal: number): void {
+    const cx0 = this.cx;
+    const cy0 = this.cy;
+    this.userScale = 1;
+    this.fit();
+    this.userScale = clamp(targetTotal / this.baseScale, MIN_SCALE, MAX_SCALE);
+    this.cx = cx0;
+    this.cy = cy0;
     this.apply();
   }
 
