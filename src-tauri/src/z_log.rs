@@ -688,5 +688,4 @@ mod tests {
         let id = app_identifier_from_config();
         assert_eq!(id, "com.zviewer.app");
     }
-
 }
